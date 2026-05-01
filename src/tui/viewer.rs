@@ -162,14 +162,9 @@ pub fn render_parsed_conversation(
 ) -> RenderedConversation {
     let mut lines = Vec::new();
     let mut messages = Vec::new();
-    let mut pending_tool_summary: Option<(
-        usize,
-        Option<String>,
-        Option<String>,
-        ToolActivitySummary,
-    )> = None;
+    let mut pending_tool_summary: Option<PendingToolSummary> = None;
 
-    for parsed in entries {
+    for (parsed_idx, parsed) in entries.iter().enumerate() {
         let entry_index = parsed.entry_index;
         let entry = &parsed.entry;
 
@@ -178,24 +173,27 @@ pub fn render_parsed_conversation(
                 tool_only_assistant_summary(entry, options)
             {
                 match &mut pending_tool_summary {
-                    Some((_, pending_parent, _, pending_summary))
-                        if pending_parent.as_deref() == parent_id =>
-                    {
-                        pending_summary.merge(summary);
+                    Some(pending) if pending.parent_id.as_deref() == parent_id => {
+                        pending.last_parsed_idx = parsed_idx;
+                        pending.summary.merge(summary);
                     }
                     _ => {
                         flush_tool_summary(
                             &mut lines,
                             &mut messages,
                             &mut pending_tool_summary,
+                            entries,
                             options,
                         );
-                        pending_tool_summary = Some((
-                            entry_index,
-                            parent_id.map(str::to_string),
-                            timestamp.map(str::to_string),
+                        pending_tool_summary = Some(PendingToolSummary {
+                            id: make_tool_summary_output_id(entry_index, parent_id),
+                            first_entry_index: entry_index,
+                            first_parsed_idx: parsed_idx,
+                            last_parsed_idx: parsed_idx,
+                            parent_id: parent_id.map(str::to_string),
+                            timestamp: timestamp.map(str::to_string),
                             summary,
-                        ));
+                        });
                     }
                 }
                 continue;
@@ -210,6 +208,7 @@ pub fn render_parsed_conversation(
             &mut lines,
             &mut messages,
             &mut pending_tool_summary,
+            entries,
             options,
         );
 
@@ -241,6 +240,7 @@ pub fn render_parsed_conversation(
         &mut lines,
         &mut messages,
         &mut pending_tool_summary,
+        entries,
         options,
     );
 
@@ -333,6 +333,21 @@ fn make_tool_output_id(
         "entry:{entry_index}:parent:{parent}:block:{block_index}:kind:{}:id:{raw}",
         kind.as_str()
     ))
+}
+
+fn make_tool_summary_output_id(entry_index: usize, parent_id: Option<&str>) -> ToolOutputId {
+    let parent = parent_id.unwrap_or("top");
+    ToolOutputId(format!("entry:{entry_index}:parent:{parent}:kind:summary"))
+}
+
+struct PendingToolSummary {
+    id: ToolOutputId,
+    first_entry_index: usize,
+    first_parsed_idx: usize,
+    last_parsed_idx: usize,
+    parent_id: Option<String>,
+    timestamp: Option<String>,
+    summary: ToolActivitySummary,
 }
 
 #[derive(Default)]
@@ -441,6 +456,7 @@ fn render_tool_activity_summary(
     dimmed: bool,
     timestamp: Option<&str>,
     summary: &ToolActivitySummary,
+    tool_output_id: Option<&ToolOutputId>,
 ) {
     if summary.is_empty() {
         return;
@@ -483,7 +499,7 @@ fn render_tool_activity_summary(
             ..Default::default()
         },
     ));
-    lines.push(RenderedLine::new(spans));
+    push_line(lines, spans, tool_output_id, tool_output_id.is_some());
 }
 
 fn summarize_tool_calls(blocks: &[ContentBlock]) -> ToolActivitySummary {
@@ -550,23 +566,108 @@ fn user_entry_is_only_tool_results(entry: &LogEntry, options: &RenderOptions) ->
             .all(|block| matches!(block, ContentBlock::ToolResult { .. }))
 }
 
+fn render_summary_group_details(
+    lines: &mut Vec<RenderedLine>,
+    entries: &[RenderableEntry],
+    pending: &PendingToolSummary,
+    options: &RenderOptions,
+) {
+    for parsed in &entries[pending.first_parsed_idx..=pending.last_parsed_idx] {
+        match &parsed.entry {
+            LogEntry::Assistant {
+                message,
+                parent_tool_use_id,
+                ..
+            } if parent_tool_use_id.as_deref() == pending.parent_id.as_deref() => {
+                for (block_idx, block) in message.content.iter().enumerate() {
+                    if let ContentBlock::ToolUse { id, name, input } = block {
+                        let output_id = make_tool_output_id(
+                            parsed.entry_index,
+                            parent_tool_use_id.as_deref(),
+                            block_idx,
+                            ToolOutputKind::ToolCall,
+                            Some(id),
+                        );
+                        let expanded = options.expanded_tool_outputs.contains(&output_id);
+                        render_tool_call(
+                            lines,
+                            name,
+                            input,
+                            "",
+                            th().accent_dim,
+                            true,
+                            options.content_width,
+                            options.show_timing.then_some("     "),
+                            ToolDisplayMode::Truncated,
+                            &output_id,
+                            expanded,
+                        );
+                    }
+                }
+            }
+            LogEntry::User {
+                message,
+                parent_tool_use_id,
+                ..
+            } if parent_tool_use_id.as_deref() == pending.parent_id.as_deref() => {
+                let UserContent::Blocks(blocks) = &message.content else {
+                    continue;
+                };
+                for (block_idx, block) in blocks.iter().enumerate() {
+                    if let ContentBlock::ToolResult {
+                        content,
+                        tool_use_id,
+                        ..
+                    } = block
+                    {
+                        let output_id = make_tool_output_id(
+                            parsed.entry_index,
+                            parent_tool_use_id.as_deref(),
+                            block_idx,
+                            ToolOutputKind::ToolResult,
+                            Some(tool_use_id),
+                        );
+                        let expanded = options.expanded_tool_outputs.contains(&output_id);
+                        let content_str = match extract_tool_result_text(content.as_ref()) {
+                            Some(text) => text,
+                            None => format_tool_result_content(content.as_ref()),
+                        };
+                        render_tool_result(
+                            lines,
+                            &content_str,
+                            options.content_width,
+                            options.show_timing.then_some("     "),
+                            ToolDisplayMode::Truncated,
+                            &output_id,
+                            expanded,
+                        );
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
 fn flush_tool_summary(
     lines: &mut Vec<RenderedLine>,
     messages: &mut Vec<MessageRange>,
-    pending: &mut Option<(usize, Option<String>, Option<String>, ToolActivitySummary)>,
+    pending: &mut Option<PendingToolSummary>,
+    entries: &[RenderableEntry],
     options: &RenderOptions,
 ) {
-    let Some((entry_index, parent_id, timestamp, summary)) = pending.take() else {
+    let Some(pending) = pending.take() else {
         return;
     };
 
     let start_line = lines.len();
-    let label = parent_id
+    let label = pending
+        .parent_id
         .as_deref()
         .map(subagent_label)
         .unwrap_or_else(|| "Claude".to_string());
     let ts = if options.show_timing {
-        timestamp.as_deref().and_then(format_timestamp)
+        pending.timestamp.as_deref().and_then(format_timestamp)
     } else {
         None
     };
@@ -574,14 +675,20 @@ fn flush_tool_summary(
         lines,
         &label,
         th().accent_dim,
-        parent_id.is_some(),
+        pending.parent_id.is_some(),
         ts.as_deref(),
-        &summary,
+        &pending.summary,
+        Some(&pending.id),
     );
+
+    if options.expanded_tool_outputs.contains(&pending.id) {
+        render_summary_group_details(lines, entries, &pending, options);
+    }
+
     let end_line = lines.len();
     if end_line > start_line {
         messages.push(MessageRange {
-            entry_index,
+            entry_index: pending.first_entry_index,
             start_line,
             end_line,
         });
@@ -930,6 +1037,7 @@ fn render_assistant_message(
                 nested_label.is_some(),
                 ts,
                 &summary,
+                None,
             );
             printed = true;
         }
@@ -1680,6 +1788,7 @@ fn render_agent_message(
                     true,
                     options.show_timing.then_some("     "),
                     &summary,
+                    None,
                 );
                 printed |= !summary.is_empty();
             }
@@ -2292,28 +2401,8 @@ mod tests {
         }
     }
 
-    #[test]
-    fn hidden_tool_mode_renders_activity_summary() {
-        let entry = RenderableEntry {
-            entry_index: 0,
-            entry: serde_json::from_str(
-                r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"toolu_1","name":"Grep","input":{"pattern":"one"}},{"type":"tool_use","id":"toolu_2","name":"Grep","input":{"pattern":"two"}},{"type":"tool_use","id":"toolu_3","name":"Read","input":{"file_path":"src/main.rs"}}]}}"#,
-            )
-            .unwrap(),
-        };
-        let rendered =
-            render_parsed_conversation(&[entry], &test_render_options(ToolDisplayMode::Hidden));
-        let text = rendered_text(&rendered);
-
-        assert!(text.contains("Searched for 2 patterns"));
-        assert!(text.contains("read 1 file"));
-        assert!(!text.contains("Grep:"));
-        assert!(!text.contains("Read:"));
-    }
-
-    #[test]
-    fn hidden_tool_mode_coalesces_tool_only_entries_across_results() {
-        let entries = vec![
+    fn tool_summary_entries() -> Vec<RenderableEntry> {
+        vec![
             RenderableEntry {
                 entry_index: 0,
                 entry: serde_json::from_str(
@@ -2335,7 +2424,31 @@ mod tests {
                 )
                 .unwrap(),
             },
-        ];
+        ]
+    }
+
+    #[test]
+    fn hidden_tool_mode_renders_activity_summary() {
+        let entry = RenderableEntry {
+            entry_index: 0,
+            entry: serde_json::from_str(
+                r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"toolu_1","name":"Grep","input":{"pattern":"one"}},{"type":"tool_use","id":"toolu_2","name":"Grep","input":{"pattern":"two"}},{"type":"tool_use","id":"toolu_3","name":"Read","input":{"file_path":"src/main.rs"}}]}}"#,
+            )
+            .unwrap(),
+        };
+        let rendered =
+            render_parsed_conversation(&[entry], &test_render_options(ToolDisplayMode::Hidden));
+        let text = rendered_text(&rendered);
+
+        assert!(text.contains("Searched for 2 patterns"));
+        assert!(text.contains("read 1 file"));
+        assert!(!text.contains("Grep:"));
+        assert!(!text.contains("Read:"));
+    }
+
+    #[test]
+    fn hidden_tool_mode_coalesces_tool_only_entries_across_results() {
+        let entries = tool_summary_entries();
         let rendered =
             render_parsed_conversation(&entries, &test_render_options(ToolDisplayMode::Hidden));
         let text = rendered_text(&rendered);
@@ -2343,6 +2456,27 @@ mod tests {
         assert!(text.contains("Searched for 1 pattern, read 1 file, ran 1 shell command"));
         assert_eq!(text.matches("Claude").count(), 1);
         assert!(!text.contains("Result"));
+    }
+
+    #[test]
+    fn expanded_tool_summary_renders_truncated_details() {
+        let entries = tool_summary_entries();
+        let mut options = test_render_options(ToolDisplayMode::Hidden);
+        options
+            .expanded_tool_outputs
+            .insert(make_tool_summary_output_id(0, None));
+        let rendered = render_parsed_conversation(&entries, &options);
+        let text = rendered_text(&rendered);
+
+        assert!(text.contains("Searched for 1 pattern, read 1 file, ran 1 shell command"));
+        assert!(text.contains("Grep: \"one\" in ."));
+        assert!(text.contains("Read: src/main.rs"));
+        assert!(text.contains("Bash: cargo test"));
+        assert!(text.contains("↳ Result"));
+        assert!(rendered.lines.iter().any(|line| {
+            line.clickable
+                && line.tool_output_id.as_ref() == Some(&make_tool_summary_output_id(0, None))
+        }));
     }
 
     #[test]
