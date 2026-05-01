@@ -157,7 +157,7 @@ fn render_list_mode(frame: &mut Frame, app: &App) {
     }
 
     match app.dialog_mode() {
-        DialogMode::Help => render_help_overlay(frame, false, false, app.keys()),
+        DialogMode::Help { scroll } => render_help_overlay(frame, false, false, app.keys(), *scroll),
         DialogMode::Rename { input, cursor } => render_rename_dialog(frame, input, *cursor),
         _ => {}
     }
@@ -344,7 +344,9 @@ fn render_view_mode(frame: &mut Frame, app: &App, state: &ViewState) {
         DialogMode::ConfirmDelete => render_confirm_dialog(frame, chunks[2]),
         DialogMode::ExportMenu { selected } => render_export_menu(frame, *selected, false),
         DialogMode::YankMenu { selected } => render_export_menu(frame, *selected, true),
-        DialogMode::Help => render_help_overlay(frame, true, app.is_single_file_mode(), app.keys()),
+        DialogMode::Help { scroll } => {
+            render_help_overlay(frame, true, app.is_single_file_mode(), app.keys(), *scroll);
+        }
         DialogMode::Rename { input, cursor } => render_rename_dialog(frame, input, *cursor),
         DialogMode::None => {}
     }
@@ -1085,6 +1087,7 @@ fn render_help_overlay(
     is_view_mode: bool,
     is_single_file_mode: bool,
     keys: &KeyBindings,
+    scroll: usize,
 ) {
     let exit_text = if is_single_file_mode {
         "Quit"
@@ -1177,13 +1180,25 @@ fn render_help_overlay(
     let inner = block.inner(menu_area);
     frame.render_widget(block, menu_area);
 
-    // Build shortcut lines with padding
+    if inner.is_empty() {
+        return;
+    }
+
+    let content_height = inner.height as usize;
+    let indicator_needed = shortcuts.len() > content_height;
+    let shortcut_rows = if indicator_needed {
+        content_height.saturating_sub(1)
+    } else {
+        content_height
+    };
+    let max_scroll = shortcuts.len().saturating_sub(shortcut_rows);
+    let scroll = scroll.min(max_scroll);
+
     let mut lines = Vec::new();
-    lines.push(Line::from("")); // Top padding
-    for (key, action) in &shortcuts {
+    for (key, action) in shortcuts.iter().skip(scroll).take(shortcut_rows) {
         let key_padding = max_key_len - key.chars().count();
         lines.push(Line::from(vec![
-            Span::raw("  "), // Left padding
+            Span::raw("  "),
             Span::styled(
                 format!("{}{}", key, " ".repeat(key_padding)),
                 Style::default().fg(rgb(th().accent)),
@@ -1196,8 +1211,19 @@ fn render_help_overlay(
         ]));
     }
 
-    if inner.is_empty() {
-        return;
+    if indicator_needed && content_height > 0 {
+        let start = scroll + 1;
+        let end = (scroll + shortcut_rows).min(shortcuts.len());
+        let indicator = match (scroll > 0, scroll < max_scroll) {
+            (true, true) => format!("  ↑↓ more  {start}-{end}/{}", shortcuts.len()),
+            (true, false) => format!("  ↑ more  {start}-{end}/{}", shortcuts.len()),
+            (false, true) => format!("  ↓ more  {start}-{end}/{}", shortcuts.len()),
+            (false, false) => format!("  {start}-{end}/{}", shortcuts.len()),
+        };
+        lines.push(Line::styled(
+            indicator,
+            Style::default().fg(rgb(th().text_muted)),
+        ));
     }
 
     let content = Paragraph::new(lines);
@@ -2307,7 +2333,7 @@ mod tests {
             let backend = TestBackend::new(width, height);
             let mut terminal = Terminal::new(backend).unwrap();
             terminal
-                .draw(|frame| render_help_overlay(frame, true, false, &KeyBindings::default()))
+                .draw(|frame| render_help_overlay(frame, true, false, &KeyBindings::default(), 0))
                 .unwrap();
         }
     }
@@ -2318,9 +2344,48 @@ mod tests {
             let backend = TestBackend::new(width, height);
             let mut terminal = Terminal::new(backend).unwrap();
             terminal
-                .draw(|frame| render_help_overlay(frame, false, false, &KeyBindings::default()))
+                .draw(|frame| render_help_overlay(frame, false, false, &KeyBindings::default(), 0))
                 .unwrap();
         }
+    }
+
+    fn terminal_contents(terminal: &Terminal<TestBackend>) -> String {
+        terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect()
+    }
+
+    #[test]
+    fn help_overlay_indicates_hidden_rows() {
+        let backend = TestBackend::new(60, 8);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|frame| render_help_overlay(frame, true, false, &KeyBindings::default(), 0))
+            .unwrap();
+
+        let contents = terminal_contents(&terminal);
+        assert!(contents.contains("↓ more"), "{contents:?}");
+        assert!(contents.contains("1-"), "{contents:?}");
+    }
+
+    #[test]
+    fn help_overlay_scrolls_to_later_rows() {
+        let backend = TestBackend::new(60, 8);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|frame| render_help_overlay(frame, true, false, &KeyBindings::default(), 10))
+            .unwrap();
+
+        let contents = terminal_contents(&terminal);
+        assert!(
+            contents.contains("↑↓ more") || contents.contains("↑ more"),
+            "{contents:?}"
+        );
+        assert!(contents.contains("11-"), "{contents:?}");
     }
 
     #[test]

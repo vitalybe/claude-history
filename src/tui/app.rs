@@ -42,7 +42,7 @@ pub enum DialogMode {
     /// Yank menu (copy to clipboard)
     YankMenu { selected: usize },
     /// Help overlay showing keyboard shortcuts
-    Help,
+    Help { scroll: usize },
     /// Rename the selected conversation
     Rename { input: String, cursor: usize },
 }
@@ -1023,10 +1023,34 @@ impl App {
     }
 
     /// Handle a key event during help overlay mode
-    fn handle_help_key(&mut self, code: KeyCode) -> Option<Action> {
+    fn handle_help_key(&mut self, code: KeyCode, viewport_height: usize) -> Option<Action> {
+        let DialogMode::Help { scroll } = &mut self.dialog_mode else {
+            return None;
+        };
+
         match code {
             KeyCode::Char('?') | KeyCode::Char('q') | KeyCode::Esc => {
                 self.dialog_mode = DialogMode::None;
+                None
+            }
+            KeyCode::Down | KeyCode::Char('j') => {
+                *scroll = scroll.saturating_add(1);
+                None
+            }
+            KeyCode::Up | KeyCode::Char('k') => {
+                *scroll = scroll.saturating_sub(1);
+                None
+            }
+            KeyCode::PageDown | KeyCode::Char('d') => {
+                *scroll = scroll.saturating_add(viewport_height.max(1));
+                None
+            }
+            KeyCode::PageUp | KeyCode::Char('u') => {
+                *scroll = scroll.saturating_sub(viewport_height.max(1));
+                None
+            }
+            KeyCode::Home | KeyCode::Char('g') => {
+                *scroll = 0;
                 None
             }
             _ => None,
@@ -1201,7 +1225,7 @@ impl App {
             DialogMode::ExportMenu { .. } | DialogMode::YankMenu { .. } => {
                 return self.handle_menu_key(code);
             }
-            DialogMode::Help => return self.handle_help_key(code),
+            DialogMode::Help { .. } => return self.handle_help_key(code, viewport_height),
             DialogMode::Rename { .. } => return self.handle_rename_key(code, modifiers),
             DialogMode::None => {}
         }
@@ -1480,7 +1504,7 @@ impl App {
 
             // Open help overlay
             KeyCode::Char('?') => {
-                self.dialog_mode = DialogMode::Help;
+                self.dialog_mode = DialogMode::Help { scroll: 0 };
                 None
             }
 
@@ -1697,7 +1721,7 @@ impl App {
                 }
                 // Open help overlay
                 KeyCode::Char('?') => {
-                    self.dialog_mode = DialogMode::Help;
+                    self.dialog_mode = DialogMode::Help { scroll: 0 };
                     None
                 }
                 // Allow typing during loading - query is buffered for when loading finishes
@@ -1887,7 +1911,7 @@ impl App {
             }
             // Open help overlay
             KeyCode::Char('?') => {
-                self.dialog_mode = DialogMode::Help;
+                self.dialog_mode = DialogMode::Help { scroll: 0 };
                 None
             }
             KeyCode::Char(c) => {
