@@ -1,6 +1,6 @@
 use crate::claude::{ContentBlock, LogEntry, UserContent};
 
-use super::ledger::push_line;
+use super::ledger::{LedgerRow, NameCol, TimestampCol, push_row};
 use super::tools::{
     ToolOutputKind, extract_tool_result_text, format_tool_result_content, make_tool_output_id,
     render_tool_call, render_tool_result,
@@ -129,44 +129,33 @@ pub(super) fn render_tool_activity_summary(
         return;
     }
 
-    let mut spans = Vec::new();
-    if let Some(ts) = timestamp {
-        spans.push((
-            format!(" {} ", ts),
-            LineStyle {
-                fg: Some((140, 140, 140)),
-                dimmed: false,
-                bold: false,
-                italic: false,
-            },
-        ));
-    }
-    spans.push((
-        format!("{:>width$}", label, width = NAME_WIDTH),
-        LineStyle {
-            fg: Some(label_color),
-            bold: false,
-            dimmed,
-            italic: false,
-        },
-    ));
-    spans.push((
-        " │ ".to_string(),
-        LineStyle {
-            fg: Some(th().border),
-            dimmed,
-            ..Default::default()
-        },
-    ));
-    spans.push((
+    let content = vec![(
         summary.sentence(),
         LineStyle {
             fg: Some(th().tool_text),
             dimmed: true,
             ..Default::default()
         },
-    ));
-    push_line(lines, spans, tool_output_id, tool_output_id.is_some());
+    )];
+    push_row(
+        lines,
+        LedgerRow {
+            timestamp: match timestamp {
+                Some(ts) => TimestampCol::Stamp(ts),
+                None => TimestampCol::Disabled,
+            },
+            name: NameCol::Label {
+                text: label,
+                color: label_color,
+                bold: false,
+                dimmed,
+            },
+            separator_dimmed: dimmed,
+            tool_output_id,
+            clickable: tool_output_id.is_some(),
+        },
+        content,
+    );
 }
 
 pub(super) fn summarize_tool_calls(blocks: &[ContentBlock]) -> ToolActivitySummary {

@@ -1,80 +1,63 @@
 use super::markdown::StyledLine;
 use super::{LineStyle, NAME_WIDTH, RenderedLine, TIMESTAMP_WIDTH, ToolOutputId, th};
 
-/// Render ledger block with styled markdown lines
-pub(super) fn render_ledger_block_styled(
-    lines: &mut Vec<RenderedLine>,
-    name: &str,
-    color: (u8, u8, u8),
-    bold: bool,
-    styled_lines: Vec<StyledLine>,
-    timestamp: Option<&str>,
-) {
-    for (i, styled_line) in styled_lines.iter().enumerate() {
-        let mut spans = Vec::new();
+/// The timestamp column for a single ledger row.
+pub(super) enum TimestampCol<'a> {
+    /// Timing disabled — no column at all.
+    Disabled,
+    /// Timing enabled, but this row has no timestamp text (continuation).
+    Pad,
+    /// Timing enabled, and this row carries the timestamp text (e.g. "12:34").
+    Stamp(&'a str),
+}
 
-        // Timestamp prefix (only on first line if provided)
-        if i == 0 {
-            if let Some(ts) = timestamp {
-                spans.push((
-                    format!(" {} ", ts),
-                    LineStyle {
-                        fg: Some((140, 140, 140)),
-                        dimmed: false,
-                        bold: false,
-                        italic: false,
-                    },
-                ));
-            }
-        } else if timestamp.is_some() {
-            // Pad continuation lines to align with timestamped first line
+/// The name column for a single ledger row.
+pub(super) enum NameCol<'a> {
+    /// First row of a block: a right-aligned label.
+    Label {
+        text: &'a str,
+        color: (u8, u8, u8),
+        bold: bool,
+        dimmed: bool,
+    },
+    /// Continuation row: blank name, default style.
+    BlankPlain,
+    /// Continuation row: blank name, `dimmed: true` (no fg).
+    BlankDim,
+    /// Continuation row: blank name carrying the label color, `dimmed: true`.
+    BlankColoredDim { color: (u8, u8, u8) },
+}
+
+/// Description of one ledger row's structural columns.
+pub(super) struct LedgerRow<'a> {
+    pub timestamp: TimestampCol<'a>,
+    pub name: NameCol<'a>,
+    /// Whether the " │ " separator span renders dimmed.
+    pub separator_dimmed: bool,
+    /// Optional tool-output id attached to the resulting `RenderedLine`.
+    pub tool_output_id: Option<&'a ToolOutputId>,
+    pub clickable: bool,
+}
+
+/// Low-level ledger writer: assembles the timestamp / name / separator
+/// columns according to `row` and appends `content` spans after them.
+///
+/// All ledger rows in the viewer go through this single entry point so
+/// that timestamp width, name alignment, separator styling, and tool
+/// output id / clickable propagation stay consistent.
+pub(super) fn push_row(
+    lines: &mut Vec<RenderedLine>,
+    row: LedgerRow<'_>,
+    content: Vec<(String, LineStyle)>,
+) {
+    let mut spans = Vec::with_capacity(3 + content.len());
+
+    match row.timestamp {
+        TimestampCol::Disabled => {}
+        TimestampCol::Pad => {
             spans.push((" ".repeat(TIMESTAMP_WIDTH), LineStyle::default()));
         }
-
-        // Name column (right-aligned, only on first line)
-        let name_text = if i == 0 {
-            format!("{:>width$}", name, width = NAME_WIDTH)
-        } else {
-            " ".repeat(NAME_WIDTH)
-        };
-
-        spans.push((
-            name_text,
-            LineStyle {
-                fg: Some(color),
-                bold,
-                dimmed: false,
-                italic: false,
-            },
-        ));
-
-        // Separator
-        spans.push((
-            " │ ".to_string(),
-            LineStyle {
-                fg: Some(th().border),
-                ..Default::default()
-            },
-        ));
-
-        // Content spans
-        if styled_line.spans.is_empty() {
-            // Empty line - just push name and separator
-        } else {
-            for (text, style) in &styled_line.spans {
-                spans.push((text.clone(), style.clone()));
-            }
-        }
-
-        lines.push(RenderedLine::new(spans));
-    }
-
-    // If no lines, still output at least the name
-    if styled_lines.is_empty() {
-        let mut spans = Vec::new();
-
-        // Timestamp prefix if provided
-        if let Some(ts) = timestamp {
+        TimestampCol::Stamp(ts) => {
             spans.push((
                 format!(" {} ", ts),
                 LineStyle {
@@ -85,37 +68,141 @@ pub(super) fn render_ledger_block_styled(
                 },
             ));
         }
+    }
 
-        spans.push((
-            format!("{:>width$}", name, width = NAME_WIDTH),
-            LineStyle {
-                fg: Some(color),
-                bold,
-                dimmed: false,
-                italic: false,
-            },
-        ));
-        spans.push((
-            " │ ".to_string(),
-            LineStyle {
-                fg: Some(th().border),
-                ..Default::default()
-            },
-        ));
-        lines.push(RenderedLine::new(spans));
+    match row.name {
+        NameCol::Label {
+            text,
+            color,
+            bold,
+            dimmed,
+        } => {
+            spans.push((
+                format!("{:>width$}", text, width = NAME_WIDTH),
+                LineStyle {
+                    fg: Some(color),
+                    bold,
+                    dimmed,
+                    italic: false,
+                },
+            ));
+        }
+        NameCol::BlankPlain => {
+            spans.push((" ".repeat(NAME_WIDTH), LineStyle::default()));
+        }
+        NameCol::BlankDim => {
+            spans.push((
+                " ".repeat(NAME_WIDTH),
+                LineStyle {
+                    dimmed: true,
+                    ..Default::default()
+                },
+            ));
+        }
+        NameCol::BlankColoredDim { color } => {
+            spans.push((
+                " ".repeat(NAME_WIDTH),
+                LineStyle {
+                    fg: Some(color),
+                    dimmed: true,
+                    ..Default::default()
+                },
+            ));
+        }
+    }
+
+    spans.push((
+        " │ ".to_string(),
+        LineStyle {
+            fg: Some(th().border),
+            dimmed: row.separator_dimmed,
+            ..Default::default()
+        },
+    ));
+
+    spans.extend(content);
+
+    let line = match row.tool_output_id {
+        Some(id) => RenderedLine::tool_output(spans, id.clone(), row.clickable),
+        None => RenderedLine::new(spans),
+    };
+    lines.push(line);
+}
+
+/// Timestamp slot for the `i`-th row of a block whose first row carries
+/// `timestamp` (or `None` when timing is disabled or no timestamp).
+fn block_timestamp<'a>(timestamp: Option<&'a str>, i: usize) -> TimestampCol<'a> {
+    match (i, timestamp) {
+        (0, Some(ts)) => TimestampCol::Stamp(ts),
+        (_, Some(_)) => TimestampCol::Pad,
+        (_, None) => TimestampCol::Disabled,
     }
 }
 
-pub(super) fn push_line(
-    lines: &mut Vec<RenderedLine>,
-    spans: Vec<(String, LineStyle)>,
-    tool_output_id: Option<&ToolOutputId>,
-    clickable: bool,
-) {
-    if let Some(id) = tool_output_id {
-        lines.push(RenderedLine::tool_output(spans, id.clone(), clickable));
+fn show_timing_col(show_timing: bool) -> TimestampCol<'static> {
+    if show_timing {
+        TimestampCol::Pad
     } else {
-        lines.push(RenderedLine::new(spans));
+        TimestampCol::Disabled
+    }
+}
+
+/// Render ledger block with styled markdown lines
+pub(super) fn render_ledger_block_styled(
+    lines: &mut Vec<RenderedLine>,
+    name: &str,
+    color: (u8, u8, u8),
+    bold: bool,
+    styled_lines: Vec<StyledLine>,
+    timestamp: Option<&str>,
+) {
+    if styled_lines.is_empty() {
+        push_row(
+            lines,
+            LedgerRow {
+                timestamp: block_timestamp(timestamp, 0),
+                name: NameCol::Label {
+                    text: name,
+                    color,
+                    bold,
+                    dimmed: false,
+                },
+                separator_dimmed: false,
+                tool_output_id: None,
+                clickable: false,
+            },
+            Vec::new(),
+        );
+        return;
+    }
+
+    for (i, styled_line) in styled_lines.iter().enumerate() {
+        let name_col = if i == 0 {
+            NameCol::Label {
+                text: name,
+                color,
+                bold,
+                dimmed: false,
+            }
+        } else {
+            NameCol::BlankPlain
+        };
+        let content = styled_line
+            .spans
+            .iter()
+            .map(|(t, s)| (t.clone(), s.clone()))
+            .collect();
+        push_row(
+            lines,
+            LedgerRow {
+                timestamp: block_timestamp(timestamp, i),
+                name: name_col,
+                separator_dimmed: false,
+                tool_output_id: None,
+                clickable: false,
+            },
+            content,
+        );
     }
 }
 
@@ -127,30 +214,24 @@ pub(super) fn render_truncation_indicator(
     show_timing: bool,
     tool_output_id: Option<&ToolOutputId>,
 ) {
-    let mut spans = Vec::new();
-
-    if show_timing {
-        spans.push((" ".repeat(TIMESTAMP_WIDTH), LineStyle::default()));
-    }
-
-    spans.push((" ".repeat(NAME_WIDTH), LineStyle::default()));
-    spans.push((
-        " │ ".to_string(),
-        LineStyle {
-            fg: Some(th().border),
-            dimmed,
-            ..Default::default()
-        },
-    ));
-    spans.push((
+    let content = vec![(
         format!("({} more lines...)", remaining),
         LineStyle {
             dimmed: true,
             ..Default::default()
         },
-    ));
-
-    push_line(lines, spans, tool_output_id, tool_output_id.is_some());
+    )];
+    push_row(
+        lines,
+        LedgerRow {
+            timestamp: show_timing_col(show_timing),
+            name: NameCol::BlankPlain,
+            separator_dimmed: dimmed,
+            tool_output_id,
+            clickable: tool_output_id.is_some(),
+        },
+        content,
+    );
 }
 
 /// Render ledger block with styled markdown lines (dimmed for subagents)
@@ -161,69 +242,57 @@ pub(super) fn render_ledger_block_styled_dimmed(
     styled_lines: Vec<StyledLine>,
     show_timing: bool,
 ) {
-    for (i, styled_line) in styled_lines.iter().enumerate() {
-        let mut spans = Vec::new();
-
-        if show_timing {
-            spans.push((" ".repeat(TIMESTAMP_WIDTH), LineStyle::default()));
-        }
-
-        let name_text = if i == 0 {
-            format!("{:>width$}", name, width = NAME_WIDTH)
-        } else {
-            " ".repeat(NAME_WIDTH)
-        };
-
-        spans.push((
-            name_text,
-            LineStyle {
-                fg: Some(color),
-                bold: false,
-                dimmed: true,
-                italic: false,
+    if styled_lines.is_empty() {
+        push_row(
+            lines,
+            LedgerRow {
+                timestamp: show_timing_col(show_timing),
+                name: NameCol::Label {
+                    text: name,
+                    color,
+                    bold: false,
+                    dimmed: true,
+                },
+                separator_dimmed: true,
+                tool_output_id: None,
+                clickable: false,
             },
-        ));
-
-        spans.push((
-            " │ ".to_string(),
-            LineStyle {
-                fg: Some(th().border),
-                dimmed: true,
-                ..Default::default()
-            },
-        ));
-
-        for (text, mut style) in styled_line.spans.iter().cloned() {
-            style.dimmed = true;
-            spans.push((text, style));
-        }
-
-        lines.push(RenderedLine::new(spans));
+            Vec::new(),
+        );
+        return;
     }
 
-    if styled_lines.is_empty() {
-        let mut spans = Vec::new();
-        if show_timing {
-            spans.push((" ".repeat(TIMESTAMP_WIDTH), LineStyle::default()));
-        }
-        spans.push((
-            format!("{:>width$}", name, width = NAME_WIDTH),
-            LineStyle {
-                fg: Some(color),
+    for (i, styled_line) in styled_lines.iter().enumerate() {
+        let name_col = if i == 0 {
+            NameCol::Label {
+                text: name,
+                color,
                 bold: false,
                 dimmed: true,
-                italic: false,
+            }
+        } else {
+            NameCol::BlankColoredDim { color }
+        };
+        let content = styled_line
+            .spans
+            .iter()
+            .cloned()
+            .map(|(text, mut style)| {
+                style.dimmed = true;
+                (text, style)
+            })
+            .collect();
+        push_row(
+            lines,
+            LedgerRow {
+                timestamp: show_timing_col(show_timing),
+                name: name_col,
+                separator_dimmed: true,
+                tool_output_id: None,
+                clickable: false,
             },
-        ));
-        spans.push((
-            " │ ".to_string(),
-            LineStyle {
-                fg: Some(th().border),
-                dimmed: true,
-                ..Default::default()
-            },
-        ));
-        lines.push(RenderedLine::new(spans));
+            content,
+        );
     }
 }
 
@@ -236,46 +305,34 @@ pub(super) fn render_ledger_block_plain_dimmed(
     show_timing: bool,
 ) {
     for (i, line_text) in text.lines().enumerate() {
-        let mut spans = Vec::new();
-
-        if show_timing {
-            spans.push((" ".repeat(TIMESTAMP_WIDTH), LineStyle::default()));
-        }
-
-        let name_text = if i == 0 {
-            format!("{:>width$}", name, width = NAME_WIDTH)
-        } else {
-            " ".repeat(NAME_WIDTH)
-        };
-
-        spans.push((
-            name_text,
-            LineStyle {
-                fg: Some(color),
+        let name_col = if i == 0 {
+            NameCol::Label {
+                text: name,
+                color,
                 bold: false,
                 dimmed: true,
-                italic: false,
-            },
-        ));
-
-        spans.push((
-            " │ ".to_string(),
-            LineStyle {
-                fg: Some(th().border),
-                dimmed: true,
-                ..Default::default()
-            },
-        ));
-
-        spans.push((
+            }
+        } else {
+            NameCol::BlankColoredDim { color }
+        };
+        let content = vec![(
             line_text.to_string(),
             LineStyle {
                 dimmed: true,
                 ..Default::default()
             },
-        ));
-
-        lines.push(RenderedLine::new(spans));
+        )];
+        push_row(
+            lines,
+            LedgerRow {
+                timestamp: show_timing_col(show_timing),
+                name: name_col,
+                separator_dimmed: true,
+                tool_output_id: None,
+                clickable: false,
+            },
+            content,
+        );
     }
 }
 
@@ -287,35 +344,23 @@ pub(super) fn render_continuation_dimmed(
     tool_output_id: Option<&ToolOutputId>,
 ) {
     for line_text in text.lines() {
-        let mut spans = Vec::new();
-
-        if show_timing {
-            spans.push((" ".repeat(TIMESTAMP_WIDTH), LineStyle::default()));
-        }
-
-        spans.push((
-            " ".repeat(NAME_WIDTH),
-            LineStyle {
-                dimmed: true,
-                ..Default::default()
-            },
-        ));
-        spans.push((
-            " │ ".to_string(),
-            LineStyle {
-                fg: Some(th().border),
-                dimmed: true,
-                ..Default::default()
-            },
-        ));
-        spans.push((
+        let content = vec![(
             line_text.to_string(),
             LineStyle {
                 dimmed: true,
                 ..Default::default()
             },
-        ));
-
-        push_line(lines, spans, tool_output_id, tool_output_id.is_some());
+        )];
+        push_row(
+            lines,
+            LedgerRow {
+                timestamp: show_timing_col(show_timing),
+                name: NameCol::BlankDim,
+                separator_dimmed: true,
+                tool_output_id,
+                clickable: tool_output_id.is_some(),
+            },
+            content,
+        );
     }
 }
