@@ -139,7 +139,8 @@ appears in the gutter showing which message is focused. While in this mode:
 - `Esc` — exit message navigation mode
 
 Searching with `/` also activates message navigation, focusing the message
-containing each match as you move through results with `n`/`N`.
+containing each match as you move through results with `n`/`N`. The status bar
+shows the current match number and total matches while search is active.
 
 ### Search
 

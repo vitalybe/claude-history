@@ -691,12 +691,20 @@ fn render_view_status_bar(frame: &mut Frame, app: &App, state: &ViewState, area:
         Span::raw("  "),
     ];
 
-    if state.search_mode == ViewSearchMode::Active {
+    if state.search_mode == ViewSearchMode::Active && !state.search_matches.is_empty() {
         spans.extend([
             Span::styled("n", key_style),
             Span::styled("ext  ", label_style),
             Span::styled("N", key_style),
             Span::styled("prev  ", label_style),
+            Span::styled(
+                format!(
+                    "{}/{}  ",
+                    state.current_match + 1,
+                    state.search_matches.len()
+                ),
+                Style::default().fg(rgb(th().text_secondary)),
+            ),
             Span::styled("Esc", key_style),
             Span::styled(" clear", label_style),
         ]);
