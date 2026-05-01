@@ -1195,6 +1195,11 @@ fn render_help_overlay(
     let scroll = scroll.min(max_scroll);
 
     let mut lines = Vec::new();
+    if !indicator_needed {
+        lines.extend(
+            (0..content_height.saturating_sub(shortcuts.len()) / 2).map(|_| Line::from("")),
+        );
+    }
     for (key, action) in shortcuts.iter().skip(scroll).take(shortcut_rows) {
         let key_padding = max_key_len - key.chars().count();
         lines.push(Line::from(vec![
