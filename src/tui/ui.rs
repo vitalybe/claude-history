@@ -8,7 +8,7 @@ use chrono::{DateTime, Local};
 use ratatui::layout::Position;
 use ratatui::prelude::*;
 use ratatui::widgets::{Block, BorderType, Borders, Clear, List, ListItem, Paragraph};
-use unicode_width::UnicodeWidthChar;
+use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 /// Get the current theme
 fn th() -> &'static Theme {
@@ -616,12 +616,26 @@ fn render_view_content(frame: &mut Frame, state: &ViewState, area: Rect) {
                 );
             }
 
-            let mut line = Line::from(spans);
-            if rendered
+            let is_hovered = rendered
                 .tool_output_id
                 .as_ref()
-                .is_some_and(|id| state.hovered_tool_output.as_ref() == Some(id))
-            {
+                .is_some_and(|id| state.hovered_tool_output.as_ref() == Some(id));
+            if is_hovered {
+                let used_width: usize = spans
+                    .iter()
+                    .map(|span| UnicodeWidthStr::width(span.content.as_ref()))
+                    .sum();
+                let padding = (area.width as usize).saturating_sub(used_width);
+                if padding > 0 {
+                    spans.push(Span::styled(
+                        " ".repeat(padding),
+                        Style::default().bg(rgb(th().selection_bg)),
+                    ));
+                }
+            }
+
+            let mut line = Line::from(spans);
+            if is_hovered {
                 line = line.style(Style::default().bg(rgb(th().selection_bg)));
             }
 
