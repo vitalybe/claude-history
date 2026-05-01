@@ -946,6 +946,17 @@ fn render_search_bar(frame: &mut Frame, app: &App, area: Rect) {
     }
 }
 
+fn centered_modal_area(area: Rect, preferred_width: u16, preferred_height: u16) -> Rect {
+    let width = preferred_width.min(area.width);
+    let height = preferred_height.min(area.height);
+    Rect {
+        x: area.x + (area.width.saturating_sub(width)) / 2,
+        y: area.y + (area.height.saturating_sub(height)) / 2,
+        width,
+        height,
+    }
+}
+
 fn render_confirm_dialog(frame: &mut Frame, area: Rect) {
     let prompt = Line::from(vec![
         Span::raw(" "),
@@ -1025,13 +1036,7 @@ fn render_export_menu(frame: &mut Frame, selected: usize, is_yank: bool) {
     let menu_width = 35;
     let menu_height = options.len() as u16 + 4; // options + title + border + cancel hint
 
-    // Center the menu
-    let menu_area = Rect {
-        x: (area.width.saturating_sub(menu_width)) / 2,
-        y: (area.height.saturating_sub(menu_height)) / 2,
-        width: menu_width,
-        height: menu_height,
-    };
+    let menu_area = centered_modal_area(area, menu_width, menu_height);
 
     // Clear the area behind the modal first
     frame.render_widget(Clear, menu_area);
@@ -1066,6 +1071,10 @@ fn render_export_menu(frame: &mut Frame, selected: usize, is_yank: bool) {
         "  [Esc] Cancel",
         Style::default().fg(rgb(th().text_muted)),
     ));
+
+    if inner.is_empty() {
+        return;
+    }
 
     let menu_content = Paragraph::new(lines);
     frame.render_widget(menu_content, inner);
@@ -1149,13 +1158,7 @@ fn render_help_overlay(
     // Height: 1 top padding + shortcuts + 1 bottom padding + 2 border
     let menu_height = shortcuts.len() as u16 + 4;
 
-    // Center the menu
-    let menu_area = Rect {
-        x: (area.width.saturating_sub(menu_width)) / 2,
-        y: (area.height.saturating_sub(menu_height)) / 2,
-        width: menu_width,
-        height: menu_height,
-    };
+    let menu_area = centered_modal_area(area, menu_width, menu_height);
 
     // Clear the area behind the modal
     frame.render_widget(Clear, menu_area);
@@ -1191,6 +1194,10 @@ fn render_help_overlay(
                 Style::default().fg(rgb(th().text_primary)),
             ),
         ]));
+    }
+
+    if inner.is_empty() {
+        return;
     }
 
     let content = Paragraph::new(lines);
@@ -2291,6 +2298,65 @@ fn highlight_text(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+
+    #[test]
+    fn view_help_overlay_handles_tiny_terminal() {
+        for (width, height) in [(20, 8), (10, 3), (2, 2), (1, 1)] {
+            let backend = TestBackend::new(width, height);
+            let mut terminal = Terminal::new(backend).unwrap();
+            terminal
+                .draw(|frame| render_help_overlay(frame, true, false, &KeyBindings::default()))
+                .unwrap();
+        }
+    }
+
+    #[test]
+    fn list_help_overlay_handles_tiny_terminal() {
+        for (width, height) in [(20, 8), (10, 3), (2, 2), (1, 1)] {
+            let backend = TestBackend::new(width, height);
+            let mut terminal = Terminal::new(backend).unwrap();
+            terminal
+                .draw(|frame| render_help_overlay(frame, false, false, &KeyBindings::default()))
+                .unwrap();
+        }
+    }
+
+    #[test]
+    fn export_menus_handle_tiny_terminal() {
+        for is_yank in [false, true] {
+            for (width, height) in [(20, 8), (10, 3), (2, 2), (1, 1)] {
+                let backend = TestBackend::new(width, height);
+                let mut terminal = Terminal::new(backend).unwrap();
+                terminal
+                    .draw(|frame| render_export_menu(frame, 0, is_yank))
+                    .unwrap();
+            }
+        }
+    }
+
+    #[test]
+    fn centered_modal_area_preserves_fitting_size() {
+        let area = centered_modal_area(Rect::new(0, 0, 80, 24), 35, 8);
+        assert_eq!(area, Rect::new(22, 8, 35, 8));
+    }
+
+    #[test]
+    fn centered_modal_area_clamps_to_frame() {
+        assert_eq!(
+            centered_modal_area(Rect::new(0, 0, 20, 24), 35, 8),
+            Rect::new(0, 8, 20, 8)
+        );
+        assert_eq!(
+            centered_modal_area(Rect::new(0, 0, 80, 3), 35, 8),
+            Rect::new(22, 0, 35, 3)
+        );
+        assert_eq!(
+            centered_modal_area(Rect::new(0, 0, 10, 3), 35, 8),
+            Rect::new(0, 0, 10, 3)
+        );
+    }
 
     #[test]
     fn test_format_model_name_opus_45() {
