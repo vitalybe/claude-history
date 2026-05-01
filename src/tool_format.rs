@@ -56,19 +56,31 @@ fn format_bash(input: &Value, max_width: usize) -> FormattedToolCall {
     // Available width for command text (accounting for prefix on first line)
     let available_width = max_width.saturating_sub(prefix_len);
 
-    // No wrapping if width is too small or command fits
-    if available_width == 0 || command.chars().count() <= available_width {
+    let wrapped: Vec<_> = if command.contains('\n') {
+        command
+            .lines()
+            .flat_map(|line| {
+                if available_width == 0 || line.chars().count() <= available_width {
+                    vec![line.to_string()]
+                } else {
+                    textwrap::wrap(line, available_width)
+                        .into_iter()
+                        .map(|cow| cow.into_owned())
+                        .collect()
+                }
+            })
+            .collect()
+    } else if available_width == 0 || command.chars().count() <= available_width {
         return FormattedToolCall {
             header: format!("{}{}", prefix, command),
             body: None,
         };
-    }
-
-    // Wrap the command text
-    let wrapped: Vec<_> = textwrap::wrap(command, available_width)
-        .into_iter()
-        .map(|cow| cow.into_owned())
-        .collect();
+    } else {
+        textwrap::wrap(command, available_width)
+            .into_iter()
+            .map(|cow| cow.into_owned())
+            .collect()
+    };
 
     if wrapped.len() <= 1 {
         return FormattedToolCall {
@@ -257,6 +269,26 @@ mod tests {
         let result = format_tool_call("Bash", &input, 80);
         assert_eq!(result.header, "Bash: ls -la");
         assert_eq!(result.body, None);
+    }
+
+    #[test]
+    fn test_format_bash_multiline_command_has_body() {
+        let input = json!({
+            "command": "one\ntwo"
+        });
+        let result = format_tool_call("Bash", &input, 80);
+        assert_eq!(result.header, "Bash: one");
+        assert_eq!(result.body, Some("two".to_string()));
+    }
+
+    #[test]
+    fn test_format_bash_wraps_long_lines_in_multiline_command() {
+        let input = json!({
+            "command": "alpha beta gamma\nnext"
+        });
+        let result = format_tool_call("Bash", &input, 12);
+        assert_eq!(result.header, "Bash: alpha");
+        assert_eq!(result.body, Some("beta\ngamma\nnext".to_string()));
     }
 
     #[test]
