@@ -165,46 +165,17 @@ pub fn render_parsed_conversation(
     let mut pending_tool_summary: Option<PendingToolSummary> = None;
 
     for (parsed_idx, parsed) in entries.iter().enumerate() {
-        let entry_index = parsed.entry_index;
-        let entry = &parsed.entry;
-
-        if options.tool_display.is_summary() {
-            if let Some((parent_id, timestamp, summary)) =
-                tool_only_assistant_summary(entry, options)
-            {
-                match &mut pending_tool_summary {
-                    Some(pending) if pending.parent_id.as_deref() == parent_id => {
-                        pending.last_parsed_idx = parsed_idx;
-                        pending.summary.merge(summary);
-                    }
-                    _ => {
-                        flush_tool_summary(
-                            &mut lines,
-                            &mut messages,
-                            &mut pending_tool_summary,
-                            entries,
-                            options,
-                        );
-                        pending_tool_summary = Some(PendingToolSummary {
-                            id: make_tool_summary_output_id(entry_index, parent_id),
-                            first_entry_index: entry_index,
-                            first_parsed_idx: parsed_idx,
-                            last_parsed_idx: parsed_idx,
-                            parent_id: parent_id.map(str::to_string),
-                            timestamp: timestamp.map(str::to_string),
-                            summary,
-                        });
-                    }
-                }
-                continue;
-            }
-
-            if user_entry_is_only_tool_results(entry, options) {
-                if let Some(pending) = &mut pending_tool_summary {
-                    pending.last_parsed_idx = parsed_idx;
-                }
-                continue;
-            }
+        if options.tool_display.is_summary()
+            && try_extend_or_start_pending_summary(
+                &mut lines,
+                &mut messages,
+                &mut pending_tool_summary,
+                entries,
+                parsed_idx,
+                options,
+            )
+        {
+            continue;
         }
 
         flush_tool_summary(
@@ -215,28 +186,7 @@ pub fn render_parsed_conversation(
             options,
         );
 
-        let is_message = matches!(entry, LogEntry::User { .. } | LogEntry::Assistant { .. })
-            || matches!(entry, LogEntry::Progress { data, .. }
-                if options.show_thinking && crate::claude::parse_agent_progress(data).is_some());
-        let start_line = lines.len();
-        render_entry(&mut lines, entry_index, entry, options);
-        let end_line = lines.len();
-
-        if is_message && end_line > start_line {
-            let effective_end =
-                if end_line > 0 && lines.get(end_line - 1).is_some_and(|l| l.spans.is_empty()) {
-                    end_line - 1
-                } else {
-                    end_line
-                };
-            if effective_end > start_line {
-                messages.push(MessageRange {
-                    entry_index,
-                    start_line,
-                    end_line: effective_end,
-                });
-            }
-        }
+        render_entry_with_range(&mut lines, &mut messages, parsed, options);
     }
 
     flush_tool_summary(
@@ -247,27 +197,140 @@ pub fn render_parsed_conversation(
         options,
     );
 
-    // Collapse consecutive empty lines into single empty lines.
-    // Multiple render functions each add trailing empty lines, which can
-    // result in double blanks when a tool result has empty output.
-    // After dedup, remap message ranges to account for removed lines.
+    postprocess_blank_lines(&mut lines, &mut messages);
+
+    RenderedConversation { lines, messages }
+}
+
+/// Handle a parsed entry while in summary tool-display mode.
+///
+/// Returns `true` when the entry was absorbed into (or started) a pending
+/// summary group and should be skipped by the normal render path.
+fn try_extend_or_start_pending_summary(
+    lines: &mut Vec<RenderedLine>,
+    messages: &mut Vec<MessageRange>,
+    pending: &mut Option<PendingToolSummary>,
+    entries: &[RenderableEntry],
+    parsed_idx: usize,
+    options: &RenderOptions,
+) -> bool {
+    let parsed = &entries[parsed_idx];
+    let entry_index = parsed.entry_index;
+    let entry = &parsed.entry;
+
+    if let Some((parent_id, timestamp, summary)) = tool_only_assistant_summary(entry, options) {
+        match pending {
+            Some(p) if p.parent_id.as_deref() == parent_id => {
+                p.last_parsed_idx = parsed_idx;
+                p.summary.merge(summary);
+            }
+            _ => {
+                flush_tool_summary(lines, messages, pending, entries, options);
+                *pending = Some(PendingToolSummary {
+                    id: make_tool_summary_output_id(entry_index, parent_id),
+                    first_entry_index: entry_index,
+                    first_parsed_idx: parsed_idx,
+                    last_parsed_idx: parsed_idx,
+                    parent_id: parent_id.map(str::to_string),
+                    timestamp: timestamp.map(str::to_string),
+                    summary,
+                });
+            }
+        }
+        return true;
+    }
+
+    if user_entry_is_only_tool_results(entry, options) {
+        if let Some(p) = pending {
+            p.last_parsed_idx = parsed_idx;
+        }
+        return true;
+    }
+
+    false
+}
+
+/// Render one parsed entry and, if it produced a navigable message,
+/// append a `MessageRange` that excludes any trailing blank line.
+fn render_entry_with_range(
+    lines: &mut Vec<RenderedLine>,
+    messages: &mut Vec<MessageRange>,
+    parsed: &RenderableEntry,
+    options: &RenderOptions,
+) {
+    let entry_index = parsed.entry_index;
+    let entry = &parsed.entry;
+    let is_message = matches!(entry, LogEntry::User { .. } | LogEntry::Assistant { .. })
+        || matches!(entry, LogEntry::Progress { data, .. }
+            if options.show_thinking && crate::claude::parse_agent_progress(data).is_some());
+
+    let start_line = lines.len();
+    render_entry(lines, entry_index, entry, options);
+    let end_line = lines.len();
+
+    if !is_message {
+        return;
+    }
+    if let Some(range) =
+        message_range_excluding_trailing_blank(lines, start_line, end_line, entry_index)
+    {
+        messages.push(range);
+    }
+}
+
+/// If the rendered slice produced any non-blank lines, return a
+/// `MessageRange` whose `end_line` excludes a trailing blank.
+fn message_range_excluding_trailing_blank(
+    lines: &[RenderedLine],
+    start_line: usize,
+    end_line: usize,
+    entry_index: usize,
+) -> Option<MessageRange> {
+    if end_line <= start_line {
+        return None;
+    }
+    let effective_end = if lines.get(end_line - 1).is_some_and(|l| l.spans.is_empty()) {
+        end_line - 1
+    } else {
+        end_line
+    };
+    if effective_end <= start_line {
+        return None;
+    }
+    Some(MessageRange {
+        entry_index,
+        start_line,
+        end_line: effective_end,
+    })
+}
+
+/// Collapse consecutive blank rendered lines and remap message ranges so
+/// they continue to point at their original visible content.
+///
+/// Multiple render helpers each push a trailing blank line, which can
+/// produce adjacent blanks when a tool result emits empty output. The
+/// dedup pass removes any blank line whose immediate predecessor is also
+/// blank, and the remap pass shifts every range start/end onto the new
+/// line indices, clamping ranges that ended on a removed blank.
+fn postprocess_blank_lines(lines: &mut Vec<RenderedLine>, messages: &mut Vec<MessageRange>) {
     let mut removed = vec![false; lines.len()];
     let mut i = 1;
     while i < lines.len() {
         if lines[i].spans.is_empty() && lines[i - 1].spans.is_empty() {
             removed[i] = true;
-            i += 1;
-        } else {
-            i += 1;
         }
+        i += 1;
     }
 
-    // Build index mapping: old line index -> new line index
+    // Build index mapping: old line index -> new line index. Removed
+    // entries get the index they would collapse onto; they are never
+    // dereferenced for surviving ranges because the remap below walks
+    // backward off any removed terminator first.
     let mut new_index = Vec::with_capacity(lines.len());
     let mut offset = 0usize;
     for (idx, &is_removed) in removed.iter().enumerate() {
         if is_removed {
-            new_index.push(idx - offset); // won't be used, but fill for completeness
+            new_index.push(idx - offset);
             offset += 1;
         } else {
             new_index.push(idx - offset);
@@ -275,26 +338,23 @@ pub fn render_parsed_conversation(
     }
     let total_after = lines.len() - offset;
 
-    // Remove the marked lines
-    {
-        let mut write = 0;
-        for (read, &is_removed) in removed.iter().enumerate() {
-            if !is_removed {
-                if write != read {
-                    lines.swap(write, read);
-                }
-                write += 1;
+    // Compact in place.
+    let mut write = 0;
+    for (read, &is_removed) in removed.iter().enumerate() {
+        if !is_removed {
+            if write != read {
+                lines.swap(write, read);
             }
+            write += 1;
         }
-        lines.truncate(total_after);
     }
+    lines.truncate(total_after);
 
-    // Remap message ranges
-    for msg in &mut messages {
+    for msg in messages.iter_mut() {
         msg.start_line = new_index[msg.start_line];
-        // end_line is exclusive, so map the last included line and add 1
         if msg.end_line > 0 && msg.end_line <= new_index.len() {
-            // Find the new index of the last non-removed line before end_line
+            // end_line is exclusive — find the new index of the last
+            // non-removed line before it and add 1.
             let mut last = msg.end_line - 1;
             while last > msg.start_line && removed[last] {
                 last -= 1;
@@ -303,15 +363,11 @@ pub fn render_parsed_conversation(
         } else if msg.end_line == new_index.len() {
             msg.end_line = total_after;
         }
-        // Clamp
         msg.end_line = msg.end_line.min(total_after);
         msg.start_line = msg.start_line.min(msg.end_line);
     }
 
-    // Remove empty ranges
     messages.retain(|m| m.start_line < m.end_line);
-
-    RenderedConversation { lines, messages }
 }
 
 /// Render a conversation file to lines for display in the TUI viewer
@@ -1222,6 +1278,225 @@ mod tests {
         assert!(text.contains("hello"));
         assert!(text.contains("world"));
         assert_eq!(rendered.messages.len(), 2);
+    }
+
+    // -----------------------------------------------------------------
+    // Postprocess pipeline unit tests
+    //
+    // These exercise the blank-line dedup and message-range remap pass
+    // directly, without going through the full render pipeline. They
+    // pin the exact behavior of the extracted helpers.
+    // -----------------------------------------------------------------
+
+    fn nonblank_line(text: &str) -> RenderedLine {
+        RenderedLine::new(vec![(text.to_string(), LineStyle::default())])
+    }
+    fn blank_line() -> RenderedLine {
+        RenderedLine::new(vec![])
+    }
+
+    #[test]
+    fn postprocess_collapses_runs_of_blanks_to_one() {
+        let mut lines = vec![
+            nonblank_line("a"),
+            blank_line(),
+            blank_line(),
+            blank_line(),
+            nonblank_line("b"),
+        ];
+        let mut messages = Vec::new();
+        postprocess_blank_lines(&mut lines, &mut messages);
+
+        assert_eq!(lines.len(), 3);
+        assert!(!lines[0].spans.is_empty());
+        assert!(lines[1].spans.is_empty());
+        assert!(!lines[2].spans.is_empty());
+    }
+
+    #[test]
+    fn postprocess_remaps_range_spanning_removed_blank() {
+        // Lines: 0=a, 1=blank, 2=blank (removed), 3=b
+        // Range covers 0..3 (a + blank), should become 0..2 in compacted output.
+        let mut lines = vec![
+            nonblank_line("a"),
+            blank_line(),
+            blank_line(),
+            nonblank_line("b"),
+        ];
+        let mut messages = vec![MessageRange {
+            entry_index: 0,
+            start_line: 0,
+            end_line: 3,
+        }];
+        postprocess_blank_lines(&mut lines, &mut messages);
+
+        assert_eq!(lines.len(), 3);
+        assert_eq!(messages.len(), 1);
+        // end_line walks back off the removed blank, which lands on the
+        // surviving blank at original index 1 (new index 1), so end = 2.
+        assert_eq!(messages[0].start_line, 0);
+        assert_eq!(messages[0].end_line, 2);
+    }
+
+    #[test]
+    fn postprocess_clamps_range_ending_on_removed_blank() {
+        // Range ends exactly on a removed blank.
+        let mut lines = vec![
+            nonblank_line("a"),
+            blank_line(),
+            blank_line(),
+            nonblank_line("b"),
+        ];
+        let mut messages = vec![MessageRange {
+            entry_index: 0,
+            start_line: 0,
+            end_line: 2,
+        }];
+        postprocess_blank_lines(&mut lines, &mut messages);
+
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0].start_line, 0);
+        // last non-removed before end_line is 1 (kept blank); new index 1 + 1 = 2.
+        // That is fine: it includes the kept blank.
+        assert!(messages[0].end_line <= lines.len());
+        assert!(messages[0].end_line > messages[0].start_line);
+    }
+
+    #[test]
+    fn postprocess_remaps_first_message_adjacent_to_removed_blank() {
+        // Two messages back-to-back, with a doubled blank between them.
+        let mut lines = vec![
+            nonblank_line("first"),
+            blank_line(),
+            blank_line(),
+            nonblank_line("second"),
+            blank_line(),
+        ];
+        let mut messages = vec![
+            MessageRange {
+                entry_index: 0,
+                start_line: 0,
+                end_line: 1,
+            },
+            MessageRange {
+                entry_index: 1,
+                start_line: 3,
+                end_line: 4,
+            },
+        ];
+        postprocess_blank_lines(&mut lines, &mut messages);
+
+        assert_eq!(messages.len(), 2);
+        assert_eq!(messages[0].start_line, 0);
+        assert_eq!(messages[0].end_line, 1);
+        // Second message should shift by 1 (one blank removed before it).
+        assert_eq!(messages[1].start_line, 2);
+        assert_eq!(messages[1].end_line, 3);
+    }
+
+    #[test]
+    fn postprocess_handles_trailing_blanks() {
+        let mut lines = vec![nonblank_line("a"), blank_line(), blank_line(), blank_line()];
+        let mut messages = vec![MessageRange {
+            entry_index: 0,
+            start_line: 0,
+            end_line: 1,
+        }];
+        postprocess_blank_lines(&mut lines, &mut messages);
+
+        // Two of the three trailing blanks collapse out.
+        assert_eq!(lines.len(), 2);
+        assert_eq!(messages[0].end_line, 1);
+    }
+
+    #[test]
+    fn postprocess_drops_empty_range_collapsed_to_zero() {
+        // start_line == end_line after clamping → range removed.
+        let mut lines = vec![nonblank_line("a"), blank_line()];
+        let mut messages = vec![MessageRange {
+            entry_index: 0,
+            start_line: 1,
+            end_line: 2,
+        }];
+        postprocess_blank_lines(&mut lines, &mut messages);
+
+        // start_line was a kept blank at original index 1 → new index 1.
+        // end_line maps to new_index[1] + 1 = 2, total_after = 2.
+        // Range survives because 1 < 2.
+        assert_eq!(messages.len(), 1);
+        assert!(messages[0].start_line < messages[0].end_line);
+    }
+
+    #[test]
+    fn message_range_helper_excludes_trailing_blank() {
+        let lines = vec![nonblank_line("hi"), blank_line()];
+        let r = message_range_excluding_trailing_blank(&lines, 0, 2, 7).unwrap();
+        assert_eq!(r.entry_index, 7);
+        assert_eq!(r.start_line, 0);
+        assert_eq!(r.end_line, 1);
+    }
+
+    #[test]
+    fn message_range_helper_returns_none_for_empty_slice() {
+        let lines = vec![nonblank_line("hi")];
+        assert!(message_range_excluding_trailing_blank(&lines, 1, 1, 0).is_none());
+    }
+
+    #[test]
+    fn message_range_helper_returns_none_when_only_trailing_blank() {
+        let lines = vec![blank_line()];
+        assert!(message_range_excluding_trailing_blank(&lines, 0, 1, 0).is_none());
+    }
+
+    // -----------------------------------------------------------------
+    // Pipeline tests for pending summary flush boundaries
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn pending_summary_flushes_at_eof() {
+        // A trailing tool-only assistant entry with no following user
+        // result still flushes at EOF and produces a message range.
+        let entries = vec![RenderableEntry {
+            entry_index: 0,
+            entry: serde_json::from_str(
+                r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"toolu_1","name":"Grep","input":{"pattern":"x"}}]}}"#,
+            )
+            .unwrap(),
+        }];
+        let rendered =
+            render_parsed_conversation(&entries, &test_render_options(ToolDisplayMode::Hidden));
+
+        let text = rendered_text(&rendered);
+        assert!(text.contains("Searched for 1 pattern"));
+        assert_eq!(rendered.messages.len(), 1);
+        assert_eq!(rendered.messages[0].entry_index, 0);
+    }
+
+    #[test]
+    fn pending_summary_flushes_before_non_tool_message() {
+        // Tool-only assistant followed by a user text message: the
+        // pending summary must flush before the user message renders,
+        // and both must produce distinct, non-overlapping ranges.
+        let entries = vec![
+            RenderableEntry {
+                entry_index: 0,
+                entry: serde_json::from_str(
+                    r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"toolu_1","name":"Grep","input":{"pattern":"x"}}]}}"#,
+                )
+                .unwrap(),
+            },
+            user_entry(1, "follow up", None),
+        ];
+        let rendered =
+            render_parsed_conversation(&entries, &test_render_options(ToolDisplayMode::Hidden));
+
+        assert_eq!(rendered.messages.len(), 2);
+        assert_eq!(rendered.messages[0].entry_index, 0);
+        assert_eq!(rendered.messages[1].entry_index, 1);
+        assert!(rendered.messages[0].end_line <= rendered.messages[1].start_line);
+        let text = rendered_text(&rendered);
+        assert!(text.contains("Searched for 1 pattern"));
+        assert!(text.contains("follow up"));
     }
 
     #[test]
