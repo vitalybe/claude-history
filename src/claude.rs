@@ -68,6 +68,12 @@ pub enum LogEntry {
         #[serde(rename = "customTitle")]
         custom_title: String,
     },
+    #[serde(rename = "agent-name")]
+    AgentName {
+        #[allow(dead_code)]
+        #[serde(rename = "agentName")]
+        agent_name: String,
+    },
 }
 
 #[derive(Debug, Deserialize)]

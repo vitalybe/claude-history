@@ -156,9 +156,10 @@ fn render_list_mode(frame: &mut Frame, app: &App) {
         render_list_status_bar(frame, app, chunks[2]);
     }
 
-    // Render help overlay on top of everything if active
-    if *app.dialog_mode() == DialogMode::Help {
-        render_help_overlay(frame, false, false, app.keys());
+    match app.dialog_mode() {
+        DialogMode::Help => render_help_overlay(frame, false, false, app.keys()),
+        DialogMode::Rename { input, cursor } => render_rename_dialog(frame, input, *cursor),
+        _ => {}
     }
 }
 
@@ -195,6 +196,8 @@ fn render_list_status_bar(frame: &mut Frame, app: &App, area: Rect) {
         Span::styled(" resume  ", action_label),
         Span::styled(keys.fork.short_label(), action_key),
         Span::styled(" fork  ", action_label),
+        Span::styled("F2", action_key),
+        Span::styled(" rename  ", action_label),
         Span::styled(keys.delete.short_label(), action_key),
         Span::styled(" delete  ", action_label),
     ];
@@ -342,6 +345,7 @@ fn render_view_mode(frame: &mut Frame, app: &App, state: &ViewState) {
         DialogMode::ExportMenu { selected } => render_export_menu(frame, *selected, false),
         DialogMode::YankMenu { selected } => render_export_menu(frame, *selected, true),
         DialogMode::Help => render_help_overlay(frame, true, app.is_single_file_mode(), app.keys()),
+        DialogMode::Rename { input, cursor } => render_rename_dialog(frame, input, *cursor),
         DialogMode::None => {}
     }
 }
@@ -955,6 +959,55 @@ fn render_confirm_dialog(frame: &mut Frame, area: Rect) {
     frame.render_widget(paragraph, area);
 }
 
+fn render_rename_dialog(frame: &mut Frame, input: &str, cursor: usize) {
+    let area = frame.area();
+    let menu_width = area.width.saturating_sub(4).clamp(30, 70);
+    let menu_height = 5;
+    let menu_area = Rect {
+        x: (area.width.saturating_sub(menu_width)) / 2,
+        y: (area.height.saturating_sub(menu_height)) / 2,
+        width: menu_width,
+        height: menu_height,
+    };
+
+    frame.render_widget(Clear, menu_area);
+    let background = Block::default().style(Style::default().bg(rgb(th().overlay_bg)));
+    frame.render_widget(background, menu_area);
+
+    let block = Block::default()
+        .title(" Rename session ")
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(rgb(th().accent)));
+    let inner = block.inner(menu_area);
+    frame.render_widget(block, menu_area);
+
+    let input_width = inner.width.saturating_sub(2) as usize;
+    let display = simple_truncate(input, input_width);
+    let lines = vec![
+        Line::from(vec![
+            Span::raw(" "),
+            Span::styled(display, Style::default().fg(rgb(th().text_primary))),
+        ]),
+        Line::styled(
+            " Enter save · Esc cancel",
+            Style::default().fg(rgb(th().text_muted)),
+        ),
+    ];
+    frame.render_widget(Paragraph::new(lines), inner);
+
+    let cursor_offset: u16 = input
+        .chars()
+        .take(cursor)
+        .map(|c| UnicodeWidthChar::width(c).unwrap_or(0))
+        .sum::<usize>()
+        .min(input_width) as u16;
+    frame.set_cursor_position(Position::new(
+        inner.x.saturating_add(1).saturating_add(cursor_offset),
+        inner.y,
+    ));
+}
+
 fn render_export_menu(frame: &mut Frame, selected: usize, is_yank: bool) {
     let title = if is_yank {
         "Copy to clipboard"
@@ -1071,6 +1124,7 @@ fn render_help_overlay(
             ("Ctrl+W".into(), "Delete word"),
             (keys.resume.help_label(), "Resume"),
             (keys.fork.help_label(), "Fork resume"),
+            ("F2".into(), "Rename"),
             (keys.delete.help_label(), "Delete"),
             ("Esc".into(), "Quit"),
         ]

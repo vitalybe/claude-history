@@ -120,6 +120,7 @@ preview.
 | `p`            | Show file path                                     |
 | `Y`            | Copy file path to clipboard                        |
 | `I`            | Copy session ID to clipboard                       |
+| `F2`           | Rename selected session                            |
 | `Ctrl+R`       | Resume conversation                                |
 | `Ctrl+F`       | Fork and resume conversation                       |
 | `Ctrl+X`       | Delete conversation                                |

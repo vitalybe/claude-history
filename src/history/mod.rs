@@ -15,6 +15,7 @@ pub mod cache;
 mod loader;
 mod parser;
 pub mod path;
+mod rename;
 
 use crate::error::{AppError, Result};
 use chrono::{DateTime, Local};
@@ -28,6 +29,7 @@ pub use loader::{
 };
 pub use parser::process_conversation_file;
 pub use path::{convert_path_to_project_dir_name, format_short_name_from_path, is_same_project};
+pub use rename::append_session_rename;
 
 /// Represents a JSONL parsing error with context for debugging
 #[derive(Clone, Debug)]

@@ -43,6 +43,8 @@ pub enum DialogMode {
     YankMenu { selected: usize },
     /// Help overlay showing keyboard shortcuts
     Help,
+    /// Rename the selected conversation
+    Rename { input: String, cursor: usize },
 }
 
 /// Export format options for menus
@@ -690,6 +692,21 @@ impl App {
             .map(|&idx| self.conversations[idx].path.clone())
     }
 
+    fn get_selected_conversation_index(&self) -> Option<usize> {
+        self.selected
+            .and_then(|sel| self.filtered.get(sel))
+            .copied()
+    }
+
+    fn refresh_search_data(&mut self) {
+        self.searchable = search::precompute_search_text(&self.conversations);
+        let _ = self.search_tx.send(SearchCommand::UpdateData {
+            conversations: Arc::new(self.conversations.clone()),
+            searchable: Arc::new(self.searchable.clone()),
+        });
+        self.search_generation += 1;
+    }
+
     // Getters for UI access
     pub fn filtered(&self) -> &[usize] {
         &self.filtered
@@ -931,13 +948,7 @@ impl App {
         }
         // else: selected stays the same (now pointing to next item)
 
-        // Sync updated data to the background search worker and bump generation
-        // to discard any in-flight results computed against stale data
-        let _ = self.search_tx.send(SearchCommand::UpdateData {
-            conversations: Arc::new(self.conversations.clone()),
-            searchable: Arc::new(self.searchable.clone()),
-        });
-        self.search_generation += 1;
+        self.refresh_search_data();
     }
 
     /// Handle a key event during confirmation mode
@@ -1022,6 +1033,126 @@ impl App {
         }
     }
 
+    fn start_rename(&mut self) {
+        let Some(idx) = self.get_selected_conversation_index() else {
+            return;
+        };
+        let input = self.conversations[idx]
+            .custom_title
+            .clone()
+            .unwrap_or_default();
+        let cursor = input.chars().count();
+        self.dialog_mode = DialogMode::Rename { input, cursor };
+    }
+
+    fn handle_rename_key(&mut self, code: KeyCode, modifiers: KeyModifiers) -> Option<Action> {
+        match code {
+            KeyCode::Esc => {
+                self.dialog_mode = DialogMode::None;
+            }
+            KeyCode::Char('c') if modifiers.contains(KeyModifiers::CONTROL) => {
+                self.dialog_mode = DialogMode::None;
+            }
+            KeyCode::Enter => self.submit_rename(),
+            KeyCode::Left => {
+                if let DialogMode::Rename { cursor, .. } = &mut self.dialog_mode {
+                    *cursor = cursor.saturating_sub(1);
+                }
+            }
+            KeyCode::Right => {
+                if let DialogMode::Rename { input, cursor } = &mut self.dialog_mode {
+                    *cursor = (*cursor + 1).min(input.chars().count());
+                }
+            }
+            KeyCode::Char('u') if modifiers.contains(KeyModifiers::CONTROL) => {
+                if let DialogMode::Rename { input, cursor } = &mut self.dialog_mode {
+                    input.clear();
+                    *cursor = 0;
+                }
+            }
+            KeyCode::Home | KeyCode::Char('a') if modifiers.contains(KeyModifiers::CONTROL) => {
+                if let DialogMode::Rename { cursor, .. } = &mut self.dialog_mode {
+                    *cursor = 0;
+                }
+            }
+            KeyCode::End | KeyCode::Char('e') if modifiers.contains(KeyModifiers::CONTROL) => {
+                if let DialogMode::Rename { input, cursor } = &mut self.dialog_mode {
+                    *cursor = input.chars().count();
+                }
+            }
+            KeyCode::Backspace => {
+                if let DialogMode::Rename { input, cursor } = &mut self.dialog_mode
+                    && *cursor > 0
+                    && let Some((byte_pos, _)) = input.char_indices().nth(*cursor - 1)
+                {
+                    input.remove(byte_pos);
+                    *cursor -= 1;
+                }
+            }
+            KeyCode::Delete => {
+                if let DialogMode::Rename { input, cursor } = &mut self.dialog_mode
+                    && *cursor < input.chars().count()
+                    && let Some((byte_pos, _)) = input.char_indices().nth(*cursor)
+                {
+                    input.remove(byte_pos);
+                }
+            }
+            KeyCode::Char(ch) if modifiers.is_empty() || modifiers == KeyModifiers::SHIFT => {
+                if let DialogMode::Rename { input, cursor } = &mut self.dialog_mode {
+                    let byte_pos = input
+                        .char_indices()
+                        .nth(*cursor)
+                        .map(|(i, _)| i)
+                        .unwrap_or(input.len());
+                    input.insert(byte_pos, ch);
+                    *cursor += 1;
+                }
+            }
+            _ => {}
+        }
+        None
+    }
+
+    fn submit_rename(&mut self) {
+        let title = match &self.dialog_mode {
+            DialogMode::Rename { input, .. } => input.trim().to_string(),
+            _ => return,
+        };
+        let Some(idx) = self.get_selected_conversation_index() else {
+            self.dialog_mode = DialogMode::None;
+            return;
+        };
+        let path = self.conversations[idx].path.clone();
+
+        match crate::history::append_session_rename(&path, &title)
+            .and_then(|_| crate::history::process_conversation_file(path.clone(), None, None))
+        {
+            Ok(Some(mut conv)) => {
+                conv.index = idx;
+                conv.project_name = self.conversations[idx].project_name.clone();
+                conv.project_path = self.conversations[idx].project_path.clone();
+                self.conversations[idx] = conv;
+                self.dialog_mode = DialogMode::None;
+                self.status_message =
+                    Some(("Session renamed".to_string(), std::time::Instant::now()));
+                self.refresh_search_data();
+                self.update_filter();
+            }
+            Ok(None) => {
+                self.status_message = Some((
+                    "Failed to rename: conversation became empty".to_string(),
+                    std::time::Instant::now(),
+                ));
+            }
+            Err(e) => {
+                self.status_message = Some((
+                    format!("Failed to rename: {}", e),
+                    std::time::Instant::now(),
+                ));
+            }
+        }
+    }
+
     /// Perform export or yank operation
     fn perform_export(&mut self, option: usize, to_clipboard: bool) {
         let (path, options) = match &self.app_mode {
@@ -1064,6 +1195,7 @@ impl App {
                 return self.handle_menu_key(code);
             }
             DialogMode::Help => return self.handle_help_key(code),
+            DialogMode::Rename { .. } => return self.handle_rename_key(code, modifiers),
             DialogMode::None => {}
         }
 
@@ -1613,6 +1745,12 @@ impl App {
 
         // Normal handling when ready
         match code {
+            KeyCode::F(2) => {
+                if self.get_selected_path().is_some() {
+                    self.start_rename();
+                }
+                None
+            }
             KeyCode::Esc => {
                 if self.query.is_empty() {
                     Some(Action::Quit)
@@ -2732,6 +2870,127 @@ struct TerminalGuard {
 pub fn line_matches_query(line: &RenderedLine, query_lower: &str) -> bool {
     let full_text: String = line.spans.iter().map(|(text, _)| text.as_str()).collect();
     full_text.to_lowercase().contains(query_lower)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chrono::TimeZone;
+
+    fn test_conversation(path: PathBuf, custom_title: Option<String>) -> Conversation {
+        let mut full_text = "hello body".to_string();
+        if let Some(title) = &custom_title {
+            full_text = format!("{} {}", title, full_text);
+        }
+        Conversation {
+            path,
+            index: 0,
+            timestamp: Local.with_ymd_and_hms(2024, 1, 1, 0, 0, 0).unwrap(),
+            preview: "hello body".to_string(),
+            preview_first: "hello body".to_string(),
+            preview_last: "hello body".to_string(),
+            search_text_lower: search::normalize_for_search(&full_text),
+            full_text,
+            project_name: Some("project".to_string()),
+            project_path: None,
+            cwd: None,
+            message_count: 1,
+            parse_errors: Vec::new(),
+            summary: None,
+            custom_title,
+            model: None,
+            total_tokens: 0,
+            duration_minutes: None,
+        }
+    }
+
+    fn app_with_conversation(path: PathBuf, custom_title: Option<String>) -> App {
+        App::new(
+            vec![test_conversation(path, custom_title)],
+            ToolDisplayMode::Hidden,
+            false,
+            KeyBindings::default(),
+        )
+    }
+
+    fn write_conversation(path: &std::path::Path, title: Option<&str>) {
+        let mut lines = vec![r#"{"type":"user","timestamp":"2024-01-01T00:00:00Z","message":{"role":"user","content":"hello body"}}"#.to_string()];
+        if let Some(title) = title {
+            lines.push(format!(
+                r#"{{"type":"custom-title","customTitle":"{}","sessionId":"abc123"}}"#,
+                title
+            ));
+        }
+        std::fs::write(path, lines.join("\n") + "\n").unwrap();
+    }
+
+    #[test]
+    fn cancel_rename_keeps_existing_title() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("abc123.jsonl");
+        write_conversation(&path, Some("old"));
+        let mut app = app_with_conversation(path, Some("old".to_string()));
+
+        app.start_rename();
+        assert!(matches!(app.dialog_mode, DialogMode::Rename { .. }));
+        app.handle_rename_key(KeyCode::Esc, KeyModifiers::empty());
+
+        assert_eq!(app.conversations[0].custom_title, Some("old".to_string()));
+        assert_eq!(app.dialog_mode, DialogMode::None);
+    }
+
+    #[test]
+    fn bare_r_remains_search_input() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("abc123.jsonl");
+        write_conversation(&path, None);
+        let mut app = app_with_conversation(path, None);
+
+        app.handle_key(KeyCode::Char('r'), KeyModifiers::empty(), 10);
+
+        assert_eq!(app.query(), "r");
+        assert_eq!(app.dialog_mode, DialogMode::None);
+    }
+
+    #[test]
+    fn submit_rename_reparses_and_updates_search_index() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("abc123.jsonl");
+        write_conversation(&path, Some("old"));
+        let mut app = app_with_conversation(path.clone(), Some("old".to_string()));
+
+        app.start_rename();
+        app.handle_rename_key(KeyCode::Char('u'), KeyModifiers::CONTROL);
+        app.handle_rename_key(KeyCode::Char('n'), KeyModifiers::empty());
+        app.handle_rename_key(KeyCode::Char('e'), KeyModifiers::empty());
+        app.handle_rename_key(KeyCode::Char('w'), KeyModifiers::empty());
+        app.handle_rename_key(KeyCode::Enter, KeyModifiers::empty());
+
+        assert_eq!(app.conversations[0].custom_title, Some("new".to_string()));
+        assert!(
+            search::search(&app.conversations, &app.searchable, "new", Local::now()).contains(&0)
+        );
+        assert!(
+            search::search(&app.conversations, &app.searchable, "old", Local::now()).is_empty()
+        );
+    }
+
+    #[test]
+    fn submit_empty_rename_clears_searchable_title() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("abc123.jsonl");
+        write_conversation(&path, Some("old"));
+        let mut app = app_with_conversation(path.clone(), Some("old".to_string()));
+
+        app.start_rename();
+        app.handle_rename_key(KeyCode::Char('u'), KeyModifiers::CONTROL);
+        app.handle_rename_key(KeyCode::Enter, KeyModifiers::empty());
+
+        assert_eq!(app.conversations[0].custom_title, None);
+        assert!(
+            search::search(&app.conversations, &app.searchable, "old", Local::now()).is_empty()
+        );
+    }
 }
 
 impl TerminalGuard {

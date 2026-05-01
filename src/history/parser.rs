@@ -234,6 +234,7 @@ pub(crate) fn process_conversation_reader<R: BufRead>(
                             Some(trimmed.to_owned())
                         };
                     }
+                    LogEntry::AgentName { .. } => {}
                     LogEntry::System { .. } => {}
                     _ => {}
                 }
@@ -1144,6 +1145,21 @@ mod tests {
 
         let conv = parse_jsonl(&content).unwrap().unwrap();
         assert!(conv.custom_title.is_none(), "Should have no custom title");
+    }
+
+    #[test]
+    fn parses_agent_name_metadata() {
+        let content = [
+            user_msg("Hello", None),
+            assistant_msg("Hi there"),
+            r#"{"type":"custom-title","customTitle":"renamed","sessionId":"abc"}"#.to_string(),
+            r#"{"type":"agent-name","agentName":"renamed","sessionId":"abc"}"#.to_string(),
+        ]
+        .join("\n");
+
+        let conv = parse_jsonl(&content).unwrap().unwrap();
+        assert_eq!(conv.custom_title, Some("renamed".to_string()));
+        assert!(conv.parse_errors.is_empty());
     }
 
     // === ToolResult search indexing ===
