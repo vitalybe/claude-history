@@ -616,18 +616,16 @@ fn render_view_content(frame: &mut Frame, state: &ViewState, area: Rect) {
                 );
             }
 
+            let mut line = Line::from(spans);
             if rendered
                 .tool_output_id
                 .as_ref()
                 .is_some_and(|id| state.hovered_tool_output.as_ref() == Some(id))
             {
-                spans = spans
-                    .into_iter()
-                    .map(|span| span.patch_style(Style::default().underlined()))
-                    .collect();
+                line = line.style(Style::default().bg(rgb(th().selection_bg)));
             }
 
-            Line::from(spans)
+            line
         })
         .collect();
 
