@@ -5,7 +5,6 @@
 //! without using ANSI escape codes.
 
 use crate::claude::LogEntry;
-use crate::tui::app::RenderedLine;
 use std::collections::BTreeSet;
 use std::fs::File;
 use std::io::{BufRead, BufReader};
@@ -17,8 +16,11 @@ mod commands;
 mod entry;
 mod ledger;
 mod markdown;
+mod output;
 mod summary;
 mod tools;
+
+pub use output::{LineStyle, RenderedLine};
 
 use entry::{render_entry, subagent_label};
 use summary::{
@@ -905,7 +907,7 @@ mod tests {
     // so subsequent refactors of the viewer can detect drift.
     // -----------------------------------------------------------------
 
-    fn line_style_at<'a>(line: &'a RenderedLine, text: &str) -> &'a crate::tui::app::LineStyle {
+    fn line_style_at<'a>(line: &'a RenderedLine, text: &str) -> &'a LineStyle {
         &line
             .spans
             .iter()

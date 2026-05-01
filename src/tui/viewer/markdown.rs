@@ -1,6 +1,4 @@
-use crate::tui::app::LineStyle;
-
-use super::th;
+use super::{LineStyle, th};
 
 /// A line with styled spans from markdown rendering
 pub(super) struct StyledLine {

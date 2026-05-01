@@ -1,9 +1,8 @@
 use crate::config::KeyBindings;
-use crate::tui::app::{
-    App, AppMode, DialogMode, LineStyle, LoadingState, RenderedLine, ViewSearchMode, ViewState,
-};
+use crate::tui::app::{App, AppMode, DialogMode, LoadingState, ViewSearchMode, ViewState};
 use crate::tui::search::normalize_for_search;
 use crate::tui::theme::{self, Theme};
+use crate::tui::viewer::{LineStyle, RenderedLine};
 use chrono::{DateTime, Local};
 use ratatui::layout::Position;
 use ratatui::prelude::*;

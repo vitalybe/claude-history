@@ -1,7 +1,5 @@
-use crate::tui::app::{LineStyle, RenderedLine};
-
 use super::markdown::StyledLine;
-use super::{NAME_WIDTH, TIMESTAMP_WIDTH, ToolOutputId, th};
+use super::{LineStyle, NAME_WIDTH, RenderedLine, TIMESTAMP_WIDTH, ToolOutputId, th};
 
 /// Render ledger block with styled markdown lines
 pub(super) fn render_ledger_block_styled(

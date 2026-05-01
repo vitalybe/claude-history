@@ -1,5 +1,4 @@
 use crate::claude::{ContentBlock, LogEntry, UserContent};
-use crate::tui::app::{LineStyle, RenderedLine};
 
 use super::ledger::push_line;
 use super::tools::{

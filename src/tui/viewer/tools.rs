@@ -1,5 +1,4 @@
 use crate::tool_format;
-use crate::tui::app::{LineStyle, RenderedLine};
 
 use super::ledger::{push_line, render_truncation_indicator};
 use super::markdown::render_markdown_to_lines;

@@ -1,5 +1,6 @@
 use crate::claude::{self, AssistantMessage, ContentBlock, LogEntry, UserContent};
-use crate::tui::app::RenderedLine;
+
+use super::RenderedLine;
 
 use super::commands::process_command_message;
 use super::ledger::{
