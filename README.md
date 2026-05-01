@@ -243,9 +243,11 @@ Options:
 ### Showing tool calls
 
 In the TUI viewer, tool calls default to **truncated** mode — showing the tool
-header plus the first few body lines with a "(N more lines...)" indicator. Press
-`t` to cycle through modes: off → truncated → full. Use `--show-tools` (or `-t`)
-to start in full mode, or `--no-tools` to start with tools hidden.
+header plus the first few body lines with a "(N more lines...)" indicator. Click
+a truncated tool call/result to expand that specific output, and click it again
+to collapse it. Press `t` to cycle through modes: off → truncated → full. Use
+`--show-tools` (or `-t`) to start in full mode, or `--no-tools` to start with
+tools hidden.
 
 ### Showing thinking blocks and subagent messages
 

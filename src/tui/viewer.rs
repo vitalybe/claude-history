@@ -7,6 +7,7 @@
 use crate::claude::{self, AssistantMessage, ContentBlock, LogEntry, UserContent};
 use crate::tool_format;
 use crate::tui::app::{LineStyle, RenderedLine};
+use std::collections::BTreeSet;
 use std::fs::File;
 use std::io::{BufRead, BufReader};
 use std::path::Path;
@@ -29,6 +30,24 @@ fn th() -> &'static Theme {
 const TRUNCATED_BODY_LINES: usize = 3;
 /// Maximum result lines shown in truncated tool result mode
 const TRUNCATED_RESULT_LINES: usize = 4;
+
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct ToolOutputId(pub String);
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ToolOutputKind {
+    ToolCall,
+    ToolResult,
+}
+
+impl ToolOutputKind {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::ToolCall => "call",
+            Self::ToolResult => "result",
+        }
+    }
+}
 
 /// Controls how tool calls and results are displayed
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -70,6 +89,7 @@ pub struct RenderOptions {
     pub show_thinking: bool,
     pub show_timing: bool,
     pub content_width: usize,
+    pub expanded_tool_outputs: BTreeSet<ToolOutputId>,
 }
 
 /// Tracks the line range of a single message (User or Assistant entry) in the rendered output
@@ -120,7 +140,7 @@ pub fn render_conversation(
                 || matches!(&entry, LogEntry::Progress { data, .. }
                     if options.show_thinking && crate::claude::parse_agent_progress(data).is_some());
             let start_line = lines.len();
-            render_entry(&mut lines, &entry, options);
+            render_entry(&mut lines, entry_index, &entry, options);
             let end_line = lines.len();
 
             // Track message ranges (exclude trailing blank line from the range)
@@ -211,7 +231,27 @@ pub fn render_conversation(
     Ok(RenderedConversation { lines, messages })
 }
 
-fn render_entry(lines: &mut Vec<RenderedLine>, entry: &LogEntry, options: &RenderOptions) {
+fn make_tool_output_id(
+    entry_index: usize,
+    parent_id: Option<&str>,
+    block_index: usize,
+    kind: ToolOutputKind,
+    raw_id: Option<&str>,
+) -> ToolOutputId {
+    let parent = parent_id.unwrap_or("top");
+    let raw = raw_id.unwrap_or("none");
+    ToolOutputId(format!(
+        "entry:{entry_index}:parent:{parent}:block:{block_index}:kind:{}:id:{raw}",
+        kind.as_str()
+    ))
+}
+
+fn render_entry(
+    lines: &mut Vec<RenderedLine>,
+    entry_index: usize,
+    entry: &LogEntry,
+    options: &RenderOptions,
+) {
     match entry {
         LogEntry::Summary { .. }
         | LogEntry::FileHistorySnapshot { .. }
@@ -223,7 +263,7 @@ fn render_entry(lines: &mut Vec<RenderedLine>, entry: &LogEntry, options: &Rende
             if options.show_thinking
                 && let Some(agent_progress) = crate::claude::parse_agent_progress(data)
             {
-                render_agent_message(lines, &agent_progress, options);
+                render_agent_message(lines, entry_index, &agent_progress, options);
             }
         }
         LogEntry::User {
@@ -247,6 +287,7 @@ fn render_entry(lines: &mut Vec<RenderedLine>, entry: &LogEntry, options: &Rende
                 options,
                 ts.as_deref(),
                 parent_tool_use_id.as_deref(),
+                entry_index,
             );
         }
         LogEntry::Assistant {
@@ -270,6 +311,7 @@ fn render_entry(lines: &mut Vec<RenderedLine>, entry: &LogEntry, options: &Rende
                 options,
                 ts.as_deref(),
                 parent_tool_use_id.as_deref(),
+                entry_index,
             );
         }
     }
@@ -281,6 +323,7 @@ fn render_user_message(
     options: &RenderOptions,
     timestamp: Option<&str>,
     parent_id: Option<&str>,
+    entry_index: usize,
 ) {
     let mut printed = false;
     let mut ts_remaining = timestamp;
@@ -352,8 +395,21 @@ fn render_user_message(
     if options.tool_display.is_visible()
         && let UserContent::Blocks(blocks) = &message.content
     {
-        for block in blocks {
-            if let ContentBlock::ToolResult { content, .. } = block {
+        for (block_idx, block) in blocks.iter().enumerate() {
+            if let ContentBlock::ToolResult {
+                content,
+                tool_use_id,
+                ..
+            } = block
+            {
+                let output_id = make_tool_output_id(
+                    entry_index,
+                    parent_id,
+                    block_idx,
+                    ToolOutputKind::ToolResult,
+                    Some(tool_use_id),
+                );
+                let expanded = options.expanded_tool_outputs.contains(&output_id);
                 if nested_label.is_some() {
                     // Dimmed tool result for subagent
                     let content_str = format_tool_result_content(content.as_ref());
@@ -364,23 +420,36 @@ fn render_user_message(
                         "<Result>",
                         options.show_timing,
                     );
-                    if options.tool_display == ToolDisplayMode::Truncated {
+                    if options.tool_display == ToolDisplayMode::Truncated && !expanded {
                         let content_lines: Vec<&str> = content_str.lines().collect();
                         let total = content_lines.len();
                         if total > TRUNCATED_RESULT_LINES {
                             let truncated = content_lines[..TRUNCATED_RESULT_LINES].join("\n");
-                            render_continuation_dimmed(lines, &truncated, options.show_timing);
+                            render_continuation_dimmed(
+                                lines,
+                                &truncated,
+                                options.show_timing,
+                                Some(&output_id),
+                            );
                             render_truncation_indicator(
                                 lines,
                                 total - TRUNCATED_RESULT_LINES,
                                 true,
                                 options.show_timing,
+                                Some(&output_id),
                             );
                         } else {
-                            render_continuation_dimmed(lines, &content_str, options.show_timing);
+                            render_continuation_dimmed(
+                                lines,
+                                &content_str,
+                                options.show_timing,
+                                None,
+                            );
                         }
                     } else {
-                        render_continuation_dimmed(lines, &content_str, options.show_timing);
+                        let id = (options.tool_display == ToolDisplayMode::Truncated)
+                            .then_some(&output_id);
+                        render_continuation_dimmed(lines, &content_str, options.show_timing, id);
                     }
                 } else {
                     let content_str = match extract_tool_result_text(content.as_ref()) {
@@ -403,6 +472,8 @@ fn render_user_message(
                         options.content_width,
                         ts,
                         options.tool_display,
+                        &output_id,
+                        expanded,
                     );
                 }
                 printed = true;
@@ -411,7 +482,7 @@ fn render_user_message(
     }
 
     if printed {
-        lines.push(RenderedLine { spans: vec![] }); // Empty line after message
+        lines.push(RenderedLine::new(vec![])); // Empty line after message
     }
 }
 
@@ -457,6 +528,7 @@ fn render_assistant_message(
     options: &RenderOptions,
     timestamp: Option<&str>,
     parent_id: Option<&str>,
+    entry_index: usize,
 ) {
     let mut printed = false;
     let mut ts_remaining = timestamp;
@@ -497,8 +569,16 @@ fn render_assistant_message(
 
     // Tool calls (if enabled)
     if options.tool_display.is_visible() {
-        for block in &message.content {
-            if let ContentBlock::ToolUse { name, input, .. } = block {
+        for (block_idx, block) in message.content.iter().enumerate() {
+            if let ContentBlock::ToolUse { id, name, input } = block {
+                let output_id = make_tool_output_id(
+                    entry_index,
+                    parent_id,
+                    block_idx,
+                    ToolOutputKind::ToolCall,
+                    Some(id),
+                );
+                let expanded = options.expanded_tool_outputs.contains(&output_id);
                 if let Some(ref label) = nested_label {
                     let align_ts = if options.show_timing {
                         Some("     ")
@@ -515,6 +595,8 @@ fn render_assistant_message(
                         options.content_width,
                         align_ts,
                         options.tool_display,
+                        &output_id,
+                        expanded,
                     );
                 } else {
                     // Pass timestamp to first tool call if no text block consumed it
@@ -537,6 +619,8 @@ fn render_assistant_message(
                         options.content_width,
                         ts,
                         options.tool_display,
+                        &output_id,
+                        expanded,
                     );
                 }
                 printed = true;
@@ -577,7 +661,7 @@ fn render_assistant_message(
     }
 
     if printed {
-        lines.push(RenderedLine { spans: vec![] });
+        lines.push(RenderedLine::new(vec![]));
     }
 }
 
@@ -710,7 +794,7 @@ fn render_ledger_block_styled(
             }
         }
 
-        lines.push(RenderedLine { spans });
+        lines.push(RenderedLine::new(spans));
     }
 
     // If no lines, still output at least the name
@@ -746,7 +830,20 @@ fn render_ledger_block_styled(
                 ..Default::default()
             },
         ));
-        lines.push(RenderedLine { spans });
+        lines.push(RenderedLine::new(spans));
+    }
+}
+
+fn push_line(
+    lines: &mut Vec<RenderedLine>,
+    spans: Vec<(String, LineStyle)>,
+    tool_output_id: Option<&ToolOutputId>,
+    clickable: bool,
+) {
+    if let Some(id) = tool_output_id {
+        lines.push(RenderedLine::tool_output(spans, id.clone(), clickable));
+    } else {
+        lines.push(RenderedLine::new(spans));
     }
 }
 
@@ -756,6 +853,7 @@ fn render_truncation_indicator(
     remaining: usize,
     dimmed: bool,
     show_timing: bool,
+    tool_output_id: Option<&ToolOutputId>,
 ) {
     let mut spans = Vec::new();
 
@@ -780,7 +878,7 @@ fn render_truncation_indicator(
         },
     ));
 
-    lines.push(RenderedLine { spans });
+    push_line(lines, spans, tool_output_id, tool_output_id.is_some());
 }
 
 /// Render a formatted tool call with proper styling
@@ -795,6 +893,8 @@ fn render_tool_call(
     content_width: usize,
     timestamp: Option<&str>,
     tool_display: ToolDisplayMode,
+    tool_output_id: &ToolOutputId,
+    expanded: bool,
 ) {
     let formatted = tool_format::format_tool_call(name, input, content_width);
 
@@ -844,7 +944,7 @@ fn render_tool_call(
         },
     ));
 
-    lines.push(RenderedLine { spans });
+    push_line(lines, spans, Some(tool_output_id), false);
 
     // Render the body if present, with empty line separator
     if let Some(body) = formatted.body {
@@ -864,31 +964,47 @@ fn render_tool_call(
                 ..Default::default()
             },
         ));
-        lines.push(RenderedLine { spans: empty_spans });
+        push_line(lines, empty_spans, Some(tool_output_id), false);
 
-        if tool_display == ToolDisplayMode::Truncated {
+        if tool_display == ToolDisplayMode::Truncated && !expanded {
             let body_lines: Vec<&str> = body.lines().collect();
             let total = body_lines.len();
             if total > TRUNCATED_BODY_LINES {
                 let truncated = body_lines[..TRUNCATED_BODY_LINES].join("\n");
-                render_tool_body(lines, &truncated, dimmed, show_timing);
+                render_tool_body(
+                    lines,
+                    &truncated,
+                    dimmed,
+                    show_timing,
+                    Some(tool_output_id),
+                    true,
+                );
                 render_truncation_indicator(
                     lines,
                     total - TRUNCATED_BODY_LINES,
                     dimmed,
                     show_timing,
+                    Some(tool_output_id),
                 );
             } else {
-                render_tool_body(lines, &body, dimmed, show_timing);
+                render_tool_body(lines, &body, dimmed, show_timing, None, false);
             }
         } else {
-            render_tool_body(lines, &body, dimmed, show_timing);
+            let id = (tool_display == ToolDisplayMode::Truncated).then_some(tool_output_id);
+            render_tool_body(lines, &body, dimmed, show_timing, id, id.is_some());
         }
     }
 }
 
 /// Render tool body with diff-aware coloring
-fn render_tool_body(lines: &mut Vec<RenderedLine>, text: &str, dimmed: bool, show_timing: bool) {
+fn render_tool_body(
+    lines: &mut Vec<RenderedLine>,
+    text: &str,
+    dimmed: bool,
+    show_timing: bool,
+    tool_output_id: Option<&ToolOutputId>,
+    clickable: bool,
+) {
     for line in text.lines() {
         let mut spans = Vec::new();
 
@@ -939,7 +1055,7 @@ fn render_tool_body(lines: &mut Vec<RenderedLine>, text: &str, dimmed: bool, sho
             ));
         }
 
-        lines.push(RenderedLine { spans });
+        push_line(lines, spans, tool_output_id, clickable);
     }
 }
 
@@ -950,6 +1066,8 @@ fn render_tool_result(
     content_width: usize,
     timestamp: Option<&str>,
     tool_display: ToolDisplayMode,
+    tool_output_id: &ToolOutputId,
+    expanded: bool,
 ) {
     // Fence plain text tool results to prevent markdown misinterpretation.
     // If the result already contains fenced code blocks, assume it's intentional markdown.
@@ -962,7 +1080,10 @@ fn render_tool_result(
     let styled_lines = render_markdown_to_lines(&text, content_width);
 
     let total = styled_lines.len();
-    let limit = if tool_display == ToolDisplayMode::Truncated && total > TRUNCATED_RESULT_LINES {
+    let limit = if tool_display == ToolDisplayMode::Truncated
+        && !expanded
+        && total > TRUNCATED_RESULT_LINES
+    {
         TRUNCATED_RESULT_LINES
     } else {
         total
@@ -1016,11 +1137,19 @@ fn render_tool_result(
             spans.push((text.clone(), style.clone()));
         }
 
-        lines.push(RenderedLine { spans });
+        let clickable = tool_display == ToolDisplayMode::Truncated && (expanded || limit < total);
+        let id = clickable.then_some(tool_output_id);
+        push_line(lines, spans, id, clickable);
     }
 
     if limit < total {
-        render_truncation_indicator(lines, total - limit, false, timestamp.is_some());
+        render_truncation_indicator(
+            lines,
+            total - limit,
+            false,
+            timestamp.is_some(),
+            Some(tool_output_id),
+        );
     }
 }
 
@@ -1037,6 +1166,7 @@ fn subagent_label(parent_tool_use_id: &str) -> String {
 /// Render agent (subagent) progress message
 fn render_agent_message(
     lines: &mut Vec<RenderedLine>,
+    entry_index: usize,
     agent_progress: &crate::claude::AgentProgressData,
     options: &RenderOptions,
 ) {
@@ -1079,8 +1209,21 @@ fn render_agent_message(
 
             // Tool results
             if options.tool_display.is_visible() {
-                for block in blocks {
-                    if let ContentBlock::ToolResult { content, .. } = block {
+                for (block_idx, block) in blocks.iter().enumerate() {
+                    if let ContentBlock::ToolResult {
+                        content,
+                        tool_use_id,
+                        ..
+                    } = block
+                    {
+                        let output_id = make_tool_output_id(
+                            entry_index,
+                            Some(agent_id),
+                            block_idx,
+                            ToolOutputKind::ToolResult,
+                            Some(tool_use_id),
+                        );
+                        let expanded = options.expanded_tool_outputs.contains(&output_id);
                         render_ledger_block_plain_dimmed(
                             lines,
                             "  ↳ Tool",
@@ -1089,27 +1232,41 @@ fn render_agent_message(
                             options.show_timing,
                         );
                         let content_str = format_tool_result_content(content.as_ref());
-                        if options.tool_display == ToolDisplayMode::Truncated {
+                        if options.tool_display == ToolDisplayMode::Truncated && !expanded {
                             let content_lines: Vec<&str> = content_str.lines().collect();
                             let total = content_lines.len();
                             if total > TRUNCATED_RESULT_LINES {
                                 let truncated = content_lines[..TRUNCATED_RESULT_LINES].join("\n");
-                                render_continuation_dimmed(lines, &truncated, options.show_timing);
+                                render_continuation_dimmed(
+                                    lines,
+                                    &truncated,
+                                    options.show_timing,
+                                    Some(&output_id),
+                                );
                                 render_truncation_indicator(
                                     lines,
                                     total - TRUNCATED_RESULT_LINES,
                                     true,
                                     options.show_timing,
+                                    Some(&output_id),
                                 );
                             } else {
                                 render_continuation_dimmed(
                                     lines,
                                     &content_str,
                                     options.show_timing,
+                                    None,
                                 );
                             }
                         } else {
-                            render_continuation_dimmed(lines, &content_str, options.show_timing);
+                            let id = (options.tool_display == ToolDisplayMode::Truncated)
+                                .then_some(&output_id);
+                            render_continuation_dimmed(
+                                lines,
+                                &content_str,
+                                options.show_timing,
+                                id,
+                            );
                         }
                         printed = true;
                     }
@@ -1152,8 +1309,16 @@ fn render_agent_message(
                 } else {
                     None
                 };
-                for block in blocks {
-                    if let ContentBlock::ToolUse { name, input, .. } = block {
+                for (block_idx, block) in blocks.iter().enumerate() {
+                    if let ContentBlock::ToolUse { id, name, input } = block {
+                        let output_id = make_tool_output_id(
+                            entry_index,
+                            Some(agent_id),
+                            block_idx,
+                            ToolOutputKind::ToolCall,
+                            Some(id),
+                        );
+                        let expanded = options.expanded_tool_outputs.contains(&output_id);
                         let label = format!("↳{}", short_id);
                         render_tool_call(
                             lines,
@@ -1165,6 +1330,8 @@ fn render_agent_message(
                             options.content_width,
                             align_ts,
                             options.tool_display,
+                            &output_id,
+                            expanded,
                         );
                         printed = true;
                     }
@@ -1175,7 +1342,7 @@ fn render_agent_message(
     }
 
     if printed {
-        lines.push(RenderedLine { spans: vec![] });
+        lines.push(RenderedLine::new(vec![]));
     }
 }
 
@@ -1224,7 +1391,7 @@ fn render_ledger_block_styled_dimmed(
             spans.push((text, style));
         }
 
-        lines.push(RenderedLine { spans });
+        lines.push(RenderedLine::new(spans));
     }
 
     if styled_lines.is_empty() {
@@ -1249,7 +1416,7 @@ fn render_ledger_block_styled_dimmed(
                 ..Default::default()
             },
         ));
-        lines.push(RenderedLine { spans });
+        lines.push(RenderedLine::new(spans));
     }
 }
 
@@ -1301,12 +1468,17 @@ fn render_ledger_block_plain_dimmed(
             },
         ));
 
-        lines.push(RenderedLine { spans });
+        lines.push(RenderedLine::new(spans));
     }
 }
 
 /// Render continuation lines (dimmed for subagents)
-fn render_continuation_dimmed(lines: &mut Vec<RenderedLine>, text: &str, show_timing: bool) {
+fn render_continuation_dimmed(
+    lines: &mut Vec<RenderedLine>,
+    text: &str,
+    show_timing: bool,
+    tool_output_id: Option<&ToolOutputId>,
+) {
     for line_text in text.lines() {
         let mut spans = Vec::new();
 
@@ -1337,7 +1509,7 @@ fn render_continuation_dimmed(lines: &mut Vec<RenderedLine>, text: &str, show_ti
             },
         ));
 
-        lines.push(RenderedLine { spans });
+        push_line(lines, spans, tool_output_id, tool_output_id.is_some());
     }
 }
 
@@ -1713,6 +1885,62 @@ mod tests {
         eprintln!("Table output:\n{}", result);
         assert!(result.contains('├'), "Expected row separators");
         assert!(result.contains('┼'), "Expected cross junctions");
+    }
+
+    fn line_text(line: &RenderedLine) -> String {
+        line.spans.iter().map(|(text, _)| text.as_str()).collect()
+    }
+
+    #[test]
+    fn tool_call_metadata_tracks_truncated_and_expanded_state() {
+        let input = serde_json::json!({"command":"one\ntwo\nthree\nfour\nfive"});
+        let output_id = make_tool_output_id(0, None, 0, ToolOutputKind::ToolCall, Some("toolu_1"));
+        let mut lines = Vec::new();
+        render_tool_call(
+            &mut lines,
+            "Bash",
+            &input,
+            "Claude",
+            th().accent_dim,
+            false,
+            80,
+            None,
+            ToolDisplayMode::Truncated,
+            &output_id,
+            false,
+        );
+        assert!(
+            lines
+                .iter()
+                .any(|line| line_text(line).contains("more lines"))
+        );
+        assert!(
+            lines
+                .iter()
+                .any(|line| line.clickable && line.tool_output_id.as_ref() == Some(&output_id))
+        );
+        assert!(!lines.iter().any(|line| line_text(line).contains("five")));
+
+        let mut expanded = Vec::new();
+        render_tool_call(
+            &mut expanded,
+            "Bash",
+            &input,
+            "Claude",
+            th().accent_dim,
+            false,
+            80,
+            None,
+            ToolDisplayMode::Truncated,
+            &output_id,
+            true,
+        );
+        assert!(
+            !expanded
+                .iter()
+                .any(|line| line_text(line).contains("more lines"))
+        );
+        assert!(expanded.iter().any(|line| line_text(line).contains("five")));
     }
 
     #[test]

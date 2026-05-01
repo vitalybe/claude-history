@@ -6,7 +6,7 @@ use crate::history::{
 };
 use crate::tui::search::{self, SearchableConversation};
 use crate::tui::ui;
-use crate::tui::viewer::{MessageRange, ToolDisplayMode};
+use crate::tui::viewer::{MessageRange, ToolDisplayMode, ToolOutputId};
 use chrono::Local;
 use crossterm::event::{
     self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEventKind, KeyModifiers,
@@ -14,7 +14,7 @@ use crossterm::event::{
 };
 use crossterm::terminal::{self, EnterAlternateScreen, LeaveAlternateScreen};
 use ratatui::prelude::*;
-use std::collections::HashSet;
+use std::collections::{BTreeSet, HashSet};
 use std::io::{self, Stdout};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -57,6 +57,7 @@ const EXPORT_OPTIONS: [&str; 4] = [
 
 /// Main application mode
 #[derive(Clone, Debug)]
+#[allow(clippy::large_enum_variant)]
 pub enum AppMode {
     /// List mode - browsing conversations
     List,
@@ -97,6 +98,10 @@ pub struct ViewState {
     pub focused_message: Option<usize>,
     /// Whether message navigation mode is active (shows gutter indicator)
     pub message_nav_active: bool,
+    /// Tool outputs expanded independently from global tool display mode
+    pub expanded_tool_outputs: BTreeSet<ToolOutputId>,
+    /// Tool output currently under the mouse cursor
+    pub hovered_tool_output: Option<ToolOutputId>,
 }
 
 /// Search mode within view
@@ -114,6 +119,30 @@ pub enum ViewSearchMode {
 #[derive(Clone, Debug)]
 pub struct RenderedLine {
     pub spans: Vec<(String, LineStyle)>,
+    pub tool_output_id: Option<ToolOutputId>,
+    pub clickable: bool,
+}
+
+impl RenderedLine {
+    pub fn new(spans: Vec<(String, LineStyle)>) -> Self {
+        Self {
+            spans,
+            tool_output_id: None,
+            clickable: false,
+        }
+    }
+
+    pub fn tool_output(
+        spans: Vec<(String, LineStyle)>,
+        tool_output_id: ToolOutputId,
+        clickable: bool,
+    ) -> Self {
+        Self {
+            spans,
+            tool_output_id: Some(tool_output_id),
+            clickable,
+        }
+    }
 }
 
 /// Style information for a span
@@ -404,6 +433,8 @@ impl App {
                 message_ranges: Vec::new(),
                 focused_message: None,
                 message_nav_active: false,
+                expanded_tool_outputs: BTreeSet::new(),
+                hovered_tool_output: None,
             }),
             status_message: None,
             tool_display,
@@ -1976,6 +2007,7 @@ impl App {
             show_thinking: self.show_thinking,
             show_timing: self.show_timing,
             content_width,
+            expanded_tool_outputs: BTreeSet::new(),
         };
 
         match render_conversation(&path, &options) {
@@ -2002,6 +2034,8 @@ impl App {
                     message_ranges: rendered.messages,
                     focused_message: first_msg,
                     message_nav_active: false,
+                    expanded_tool_outputs: BTreeSet::new(),
+                    hovered_tool_output: None,
                 });
             }
             Err(e) => {
@@ -2129,6 +2163,7 @@ impl App {
                 show_thinking: state.show_thinking,
                 show_timing: state.show_timing,
                 content_width: state.content_width,
+                expanded_tool_outputs: state.expanded_tool_outputs.clone(),
             };
 
             // Capture an anchor against the current layout so we can restore the
@@ -2292,6 +2327,63 @@ impl App {
             AppMode::List => self.scroll_list(delta.signum()),
             AppMode::View(_) => self.scroll_view(delta, viewport_height),
         }
+    }
+
+    fn view_tool_output_at_row(&self, row: u16, frame_area: Rect) -> Option<(ToolOutputId, bool)> {
+        let AppMode::View(state) = &self.app_mode else {
+            return None;
+        };
+        if self.dialog_mode != DialogMode::None {
+            return None;
+        }
+        let layout = ui::view_layout_rects(frame_area, self, state);
+        if row < layout.content.y || row >= layout.content.y.saturating_add(layout.content.height) {
+            return None;
+        }
+        let rendered_idx = state.scroll_offset + (row - layout.content.y) as usize;
+        state.rendered_lines.get(rendered_idx).and_then(|line| {
+            if line.clickable {
+                line.tool_output_id.as_ref().map(|id| (id.clone(), true))
+            } else {
+                None
+            }
+        })
+    }
+
+    pub fn handle_view_mouse_move(&mut self, row: u16, frame_area: Rect) -> bool {
+        let next = self
+            .view_tool_output_at_row(row, frame_area)
+            .map(|(id, _)| id);
+        let AppMode::View(state) = &mut self.app_mode else {
+            return false;
+        };
+        if state.hovered_tool_output == next {
+            return false;
+        }
+        state.hovered_tool_output = next;
+        true
+    }
+
+    pub fn handle_view_click(
+        &mut self,
+        row: u16,
+        frame_area: Rect,
+        viewport_height: usize,
+    ) -> bool {
+        let Some((id, true)) = self.view_tool_output_at_row(row, frame_area) else {
+            return false;
+        };
+        let AppMode::View(state) = &mut self.app_mode else {
+            return false;
+        };
+        if state.expanded_tool_outputs.contains(&id) {
+            state.expanded_tool_outputs.remove(&id);
+        } else {
+            state.expanded_tool_outputs.insert(id.clone());
+        }
+        state.hovered_tool_output = Some(id);
+        self.re_render_view(viewport_height);
+        true
     }
 
     /// Handle a left-click in list mode: select the conversation under the cursor.
@@ -2904,7 +2996,7 @@ pub fn line_matches_query(line: &RenderedLine, query_lower: &str) -> bool {
 }
 
 #[cfg(test)]
-mod tests {
+mod interaction_tests {
     use super::*;
     use crate::config::KeyBinding;
     use chrono::TimeZone;
@@ -2942,6 +3034,7 @@ mod tests {
             ToolDisplayMode::Hidden,
             false,
             KeyBindings::default(),
+            vec![],
         )
     }
 
@@ -2954,6 +3047,95 @@ mod tests {
             ));
         }
         std::fs::write(path, lines.join("\n") + "\n").unwrap();
+    }
+
+    fn write_tool_conversation(path: &std::path::Path) {
+        let line = r#"{"type":"assistant","timestamp":"2024-01-01T00:00:00Z","message":{"role":"assistant","content":[{"type":"tool_use","id":"toolu_1","name":"Bash","input":{"command":"one\ntwo\nthree\nfour\nfive"}}]}}"#;
+        std::fs::write(path, format!("{line}\n")).unwrap();
+    }
+
+    fn app_with_tool_conversation(path: PathBuf) -> App {
+        let mut app = App::new(
+            vec![test_conversation(path, None)],
+            ToolDisplayMode::Truncated,
+            false,
+            KeyBindings::default(),
+            vec![],
+        );
+        app.selected = Some(0);
+        app.enter_view_mode(80);
+        app
+    }
+
+    #[test]
+    fn view_click_toggles_clickable_output() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("tool.jsonl");
+        write_tool_conversation(&path);
+        let mut app = app_with_tool_conversation(path);
+        let frame = Rect::new(0, 0, 120, 20);
+        let row = if let AppMode::View(state) = app.app_mode() {
+            let layout = ui::view_layout_rects(frame, &app, state);
+            let idx = state
+                .rendered_lines
+                .iter()
+                .position(|line| line.clickable)
+                .unwrap();
+            layout.content.y + (idx - state.scroll_offset) as u16
+        } else {
+            unreachable!()
+        };
+
+        assert!(app.handle_view_click(row, frame, 17));
+        let expanded_id = if let AppMode::View(state) = app.app_mode() {
+            assert_eq!(state.expanded_tool_outputs.len(), 1);
+            let id = state.expanded_tool_outputs.iter().next().unwrap().clone();
+            let text: String = state
+                .rendered_lines
+                .iter()
+                .flat_map(|line| line.spans.iter().map(|(text, _)| text.as_str()))
+                .collect();
+            assert!(text.contains("five"));
+            id
+        } else {
+            unreachable!()
+        };
+
+        assert!(app.handle_view_click(row, frame, 17));
+        if let AppMode::View(state) = app.app_mode() {
+            assert!(state.expanded_tool_outputs.is_empty());
+            assert_eq!(state.hovered_tool_output, Some(expanded_id));
+        }
+    }
+
+    #[test]
+    fn view_hover_tracks_clickable_output() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("tool.jsonl");
+        write_tool_conversation(&path);
+        let mut app = app_with_tool_conversation(path);
+        let frame = Rect::new(0, 0, 120, 20);
+        let (row, id) = if let AppMode::View(state) = app.app_mode() {
+            let layout = ui::view_layout_rects(frame, &app, state);
+            let idx = state
+                .rendered_lines
+                .iter()
+                .position(|line| line.clickable)
+                .unwrap();
+            let id = state.rendered_lines[idx].tool_output_id.clone().unwrap();
+            (layout.content.y + (idx - state.scroll_offset) as u16, id)
+        } else {
+            unreachable!()
+        };
+
+        assert!(app.handle_view_mouse_move(row, frame));
+        if let AppMode::View(state) = app.app_mode() {
+            assert_eq!(state.hovered_tool_output, Some(id));
+        }
+        assert!(app.handle_view_mouse_move(0, frame));
+        if let AppMode::View(state) = app.app_mode() {
+            assert_eq!(state.hovered_tool_output, None);
+        }
     }
 
     #[test]
@@ -2986,6 +3168,7 @@ mod tests {
             ToolDisplayMode::Hidden,
             false,
             keys,
+            vec![],
         );
 
         app.handle_key(KeyCode::Char('t'), KeyModifiers::CONTROL, 10);
@@ -3044,6 +3227,7 @@ mod tests {
             ToolDisplayMode::Hidden,
             false,
             KeyBindings::default(),
+            vec![],
         );
         app.selected = Some(1);
 
@@ -3210,6 +3394,14 @@ pub fn run_with_loader(
 
         // Check for resize in view mode
         app.check_view_resize(content_width, viewport_height);
+        let viewport_height = match app.app_mode() {
+            AppMode::View(state) => {
+                ui::view_layout_rects(frame_area, &app, state)
+                    .content
+                    .height as usize
+            }
+            AppMode::List => viewport_height,
+        };
 
         // Pick up any completed search results from the background worker
         app.receive_search_results();
@@ -3246,10 +3438,16 @@ pub fn run_with_loader(
                             app.scroll_mouse(-3, viewport_height);
                         }
                         MouseEventKind::Down(MouseButton::Left) => {
+                            if app.handle_view_click(m.row, frame_area, viewport_height) {
+                                break;
+                            }
                             if app.handle_list_click(m.row, frame_area) {
                                 app.enter_view_mode(content_width);
                                 break; // mode transition: redraw before processing more events
                             }
+                        }
+                        MouseEventKind::Moved => {
+                            app.handle_view_mouse_move(m.row, frame_area);
                         }
                         _ => {}
                     }
@@ -3325,6 +3523,14 @@ pub fn run_single_file(
 
         // Check for resize in view mode (this triggers initial render too)
         app.check_view_resize(content_width, viewport_height);
+        let viewport_height = match app.app_mode() {
+            AppMode::View(state) => {
+                ui::view_layout_rects(frame_area, &app, state)
+                    .content
+                    .height as usize
+            }
+            AppMode::List => viewport_height,
+        };
 
         guard.terminal.draw(|frame| ui::render(frame, &app))?;
 
@@ -3333,13 +3539,16 @@ pub fn run_single_file(
             let key = match ev {
                 Event::Key(k) if k.kind == KeyEventKind::Press => k,
                 Event::Mouse(m) => {
-                    let lines = match m.kind {
-                        MouseEventKind::ScrollDown => 3,
-                        MouseEventKind::ScrollUp => -3,
-                        _ => 0,
-                    };
-                    if lines != 0 {
-                        app.scroll_mouse(lines, viewport_height);
+                    match m.kind {
+                        MouseEventKind::ScrollDown => app.scroll_mouse(3, viewport_height),
+                        MouseEventKind::ScrollUp => app.scroll_mouse(-3, viewport_height),
+                        MouseEventKind::Down(MouseButton::Left) => {
+                            app.handle_view_click(m.row, frame_area, viewport_height);
+                        }
+                        MouseEventKind::Moved => {
+                            app.handle_view_mouse_move(m.row, frame_area);
+                        }
+                        _ => {}
                     }
                     continue;
                 }

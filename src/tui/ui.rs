@@ -298,18 +298,19 @@ fn header_fits_single_line(conv: &crate::history::Conversation, terminal_width: 
     total_len <= terminal_width as usize
 }
 
-/// Render the view mode (conversation viewer)
-fn render_view_mode(frame: &mut Frame, app: &App, state: &ViewState) {
-    let area = frame.area();
+#[derive(Clone, Copy, Debug)]
+pub struct ViewLayoutRects {
+    pub header: Rect,
+    pub content: Rect,
+    pub status: Rect,
+}
 
-    // Determine if we need extra space for search input
+pub fn view_layout_rects(area: Rect, app: &App, state: &ViewState) -> ViewLayoutRects {
     let status_height = if state.search_mode == ViewSearchMode::Typing {
         2
     } else {
         1
     };
-
-    // Check if conversation has summary for header height
     let conv = app
         .conversations()
         .iter()
@@ -321,29 +322,38 @@ fn render_view_mode(frame: &mut Frame, app: &App, state: &ViewState) {
     } else {
         2
     };
-
-    // Layout: header (2-3 lines) | content | status bar
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(header_height), // Header
-            Constraint::Min(1),                // Content
-            Constraint::Length(status_height), // Status bar (+ search input if typing)
+            Constraint::Length(header_height),
+            Constraint::Min(1),
+            Constraint::Length(status_height),
         ])
         .split(area);
 
-    render_view_header(frame, app, state, chunks[0]);
-    render_view_content(frame, state, chunks[1]);
+    ViewLayoutRects {
+        header: chunks[0],
+        content: chunks[1],
+        status: chunks[2],
+    }
+}
+
+/// Render the view mode (conversation viewer)
+fn render_view_mode(frame: &mut Frame, app: &App, state: &ViewState) {
+    let layout = view_layout_rects(frame.area(), app, state);
+
+    render_view_header(frame, app, state, layout.header);
+    render_view_content(frame, state, layout.content);
 
     if state.search_mode == ViewSearchMode::Typing {
-        render_search_input(frame, state, chunks[2]);
+        render_search_input(frame, state, layout.status);
     } else {
-        render_view_status_bar(frame, app, state, chunks[2]);
+        render_view_status_bar(frame, app, state, layout.status);
     }
 
     // Render dialog overlay if active
     match app.dialog_mode() {
-        DialogMode::ConfirmDelete => render_confirm_dialog(frame, chunks[2]),
+        DialogMode::ConfirmDelete => render_confirm_dialog(frame, layout.status),
         DialogMode::ExportMenu { selected } => render_export_menu(frame, *selected, false),
         DialogMode::YankMenu { selected } => render_export_menu(frame, *selected, true),
         DialogMode::Help { scroll } => {
@@ -604,6 +614,17 @@ fn render_view_content(frame: &mut Frame, state: &ViewState, area: Rect) {
                         .iter()
                         .map(|(text, style)| styled_span(text, style)),
                 );
+            }
+
+            if rendered
+                .tool_output_id
+                .as_ref()
+                .is_some_and(|id| state.hovered_tool_output.as_ref() == Some(id))
+            {
+                spans = spans
+                    .into_iter()
+                    .map(|span| span.patch_style(Style::default().underlined()))
+                    .collect();
             }
 
             Line::from(spans)
