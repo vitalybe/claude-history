@@ -896,4 +896,352 @@ mod tests {
         let result2 = format_timestamp(ts2);
         assert!(result2.is_some(), "Should parse timestamp with offset");
     }
+
+    // -----------------------------------------------------------------
+    // Render regression harness
+    //
+    // These tests pin the observable behavior of the rendering pipeline
+    // (text, span styles, clickability, tool output IDs, message ranges)
+    // so subsequent refactors of the viewer can detect drift.
+    // -----------------------------------------------------------------
+
+    fn line_style_at<'a>(line: &'a RenderedLine, text: &str) -> &'a crate::tui::app::LineStyle {
+        &line
+            .spans
+            .iter()
+            .find(|(t, _)| t == text)
+            .unwrap_or_else(|| panic!("span {:?} not found in line {:?}", text, line_text(line)))
+            .1
+    }
+
+    fn user_entry(entry_index: usize, text: &str, timestamp: Option<&str>) -> RenderableEntry {
+        let ts_field = match timestamp {
+            Some(t) => format!(r#","timestamp":"{}""#, t),
+            None => String::new(),
+        };
+        let json = format!(
+            r#"{{"type":"user","message":{{"role":"user","content":"{}"}}{}}}"#,
+            text, ts_field
+        );
+        RenderableEntry {
+            entry_index,
+            entry: serde_json::from_str(&json).unwrap(),
+        }
+    }
+
+    fn assistant_text_entry(
+        entry_index: usize,
+        text: &str,
+        timestamp: Option<&str>,
+    ) -> RenderableEntry {
+        let ts_field = match timestamp {
+            Some(t) => format!(r#","timestamp":"{}""#, t),
+            None => String::new(),
+        };
+        let json = format!(
+            r#"{{"type":"assistant","message":{{"role":"assistant","content":[{{"type":"text","text":"{}"}}]}}{}}}"#,
+            text, ts_field
+        );
+        RenderableEntry {
+            entry_index,
+            entry: serde_json::from_str(&json).unwrap(),
+        }
+    }
+
+    #[test]
+    fn message_ranges_track_user_and_assistant_entries() {
+        let entries = vec![
+            user_entry(0, "Hello", None),
+            assistant_text_entry(1, "Hi there", None),
+        ];
+        let rendered =
+            render_parsed_conversation(&entries, &test_render_options(ToolDisplayMode::Hidden));
+
+        // Two messages, each with one content line and one trailing blank.
+        assert_eq!(rendered.messages.len(), 2);
+
+        let user = &rendered.messages[0];
+        assert_eq!(user.entry_index, 0);
+        assert_eq!(user.start_line, 0);
+        assert_eq!(user.end_line, 1, "user range excludes trailing blank");
+
+        let assistant = &rendered.messages[1];
+        assert_eq!(assistant.entry_index, 1);
+        assert_eq!(assistant.start_line, 2);
+        assert_eq!(assistant.end_line, 3);
+
+        // Lines: [user, blank, assistant, blank]
+        assert_eq!(rendered.lines.len(), 4);
+        assert!(rendered.lines[1].spans.is_empty());
+        assert!(rendered.lines[3].spans.is_empty());
+    }
+
+    #[test]
+    fn message_ranges_skip_non_message_entries() {
+        // A summary-only entry produces no rendered output and no MessageRange.
+        let entries = vec![
+            RenderableEntry {
+                entry_index: 0,
+                entry: serde_json::from_str(r#"{"type":"summary","summary":"ignored"}"#).unwrap(),
+            },
+            user_entry(1, "Hello", None),
+        ];
+        let rendered =
+            render_parsed_conversation(&entries, &test_render_options(ToolDisplayMode::Hidden));
+
+        assert_eq!(rendered.messages.len(), 1);
+        assert_eq!(rendered.messages[0].entry_index, 1);
+        assert_eq!(rendered.messages[0].start_line, 0);
+    }
+
+    #[test]
+    fn timing_enabled_renders_timestamp_prefix_span() {
+        let entries = vec![user_entry(0, "Hello", Some("2026-02-04T12:34:56Z"))];
+        let mut options = test_render_options(ToolDisplayMode::Hidden);
+        options.show_timing = true;
+
+        let rendered = render_parsed_conversation(&entries, &options);
+        let first = &rendered.lines[0];
+        let ts_span = &first.spans[0].0;
+
+        assert_eq!(
+            ts_span.len(),
+            TIMESTAMP_WIDTH,
+            "timestamp prefix span width: {:?}",
+            ts_span
+        );
+        assert!(
+            ts_span.starts_with(' ') && ts_span.ends_with(' ') && ts_span.contains(':'),
+            "timestamp prefix should be ' HH:MM ', got {:?}",
+            ts_span
+        );
+    }
+
+    #[test]
+    fn timing_disabled_omits_timestamp_prefix_span() {
+        let entries = vec![user_entry(0, "Hello", Some("2026-02-04T12:34:56Z"))];
+        let rendered =
+            render_parsed_conversation(&entries, &test_render_options(ToolDisplayMode::Hidden));
+        let first = &rendered.lines[0];
+
+        // First span is the right-aligned name column, not a timestamp.
+        assert_eq!(first.spans[0].0.trim(), "You");
+    }
+
+    #[test]
+    fn invalid_timestamp_skips_timestamp_prefix() {
+        // Even with show_timing=true, a non-RFC3339 timestamp produces no time prefix.
+        let entries = vec![user_entry(0, "Hello", Some("not-a-timestamp"))];
+        let mut options = test_render_options(ToolDisplayMode::Hidden);
+        options.show_timing = true;
+
+        let rendered = render_parsed_conversation(&entries, &options);
+        let first = &rendered.lines[0];
+        assert_eq!(
+            first.spans[0].0.trim(),
+            "You",
+            "first span should be name column, not timestamp"
+        );
+    }
+
+    #[test]
+    fn assistant_continuation_line_aligns_under_timestamp() {
+        // Multi-line assistant text should pad continuation lines to the
+        // timestamp width so the name column stays aligned.
+        let entries = vec![assistant_text_entry(
+            0,
+            "line one\\n\\nline two",
+            Some("2026-02-04T12:34:56Z"),
+        )];
+        let mut options = test_render_options(ToolDisplayMode::Hidden);
+        options.show_timing = true;
+
+        let rendered = render_parsed_conversation(&entries, &options);
+        // Expect at least: header line + blank-paragraph + content line.
+        let timestamp_span = &rendered.lines[0].spans[0].0;
+        assert_eq!(timestamp_span.len(), TIMESTAMP_WIDTH);
+
+        // Find a continuation line (one whose first span is whitespace of TIMESTAMP_WIDTH).
+        let has_padded_continuation = rendered.lines.iter().skip(1).any(|line| {
+            line.spans
+                .first()
+                .is_some_and(|(t, _)| t.len() == TIMESTAMP_WIDTH && t.trim().is_empty())
+        });
+        assert!(
+            has_padded_continuation,
+            "expected a continuation line padded to TIMESTAMP_WIDTH"
+        );
+    }
+
+    #[test]
+    fn user_label_uses_text_primary_bold() {
+        let entries = vec![user_entry(0, "Hello", None)];
+        let rendered =
+            render_parsed_conversation(&entries, &test_render_options(ToolDisplayMode::Hidden));
+        let line = &rendered.lines[0];
+        let name_text = format!("{:>width$}", "You", width = NAME_WIDTH);
+        let style = line_style_at(line, &name_text);
+
+        assert_eq!(style.fg, Some(th().text_primary));
+        assert!(style.bold);
+        assert!(!style.dimmed);
+    }
+
+    #[test]
+    fn assistant_label_uses_accent_bold() {
+        let entries = vec![assistant_text_entry(0, "Hi", None)];
+        let rendered =
+            render_parsed_conversation(&entries, &test_render_options(ToolDisplayMode::Hidden));
+        let line = &rendered.lines[0];
+        let name_text = format!("{:>width$}", "Claude", width = NAME_WIDTH);
+        let style = line_style_at(line, &name_text);
+
+        assert_eq!(style.fg, Some(th().accent));
+        assert!(style.bold);
+    }
+
+    #[test]
+    fn subagent_assistant_uses_nested_label_when_thinking_shown() {
+        let entries = vec![RenderableEntry {
+            entry_index: 0,
+            entry: serde_json::from_str(
+                r#"{"type":"assistant","parent_tool_use_id":"toolu_parent_abc","message":{"role":"assistant","content":[{"type":"text","text":"sub text"}]}}"#,
+            )
+            .unwrap(),
+        }];
+        let mut options = test_render_options(ToolDisplayMode::Hidden);
+        options.show_thinking = true;
+
+        let rendered = render_parsed_conversation(&entries, &options);
+        let text = rendered_text(&rendered);
+        assert!(text.contains("sub text"));
+        assert!(
+            text.contains('↳'),
+            "subagent rows should use the nested-label arrow: {}",
+            text
+        );
+    }
+
+    #[test]
+    fn truncated_tool_call_header_carries_expected_tool_output_id() {
+        let entries = vec![RenderableEntry {
+            entry_index: 7,
+            entry: serde_json::from_str(
+                r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"toolu_xyz","name":"Bash","input":{"command":"ls"}}]}}"#,
+            )
+            .unwrap(),
+        }];
+        let rendered =
+            render_parsed_conversation(&entries, &test_render_options(ToolDisplayMode::Truncated));
+
+        let expected = make_tool_output_id(7, None, 0, ToolOutputKind::ToolCall, Some("toolu_xyz"));
+        assert_eq!(
+            expected.0,
+            "entry:7:parent:top:block:0:kind:call:id:toolu_xyz"
+        );
+        assert!(
+            rendered
+                .lines
+                .iter()
+                .any(|line| line.tool_output_id.as_ref() == Some(&expected)),
+            "expected at least one rendered line tagged with the tool output id"
+        );
+    }
+
+    #[test]
+    fn full_tool_mode_lines_are_not_clickable() {
+        let entries = vec![RenderableEntry {
+            entry_index: 0,
+            entry: serde_json::from_str(
+                r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"toolu_1","name":"Bash","input":{"command":"one\ntwo\nthree\nfour\nfive"}}]}}"#,
+            )
+            .unwrap(),
+        }];
+        let rendered =
+            render_parsed_conversation(&entries, &test_render_options(ToolDisplayMode::Full));
+
+        assert!(
+            rendered.lines.iter().all(|line| !line.clickable),
+            "Full tool display mode should not produce clickable lines"
+        );
+        // Body should be fully visible — no truncation indicator.
+        let text = rendered_text(&rendered);
+        assert!(text.contains("five"));
+        assert!(!text.contains("more lines"));
+    }
+
+    #[test]
+    fn tool_result_string_content_renders_as_text() {
+        let entries = vec![
+            RenderableEntry {
+                entry_index: 0,
+                entry: serde_json::from_str(
+                    r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"toolu_1","name":"Bash","input":{"command":"echo hi"}}]}}"#,
+                )
+                .unwrap(),
+            },
+            RenderableEntry {
+                entry_index: 1,
+                entry: serde_json::from_str(
+                    r#"{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_1","content":"hello-world-output"}]}}"#,
+                )
+                .unwrap(),
+            },
+        ];
+        let rendered =
+            render_parsed_conversation(&entries, &test_render_options(ToolDisplayMode::Truncated));
+
+        let text = rendered_text(&rendered);
+        assert!(
+            text.contains("hello-world-output"),
+            "tool result string content should render verbatim: {}",
+            text
+        );
+    }
+
+    #[test]
+    fn fixture_file_round_trip_renders_user_and_assistant() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("fixture.jsonl");
+        std::fs::write(
+            &path,
+            concat!(
+                r#"{"type":"user","message":{"role":"user","content":"hello"}}"#,
+                "\n",
+                r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"world"}]}}"#,
+                "\n",
+            ),
+        )
+        .unwrap();
+
+        let rendered =
+            render_conversation(&path, &test_render_options(ToolDisplayMode::Hidden)).unwrap();
+        let text = rendered_text(&rendered);
+        assert!(text.contains("hello"));
+        assert!(text.contains("world"));
+        assert_eq!(rendered.messages.len(), 2);
+    }
+
+    #[test]
+    fn consecutive_blank_lines_collapse_and_remap_ranges() {
+        // Two adjacent user messages each emit a trailing blank; the dedup pass
+        // collapses any double-blank that would arise from this sequence.
+        let entries = vec![user_entry(0, "first", None), user_entry(1, "second", None)];
+        let rendered =
+            render_parsed_conversation(&entries, &test_render_options(ToolDisplayMode::Hidden));
+
+        // No two consecutive empty lines should remain.
+        for pair in rendered.lines.windows(2) {
+            assert!(
+                !(pair[0].spans.is_empty() && pair[1].spans.is_empty()),
+                "consecutive empty lines should be collapsed"
+            );
+        }
+
+        // Both user message ranges should still target valid, distinct lines.
+        assert_eq!(rendered.messages.len(), 2);
+        assert!(rendered.messages[0].end_line <= rendered.messages[1].start_line);
+        assert!(rendered.messages[0].start_line < rendered.messages[0].end_line);
+        assert!(rendered.messages[1].start_line < rendered.messages[1].end_line);
+    }
 }
