@@ -1,3 +1,10 @@
+## v0.1.56 (2026-05-01)
+
+- Click truncated tool calls and results in the TUI viewer to expand or collapse
+  just that output without changing the global tool display mode
+- In-conversation search now shows the current match number and total matches
+  while search is active
+
 ## v0.1.54 (2026-05-01)
 
 - Added `tui.exclude_projects` so projects can be hidden from the TUI browse and
