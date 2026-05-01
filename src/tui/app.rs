@@ -1137,6 +1137,13 @@ impl App {
                     Some(("Session renamed".to_string(), std::time::Instant::now()));
                 self.refresh_search_data();
                 self.update_filter();
+                if let Some(new_selected) = self
+                    .filtered
+                    .iter()
+                    .position(|&i| self.conversations[i].path == path)
+                {
+                    self.selected = Some(new_selected);
+                }
             }
             Ok(None) => {
                 self.status_message = Some((
@@ -2973,6 +2980,31 @@ mod tests {
         assert!(
             search::search(&app.conversations, &app.searchable, "old", Local::now()).is_empty()
         );
+    }
+
+    #[test]
+    fn submit_rename_preserves_selected_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let first = dir.path().join("first.jsonl");
+        let second = dir.path().join("second.jsonl");
+        write_conversation(&first, None);
+        write_conversation(&second, None);
+        let mut app = App::new(
+            vec![
+                test_conversation(first, None),
+                test_conversation(second.clone(), None),
+            ],
+            ToolDisplayMode::Hidden,
+            false,
+            KeyBindings::default(),
+        );
+        app.selected = Some(1);
+
+        app.start_rename();
+        app.handle_rename_key(KeyCode::Char('n'), KeyModifiers::empty());
+        app.handle_rename_key(KeyCode::Enter, KeyModifiers::empty());
+
+        assert_eq!(app.get_selected_path().as_deref(), Some(second.as_path()));
     }
 
     #[test]
