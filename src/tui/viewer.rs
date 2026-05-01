@@ -573,6 +573,7 @@ fn render_summary_group_details(
     options: &RenderOptions,
 ) {
     let first_line = lines.len();
+    let mut rendered_any = false;
     for parsed in &entries[pending.first_parsed_idx..=pending.last_parsed_idx] {
         match &parsed.entry {
             LogEntry::Assistant {
@@ -582,6 +583,9 @@ fn render_summary_group_details(
             } if parent_tool_use_id.as_deref() == pending.parent_id.as_deref() => {
                 for (block_idx, block) in message.content.iter().enumerate() {
                     if let ContentBlock::ToolUse { id, name, input } = block {
+                        if rendered_any {
+                            lines.push(RenderedLine::new(vec![]));
+                        }
                         let output_id = make_tool_output_id(
                             parsed.entry_index,
                             parent_tool_use_id.as_deref(),
@@ -603,6 +607,7 @@ fn render_summary_group_details(
                             &output_id,
                             expanded,
                         );
+                        rendered_any = true;
                     }
                 }
             }
@@ -642,6 +647,7 @@ fn render_summary_group_details(
                             &output_id,
                             expanded,
                         );
+                        rendered_any = true;
                     }
                 }
             }
