@@ -383,7 +383,7 @@ pub fn render_conversation(
 #[cfg(test)]
 mod tests {
     use super::markdown::render_markdown_to_lines;
-    use super::tools::{ToolOutputKind, make_tool_output_id, render_tool_call};
+    use super::tools::{ToolCallRenderSpec, ToolOutputKind, make_tool_output_id, render_tool_call};
     use super::*;
 
     /// Helper to render markdown and extract just the content text (without styling)
@@ -890,16 +890,18 @@ mod tests {
         let mut lines = Vec::new();
         render_tool_call(
             &mut lines,
-            "Bash",
-            &input,
-            "Claude",
-            th().accent_dim,
-            false,
-            80,
-            None,
-            ToolDisplayMode::Truncated,
-            &output_id,
-            false,
+            &ToolCallRenderSpec {
+                name: "Bash",
+                input: &input,
+                label: "Claude",
+                label_color: th().accent_dim,
+                dimmed: false,
+                content_width: 80,
+                timestamp: None,
+                tool_display: ToolDisplayMode::Truncated,
+                tool_output_id: &output_id,
+                expanded: false,
+            },
         );
         assert!(
             lines
@@ -916,16 +918,18 @@ mod tests {
         let mut expanded = Vec::new();
         render_tool_call(
             &mut expanded,
-            "Bash",
-            &input,
-            "Claude",
-            th().accent_dim,
-            false,
-            80,
-            None,
-            ToolDisplayMode::Truncated,
-            &output_id,
-            true,
+            &ToolCallRenderSpec {
+                name: "Bash",
+                input: &input,
+                label: "Claude",
+                label_color: th().accent_dim,
+                dimmed: false,
+                content_width: 80,
+                timestamp: None,
+                tool_display: ToolDisplayMode::Truncated,
+                tool_output_id: &output_id,
+                expanded: true,
+            },
         );
         assert!(
             !expanded

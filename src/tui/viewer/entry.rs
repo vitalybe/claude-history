@@ -10,8 +10,8 @@ use super::ledger::{render_ledger_block_styled, render_ledger_block_styled_dimme
 use super::markdown::{apply_thinking_style, render_markdown_to_lines};
 use super::summary::{render_tool_activity_summary, summarize_tool_calls};
 use super::tools::{
-    ToolOutputKind, extract_tool_result_text, format_tool_result_content, make_tool_output_id,
-    render_tool_call, render_tool_result,
+    ToolCallRenderSpec, ToolOutputKind, ToolResultRenderSpec, format_tool_result_content,
+    make_tool_output_id, render_tool_call, render_tool_result, tool_result_display_text,
 };
 use super::*;
 
@@ -191,18 +191,17 @@ fn render_user_message(
                         &content_str,
                     );
                 } else {
-                    let content_str = match extract_tool_result_text(content.as_ref()) {
-                        Some(text) => text,
-                        None => format_tool_result_content(content.as_ref()),
-                    };
+                    let content_str = tool_result_display_text(content.as_ref());
                     render_tool_result(
                         lines,
-                        &content_str,
-                        options.content_width,
-                        timing.consume(),
-                        options.tool_display,
-                        &output_id,
-                        expanded,
+                        &ToolResultRenderSpec {
+                            text: &content_str,
+                            content_width: options.content_width,
+                            timestamp: timing.consume(),
+                            tool_display: options.tool_display,
+                            tool_output_id: &output_id,
+                            expanded,
+                        },
                     );
                 }
                 printed = true;
@@ -292,30 +291,34 @@ fn render_assistant_message(
                 if let Some(ref label) = nested_label {
                     render_tool_call(
                         lines,
-                        name,
-                        input,
-                        label,
-                        th().accent_dim,
-                        true,
-                        options.content_width,
-                        timing.pad(),
-                        options.tool_display,
-                        &output_id,
-                        expanded,
+                        &ToolCallRenderSpec {
+                            name,
+                            input,
+                            label,
+                            label_color: th().accent_dim,
+                            dimmed: true,
+                            content_width: options.content_width,
+                            timestamp: timing.pad(),
+                            tool_display: options.tool_display,
+                            tool_output_id: &output_id,
+                            expanded,
+                        },
                     );
                 } else {
                     render_tool_call(
                         lines,
-                        name,
-                        input,
-                        "Claude",
-                        th().accent_dim,
-                        false,
-                        options.content_width,
-                        timing.consume(),
-                        options.tool_display,
-                        &output_id,
-                        expanded,
+                        &ToolCallRenderSpec {
+                            name,
+                            input,
+                            label: "Claude",
+                            label_color: th().accent_dim,
+                            dimmed: false,
+                            content_width: options.content_width,
+                            timestamp: timing.consume(),
+                            tool_display: options.tool_display,
+                            tool_output_id: &output_id,
+                            expanded,
+                        },
                     );
                 }
                 printed = true;
@@ -499,16 +502,18 @@ fn render_agent_message(
                         let label = format!("↳{}", short_id);
                         render_tool_call(
                             lines,
-                            name,
-                            input,
-                            &label,
-                            th().accent_dim,
-                            true,
-                            options.content_width,
-                            pad_ts,
-                            options.tool_display,
-                            &output_id,
-                            expanded,
+                            &ToolCallRenderSpec {
+                                name,
+                                input,
+                                label: &label,
+                                label_color: th().accent_dim,
+                                dimmed: true,
+                                content_width: options.content_width,
+                                timestamp: pad_ts,
+                                tool_display: options.tool_display,
+                                tool_output_id: &output_id,
+                                expanded,
+                            },
                         );
                         printed = true;
                     }

@@ -3,8 +3,8 @@ use crate::claude::{ContentBlock, LogEntry, UserContent};
 use super::context::assistant_label;
 use super::ledger::{LedgerRow, NameCol, TimestampCol, push_row};
 use super::tools::{
-    ToolOutputKind, extract_tool_result_text, format_tool_result_content, make_tool_output_id,
-    render_tool_call, render_tool_result,
+    ToolCallRenderSpec, ToolOutputKind, ToolResultRenderSpec, make_tool_output_id,
+    render_tool_call, render_tool_result, tool_result_display_text,
 };
 use super::*;
 
@@ -258,16 +258,18 @@ fn render_summary_group_details(
                         let expanded = options.expanded_tool_outputs.contains(&output_id);
                         render_tool_call(
                             lines,
-                            name,
-                            input,
-                            "Claude",
-                            th().accent_dim,
-                            true,
-                            options.content_width,
-                            pad_ts,
-                            ToolDisplayMode::Truncated,
-                            &output_id,
-                            expanded,
+                            &ToolCallRenderSpec {
+                                name,
+                                input,
+                                label: "Claude",
+                                label_color: th().accent_dim,
+                                dimmed: true,
+                                content_width: options.content_width,
+                                timestamp: pad_ts,
+                                tool_display: ToolDisplayMode::Truncated,
+                                tool_output_id: &output_id,
+                                expanded,
+                            },
                         );
                         rendered_any = true;
                     }
@@ -299,18 +301,17 @@ fn render_summary_group_details(
                             Some(tool_use_id),
                         );
                         let expanded = options.expanded_tool_outputs.contains(&output_id);
-                        let content_str = match extract_tool_result_text(content.as_ref()) {
-                            Some(text) => text,
-                            None => format_tool_result_content(content.as_ref()),
-                        };
+                        let content_str = tool_result_display_text(content.as_ref());
                         render_tool_result(
                             lines,
-                            &content_str,
-                            options.content_width,
-                            pad_ts,
-                            ToolDisplayMode::Truncated,
-                            &output_id,
-                            expanded,
+                            &ToolResultRenderSpec {
+                                text: &content_str,
+                                content_width: options.content_width,
+                                timestamp: pad_ts,
+                                tool_display: ToolDisplayMode::Truncated,
+                                tool_output_id: &output_id,
+                                expanded,
+                            },
                         );
                         rendered_any = true;
                     }

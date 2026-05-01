@@ -75,21 +75,52 @@ pub(super) fn format_tool_result_content(content: Option<&serde_json::Value>) ->
         None => "<no content>".to_string(),
     }
 }
+
+/// Pick the display text for a tool result: prefer extracted text content,
+/// fall back to a JSON pretty-print for objects, null, or text-less arrays.
+pub(super) fn tool_result_display_text(content: Option<&serde_json::Value>) -> String {
+    extract_tool_result_text(content).unwrap_or_else(|| format_tool_result_content(content))
+}
+
+/// Descriptor for one tool-call rendering pass shared by entry and
+/// summary-expansion render paths.
+pub(super) struct ToolCallRenderSpec<'a> {
+    pub name: &'a str,
+    pub input: &'a serde_json::Value,
+    pub label: &'a str,
+    pub label_color: (u8, u8, u8),
+    pub dimmed: bool,
+    pub content_width: usize,
+    pub timestamp: Option<&'a str>,
+    pub tool_display: ToolDisplayMode,
+    pub tool_output_id: &'a ToolOutputId,
+    pub expanded: bool,
+}
+
+/// Descriptor for one tool-result rendering pass shared by entry and
+/// summary-expansion render paths.
+pub(super) struct ToolResultRenderSpec<'a> {
+    pub text: &'a str,
+    pub content_width: usize,
+    pub timestamp: Option<&'a str>,
+    pub tool_display: ToolDisplayMode,
+    pub tool_output_id: &'a ToolOutputId,
+    pub expanded: bool,
+}
 /// Render a formatted tool call with proper styling
-#[allow(clippy::too_many_arguments)]
-pub(super) fn render_tool_call(
-    lines: &mut Vec<RenderedLine>,
-    name: &str,
-    input: &serde_json::Value,
-    label: &str,
-    label_color: (u8, u8, u8),
-    dimmed: bool,
-    content_width: usize,
-    timestamp: Option<&str>,
-    tool_display: ToolDisplayMode,
-    tool_output_id: &ToolOutputId,
-    expanded: bool,
-) {
+pub(super) fn render_tool_call(lines: &mut Vec<RenderedLine>, spec: &ToolCallRenderSpec<'_>) {
+    let ToolCallRenderSpec {
+        name,
+        input,
+        label,
+        label_color,
+        dimmed,
+        content_width,
+        timestamp,
+        tool_display,
+        tool_output_id,
+        expanded,
+    } = *spec;
     let formatted = tool_format::format_tool_call(name, input, content_width);
 
     let header_content = vec![(
@@ -218,15 +249,15 @@ fn render_tool_body(
 }
 
 /// Render tool result with arrow indicator and markdown
-pub(super) fn render_tool_result(
-    lines: &mut Vec<RenderedLine>,
-    text: &str,
-    content_width: usize,
-    timestamp: Option<&str>,
-    tool_display: ToolDisplayMode,
-    tool_output_id: &ToolOutputId,
-    expanded: bool,
-) {
+pub(super) fn render_tool_result(lines: &mut Vec<RenderedLine>, spec: &ToolResultRenderSpec<'_>) {
+    let ToolResultRenderSpec {
+        text,
+        content_width,
+        timestamp,
+        tool_display,
+        tool_output_id,
+        expanded,
+    } = *spec;
     // Fence plain text tool results to prevent markdown misinterpretation.
     // If the result already contains fenced code blocks, assume it's intentional markdown.
     let text = if text.contains("```") {
