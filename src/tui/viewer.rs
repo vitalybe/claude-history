@@ -626,6 +626,9 @@ fn render_summary_group_details(
                         ..
                     } = block
                     {
+                        if rendered_any {
+                            lines.push(RenderedLine::new(vec![]));
+                        }
                         let output_id = make_tool_output_id(
                             parsed.entry_index,
                             parent_tool_use_id.as_deref(),
