@@ -89,6 +89,7 @@ preview.
 | `Ctrl+W`                | Delete word before cursor       |
 | `Ctrl+R`                | Resume conversation             |
 | `Ctrl+F`                | Fork and resume conversation    |
+| `F2`                    | Rename selected session         |
 | `Ctrl+X`                | Delete conversation             |
 | `Tab`                   | Toggle all / workspace scope    |
 | `?`                     | Show keyboard shortcuts         |
@@ -120,7 +121,6 @@ preview.
 | `p`            | Show file path                                     |
 | `Y`            | Copy file path to clipboard                        |
 | `I`            | Copy session ID to clipboard                       |
-| `F2`           | Rename selected session                            |
 | `Ctrl+R`       | Resume conversation                                |
 | `Ctrl+F`       | Fork and resume conversation                       |
 | `Ctrl+X`       | Delete conversation                                |
@@ -416,8 +416,9 @@ pager = true
 # Example: default_args = ["--dangerously-skip-permissions"]
 
 [keys]
-# Customize keybindings (default: ctrl+r, ctrl+f, ctrl+x)
-# Supports ctrl+<key> and alt+<key> combinations
+# Customize keybindings (default: ctrl+r, ctrl+f, f2, ctrl+x)
+# Supports ctrl+<key>, alt+<key>, single-character keys, and f1-f12
+# rename = "alt+r"
 # fork = "alt+f"
 
 [tui]
@@ -451,12 +452,12 @@ EOF
 
 #### Key bindings
 
-Customize the keybindings for resume, fork, and delete actions. Values are key
-combinations like `"ctrl+r"` or `"alt+f"`. Only single-character keys with
-`ctrl+` or `alt+` modifiers are supported.
+Customize the keybindings for resume, fork, rename, and delete actions. Values
+are key combinations like `"ctrl+r"`, `"alt+f"`, or `"f2"`.
 
 - `resume` (string): Resume conversation (default: `"ctrl+r"`)
 - `fork` (string): Fork and resume conversation (default: `"ctrl+f"`)
+- `rename` (string): Rename selected session (default: `"f2"`)
 - `delete` (string): Delete conversation (default: `"ctrl+x"`)
 
 #### TUI options

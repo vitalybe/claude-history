@@ -85,6 +85,7 @@ pub struct ResumeConfig {
 pub struct KeysConfig {
     pub resume: Option<KeyBinding>,
     pub fork: Option<KeyBinding>,
+    pub rename: Option<KeyBinding>,
     pub delete: Option<KeyBinding>,
 }
 
@@ -99,7 +100,7 @@ impl KeyBinding {
         self.code == code && self.modifiers == modifiers
     }
 
-    /// Format for status bar display (e.g. "^F", "M-F")
+    /// Format for status bar display (e.g. "^F", "M-F", "F2")
     pub fn short_label(&self) -> String {
         let prefix = if self.modifiers.contains(KeyModifiers::CONTROL) {
             "^"
@@ -110,11 +111,12 @@ impl KeyBinding {
         };
         match self.code {
             KeyCode::Char(c) => format!("{}{}", prefix, c.to_ascii_uppercase()),
+            KeyCode::F(n) if self.modifiers.is_empty() => format!("F{}", n),
             _ => String::new(),
         }
     }
 
-    /// Format for help overlay (e.g. "Ctrl+F", "Alt+F")
+    /// Format for help overlay (e.g. "Ctrl+F", "Alt+F", "F2")
     pub fn help_label(&self) -> String {
         let prefix = if self.modifiers.contains(KeyModifiers::CONTROL) {
             "Ctrl+"
@@ -125,6 +127,7 @@ impl KeyBinding {
         };
         match self.code {
             KeyCode::Char(c) => format!("{}{}", prefix, c.to_ascii_uppercase()),
+            KeyCode::F(n) if self.modifiers.is_empty() => format!("F{}", n),
             _ => String::new(),
         }
     }
@@ -140,6 +143,23 @@ impl<'de> Deserialize<'de> for KeyBinding {
     }
 }
 
+fn parse_key_code(key: &str) -> std::result::Result<KeyCode, String> {
+    match key.to_lowercase().as_str() {
+        k if k.len() == 1 => Ok(KeyCode::Char(k.chars().next().unwrap())),
+        k if k.starts_with('f') => {
+            let number = k[1..]
+                .parse::<u8>()
+                .map_err(|_| format!("Unknown key: {key}"))?;
+            if (1..=12).contains(&number) {
+                Ok(KeyCode::F(number))
+            } else {
+                Err(format!("Unknown key: {key}"))
+            }
+        }
+        _ => Err(format!("Unknown key: {key}")),
+    }
+}
+
 fn parse_key_binding(s: &str) -> std::result::Result<KeyBinding, String> {
     let parts: Vec<&str> = s.split('+').map(str::trim).collect();
     match parts.as_slice() {
@@ -149,17 +169,14 @@ fn parse_key_binding(s: &str) -> std::result::Result<KeyBinding, String> {
                 "alt" | "meta" => KeyModifiers::ALT,
                 _ => return Err(format!("Unknown modifier: {modifier}")),
             };
-            let code = match key.to_lowercase().as_str() {
-                k if k.len() == 1 => KeyCode::Char(k.chars().next().unwrap()),
-                _ => return Err(format!("Unknown key: {key}")),
-            };
+            let code = parse_key_code(key)?;
+            if matches!(code, KeyCode::F(_)) {
+                return Err(format!("Function keys do not support modifiers: {s}"));
+            }
             Ok(KeyBinding { code, modifiers })
         }
         [key] => {
-            let code = match key.to_lowercase().as_str() {
-                k if k.len() == 1 => KeyCode::Char(k.chars().next().unwrap()),
-                _ => return Err(format!("Unknown key: {key}")),
-            };
+            let code = parse_key_code(key)?;
             Ok(KeyBinding {
                 code,
                 modifiers: KeyModifiers::NONE,
@@ -174,6 +191,7 @@ fn parse_key_binding(s: &str) -> std::result::Result<KeyBinding, String> {
 pub struct KeyBindings {
     pub resume: KeyBinding,
     pub fork: KeyBinding,
+    pub rename: KeyBinding,
     pub delete: KeyBinding,
 }
 
@@ -187,6 +205,10 @@ impl Default for KeyBindings {
             fork: KeyBinding {
                 code: KeyCode::Char('f'),
                 modifiers: KeyModifiers::CONTROL,
+            },
+            rename: KeyBinding {
+                code: KeyCode::F(2),
+                modifiers: KeyModifiers::NONE,
             },
             delete: KeyBinding {
                 code: KeyCode::Char('x'),
@@ -204,6 +226,7 @@ impl KeyBindings {
             Some(cfg) => Self {
                 resume: cfg.resume.unwrap_or(defaults.resume),
                 fork: cfg.fork.unwrap_or(defaults.fork),
+                rename: cfg.rename.unwrap_or(defaults.rename),
                 delete: cfg.delete.unwrap_or(defaults.delete),
             },
         }
@@ -225,6 +248,30 @@ fn get_config_path() -> Option<PathBuf> {
 ///
 /// Returns a default `ConfigFile` if the file or home directory doesn't exist.
 /// Returns an error if the file exists but cannot be read or parsed.
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_function_key_binding() {
+        let binding = parse_key_binding("f2").unwrap();
+        assert_eq!(binding.code, KeyCode::F(2));
+        assert_eq!(binding.modifiers, KeyModifiers::NONE);
+        assert_eq!(binding.short_label(), "F2");
+        assert_eq!(binding.help_label(), "F2");
+    }
+
+    #[test]
+    fn applies_rename_key_config() {
+        let keys = KeyBindings::from_config(Some(KeysConfig {
+            rename: Some(parse_key_binding("alt+r").unwrap()),
+            ..Default::default()
+        }));
+
+        assert!(keys.rename.matches(KeyCode::Char('r'), KeyModifiers::ALT));
+    }
+}
+
 pub fn load_config() -> Result<ConfigFile> {
     let config_path = match get_config_path() {
         Some(path) => path,

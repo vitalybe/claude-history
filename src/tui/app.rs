@@ -1752,7 +1752,7 @@ impl App {
 
         // Normal handling when ready
         match code {
-            KeyCode::F(2) => {
+            _ if self.keys.rename.matches(code, modifiers) => {
                 if self.get_selected_path().is_some() {
                     self.start_rename();
                 }
@@ -2882,6 +2882,7 @@ pub fn line_matches_query(line: &RenderedLine, query_lower: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::KeyBinding;
     use chrono::TimeZone;
 
     fn test_conversation(path: PathBuf, custom_title: Option<String>) -> Conversation {
@@ -2944,6 +2945,28 @@ mod tests {
 
         assert_eq!(app.conversations[0].custom_title, Some("old".to_string()));
         assert_eq!(app.dialog_mode, DialogMode::None);
+    }
+
+    #[test]
+    fn configured_rename_key_starts_rename() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("abc123.jsonl");
+        write_conversation(&path, None);
+        let mut keys = KeyBindings::default();
+        keys.rename = KeyBinding {
+            code: KeyCode::Char('t'),
+            modifiers: KeyModifiers::CONTROL,
+        };
+        let mut app = App::new(
+            vec![test_conversation(path, None)],
+            ToolDisplayMode::Hidden,
+            false,
+            keys,
+        );
+
+        app.handle_key(KeyCode::Char('t'), KeyModifiers::CONTROL, 10);
+
+        assert!(matches!(app.dialog_mode, DialogMode::Rename { .. }));
     }
 
     #[test]

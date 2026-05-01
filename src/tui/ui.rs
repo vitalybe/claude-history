@@ -196,7 +196,7 @@ fn render_list_status_bar(frame: &mut Frame, app: &App, area: Rect) {
         Span::styled(" resume  ", action_label),
         Span::styled(keys.fork.short_label(), action_key),
         Span::styled(" fork  ", action_label),
-        Span::styled("F2", action_key),
+        Span::styled(keys.rename.short_label(), action_key),
         Span::styled(" rename  ", action_label),
         Span::styled(keys.delete.short_label(), action_key),
         Span::styled(" delete  ", action_label),
@@ -1124,7 +1124,7 @@ fn render_help_overlay(
             ("Ctrl+W".into(), "Delete word"),
             (keys.resume.help_label(), "Resume"),
             (keys.fork.help_label(), "Fork resume"),
-            ("F2".into(), "Rename"),
+            (keys.rename.help_label(), "Rename"),
             (keys.delete.help_label(), "Delete"),
             ("Esc".into(), "Quit"),
         ]
