@@ -2348,7 +2348,7 @@ impl App {
         }
     }
 
-    fn view_tool_output_at_row(&self, row: u16, frame_area: Rect) -> Option<(ToolOutputId, bool)> {
+    fn view_line_at_row(&self, row: u16, frame_area: Rect) -> Option<usize> {
         let AppMode::View(state) = &self.app_mode else {
             return None;
         };
@@ -2359,10 +2359,24 @@ impl App {
         if row < layout.content.y || row >= layout.content.y.saturating_add(layout.content.height) {
             return None;
         }
-        let rendered_idx = state.scroll_offset + (row - layout.content.y) as usize;
-        state.rendered_lines.get(rendered_idx).and_then(|line| {
+        Some(state.scroll_offset + (row - layout.content.y) as usize)
+    }
+
+    fn message_idx_at_line(ranges: &[MessageRange], line_idx: usize) -> Option<usize> {
+        let idx = ranges.partition_point(|m| m.end_line <= line_idx);
+        ranges
+            .get(idx)
+            .is_some_and(|m| line_idx >= m.start_line && line_idx < m.end_line)
+            .then_some(idx)
+    }
+
+    fn view_tool_output_at_line(&self, line_idx: usize) -> Option<ToolOutputId> {
+        let AppMode::View(state) = &self.app_mode else {
+            return None;
+        };
+        state.rendered_lines.get(line_idx).and_then(|line| {
             if line.clickable {
-                line.tool_output_id.as_ref().map(|id| (id.clone(), true))
+                line.tool_output_id.clone()
             } else {
                 None
             }
@@ -2371,8 +2385,8 @@ impl App {
 
     pub fn handle_view_mouse_move(&mut self, row: u16, frame_area: Rect) -> bool {
         let next = self
-            .view_tool_output_at_row(row, frame_area)
-            .map(|(id, _)| id);
+            .view_line_at_row(row, frame_area)
+            .and_then(|line_idx| self.view_tool_output_at_line(line_idx));
         let AppMode::View(state) = &mut self.app_mode else {
             return false;
         };
@@ -2389,20 +2403,43 @@ impl App {
         frame_area: Rect,
         viewport_height: usize,
     ) -> bool {
-        let Some((id, true)) = self.view_tool_output_at_row(row, frame_area) else {
+        let Some(line_idx) = self.view_line_at_row(row, frame_area) else {
             return false;
         };
+        let tool_output = self.view_tool_output_at_line(line_idx);
+        let message_idx = if let AppMode::View(state) = &self.app_mode {
+            Self::message_idx_at_line(&state.message_ranges, line_idx)
+        } else {
+            None
+        };
+        if tool_output.is_none() && message_idx.is_none() {
+            return false;
+        }
+
         let AppMode::View(state) = &mut self.app_mode else {
             return false;
         };
-        if state.expanded_tool_outputs.contains(&id) {
-            state.expanded_tool_outputs.remove(&id);
-        } else {
-            state.expanded_tool_outputs.insert(id.clone());
+        let mut changed = false;
+        if let Some(idx) = message_idx
+            && (!state.message_nav_active || state.focused_message != Some(idx))
+        {
+            state.message_nav_active = true;
+            state.focused_message = Some(idx);
+            changed = true;
         }
-        state.hovered_tool_output = Some(id);
-        self.re_render_view(viewport_height);
-        true
+        if let Some(id) = tool_output {
+            if state.expanded_tool_outputs.contains(&id) {
+                state.expanded_tool_outputs.remove(&id);
+            } else {
+                state.expanded_tool_outputs.insert(id.clone());
+            }
+            state.hovered_tool_output = Some(id);
+            changed = true;
+        }
+        if changed {
+            self.re_render_view(viewport_height);
+        }
+        changed
     }
 
     /// Handle a left-click in list mode: select the conversation under the cursor.
