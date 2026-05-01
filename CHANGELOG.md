@@ -1,3 +1,15 @@
+## v0.1.54 (2026-05-01)
+
+- Added `tui.exclude_projects` so projects can be hidden from the TUI browse and
+  search lists while remaining accessible by UUID or file path
+  ([#43](https://github.com/raine/claude-history/pull/43))
+- Added in-TUI session renaming from the conversation list, with a configurable
+  rename keybinding
+- Improved markdown rendering in the TUI, including preserved line breaks,
+  indentation, tabs, and code block formatting
+- Shortcut help overlays now stay usable in small terminals by clamping,
+  centering, and scrolling when needed
+
 ## v0.1.53 (2026-04-17)
 
 - Conversation viewer no longer jumps to unrelated content when toggling tool
