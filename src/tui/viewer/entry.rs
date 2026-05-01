@@ -1,4 +1,6 @@
-use crate::claude::{self, AssistantMessage, ContentBlock, LogEntry, UserContent};
+use std::borrow::Cow;
+
+use crate::claude::{self, ContentBlock, LogEntry, UserContent};
 
 use super::RenderedLine;
 
@@ -28,7 +30,6 @@ pub(super) fn render_entry(
         | LogEntry::CustomTitle { .. }
         | LogEntry::AgentName { .. } => {}
         LogEntry::Progress { data, .. } => {
-            // Handle agent_progress entries (only when show_thinking is enabled)
             if options.show_thinking
                 && let Some(agent_progress) = crate::claude::parse_agent_progress(data)
             {
@@ -41,23 +42,15 @@ pub(super) fn render_entry(
             parent_tool_use_id,
             ..
         } => {
-            // Subagent messages: show nested when show_thinking, skip otherwise
             if parent_tool_use_id.is_some() && !options.show_thinking {
                 return;
             }
-            let ts = if options.show_timing {
-                timestamp.as_deref().and_then(format_timestamp)
-            } else {
-                None
-            };
-            render_user_message(
-                lines,
-                message,
-                options,
-                ts.as_deref(),
-                parent_tool_use_id.as_deref(),
-                entry_index,
-            );
+            let ts = entry_timestamp(options, timestamp.as_deref());
+            let parent_id = parent_tool_use_id.as_deref();
+            let style = MessageStyle::for_user(parent_id, &message.content);
+            let mut renderer =
+                MessageRenderer::new(style, parent_id, entry_index, options, ts.as_deref());
+            renderer.render_user_template(lines, &message.content);
         }
         LogEntry::Assistant {
             message,
@@ -65,291 +58,510 @@ pub(super) fn render_entry(
             parent_tool_use_id,
             ..
         } => {
-            // Subagent messages: show nested when show_thinking, skip otherwise
             if parent_tool_use_id.is_some() && !options.show_thinking {
                 return;
             }
-            let ts = if options.show_timing {
-                timestamp.as_deref().and_then(format_timestamp)
-            } else {
-                None
-            };
-            render_assistant_message(
-                lines,
-                message,
-                options,
-                ts.as_deref(),
-                parent_tool_use_id.as_deref(),
-                entry_index,
-            );
+            let ts = entry_timestamp(options, timestamp.as_deref());
+            let parent_id = parent_tool_use_id.as_deref();
+            let style = MessageStyle::for_assistant(parent_id);
+            let mut renderer =
+                MessageRenderer::new(style, parent_id, entry_index, options, ts.as_deref());
+            renderer.render_assistant_template(lines, &message.content);
         }
     }
 }
 
-fn render_user_message(
-    lines: &mut Vec<RenderedLine>,
-    message: &crate::claude::UserMessage,
-    options: &RenderOptions,
-    timestamp: Option<&str>,
-    parent_id: Option<&str>,
-    entry_index: usize,
-) {
-    let mut printed = false;
-    let mut timing = RowTiming::new(options.show_timing, timestamp);
-    let nested_label = parent_id.map(subagent_label);
+fn entry_timestamp(options: &RenderOptions, raw: Option<&str>) -> Option<String> {
+    if options.show_timing {
+        raw.and_then(format_timestamp)
+    } else {
+        None
+    }
+}
 
-    // Detect if this is a skill invocation message
-    let is_skill = match &message.content {
-        UserContent::String(s) => s.trim().starts_with("Base directory for this skill:"),
-        UserContent::Blocks(blocks) => blocks.iter().any(|block| {
-            matches!(block, ContentBlock::Text { text } if text.trim().starts_with("Base directory for this skill:"))
-        }),
-    };
+/// Captures the visual style and label for a single message render pass.
+///
+/// Each message kind (top-level user, top-level assistant, subagent
+/// user/assistant, agent_progress user/assistant) maps to one of these
+/// styles. Centralizing them removes the per-block "is this nested?"
+/// branches that previously lived in `render_user_message` /
+/// `render_assistant_message` / `render_agent_message`.
+struct MessageStyle<'a> {
+    label: Cow<'a, str>,
+    label_color: (u8, u8, u8),
+    /// Whether the label and content render dimmed (subagent / skill).
+    dimmed: bool,
+    /// Whether the first text-block label is bold.
+    bold: bool,
+    /// Whether the message renders as a nested/subagent message —
+    /// controls the special tool-result header and skips thinking
+    /// blocks. Distinct from `dimmed` because skill-mode user messages
+    /// are dimmed but not nested.
+    is_subagent: bool,
+}
 
-    // Extract text from user message, collecting all text blocks
-    let text = match &message.content {
-        UserContent::String(s) => process_command_message(s),
-        UserContent::Blocks(blocks) => {
-            let texts: Vec<String> = blocks
-                .iter()
-                .filter_map(|block| {
-                    if let ContentBlock::Text { text } = block {
-                        process_command_message(text)
-                    } else {
-                        None
-                    }
-                })
-                .collect();
-            if texts.is_empty() {
-                None
-            } else {
-                Some(texts.join("\n\n"))
-            }
+impl<'a> MessageStyle<'a> {
+    fn for_user(parent_id: Option<&'a str>, content: &UserContent) -> Self {
+        if let Some(p) = parent_id {
+            return Self {
+                label: Cow::Owned(subagent_label(p)),
+                label_color: th().text_primary,
+                dimmed: true,
+                bold: false,
+                is_subagent: true,
+            };
         }
-    };
+        let is_skill = match content {
+            UserContent::String(s) => s.trim().starts_with("Base directory for this skill:"),
+            UserContent::Blocks(blocks) => blocks.iter().any(|block| {
+                matches!(block, ContentBlock::Text { text }
+                    if text.trim().starts_with("Base directory for this skill:"))
+            }),
+        };
+        Self {
+            label: Cow::Borrowed("You"),
+            label_color: th().text_primary,
+            dimmed: is_skill,
+            bold: !is_skill,
+            is_subagent: false,
+        }
+    }
 
-    if let Some(text) = text {
-        let md_lines = render_markdown_to_lines(&text, options.content_width);
-        if let Some(ref label) = nested_label {
+    fn for_assistant(parent_id: Option<&'a str>) -> Self {
+        match parent_id {
+            Some(p) => Self {
+                label: Cow::Owned(subagent_label(p)),
+                label_color: th().accent,
+                dimmed: true,
+                bold: false,
+                is_subagent: true,
+            },
+            None => Self {
+                label: Cow::Borrowed("Claude"),
+                label_color: th().accent,
+                dimmed: false,
+                bold: true,
+                is_subagent: false,
+            },
+        }
+    }
+
+    fn for_agent_user(short_id: &str) -> Self {
+        Self {
+            label: Cow::Owned(format!("↳{}", short_id)),
+            label_color: th().text_primary,
+            dimmed: true,
+            bold: false,
+            is_subagent: true,
+        }
+    }
+
+    fn for_agent_assistant(short_id: &str) -> Self {
+        Self {
+            label: Cow::Owned(format!("↳{}", short_id)),
+            label_color: th().accent,
+            dimmed: true,
+            bold: false,
+            is_subagent: true,
+        }
+    }
+}
+
+/// Drives one entry's render pass through an explicit block-pipeline
+/// template.
+///
+/// Each `render_*_template` method enumerates the blocks in the order
+/// they should appear (text → tool summary → tool calls → thinking for
+/// assistants; text → tool results for users) and calls the per-step
+/// helpers below. The template ordering here — text first, then tool
+/// activity, then thinking — is the documented behavior, not the raw
+/// JSON content order.
+struct MessageRenderer<'a> {
+    style: MessageStyle<'a>,
+    parent_id: Option<&'a str>,
+    entry_index: usize,
+    options: &'a RenderOptions,
+    timing: RowTiming<'a>,
+}
+
+impl<'a> MessageRenderer<'a> {
+    fn new(
+        style: MessageStyle<'a>,
+        parent_id: Option<&'a str>,
+        entry_index: usize,
+        options: &'a RenderOptions,
+        timestamp: Option<&'a str>,
+    ) -> Self {
+        Self {
+            style,
+            parent_id,
+            entry_index,
+            options,
+            timing: RowTiming::new(options.show_timing, timestamp),
+        }
+    }
+
+    /// User template: text (first), then tool results (second). Pushes
+    /// a trailing blank only when something rendered.
+    fn render_user_template(&mut self, lines: &mut Vec<RenderedLine>, content: &UserContent) {
+        let mut printed = self.step_user_text(lines, content);
+        if self.options.tool_display.shows_details()
+            && let UserContent::Blocks(blocks) = content
+        {
+            printed |= self.step_user_tool_results(lines, blocks);
+        }
+        if printed {
+            lines.push(RenderedLine::new(vec![]));
+        }
+    }
+
+    /// Assistant template: text → tool summary → tool calls → thinking.
+    /// Order is intentional and matches pre-refactor behavior, not the
+    /// raw JSON block order.
+    fn render_assistant_template(
+        &mut self,
+        lines: &mut Vec<RenderedLine>,
+        blocks: &[ContentBlock],
+    ) {
+        let mut printed = self.step_assistant_text(lines, blocks);
+        printed |= self.step_tool_summary(lines, blocks);
+        if self.options.tool_display.shows_details() {
+            printed |= self.step_tool_calls(lines, blocks);
+        }
+        printed |= self.step_thinking(lines, blocks);
+        if printed {
+            lines.push(RenderedLine::new(vec![]));
+        }
+    }
+
+    /// Aggregated-text agent_progress template.
+    ///
+    /// agent_progress entries combine all text blocks into one block
+    /// before rendering, then walk tool blocks individually.
+    fn render_agent_progress_user(
+        &mut self,
+        lines: &mut Vec<RenderedLine>,
+        blocks: &[ContentBlock],
+    ) {
+        let mut printed = self.step_aggregated_text(lines, blocks);
+        if self.options.tool_display.shows_details() {
+            printed |= self.step_agent_tool_results(lines, blocks);
+        }
+        if printed {
+            lines.push(RenderedLine::new(vec![]));
+        }
+    }
+
+    fn render_agent_progress_assistant(
+        &mut self,
+        lines: &mut Vec<RenderedLine>,
+        blocks: &[ContentBlock],
+    ) {
+        let mut printed = self.step_aggregated_text(lines, blocks);
+        printed |= self.step_tool_summary(lines, blocks);
+        if self.options.tool_display.shows_details() {
+            printed |= self.step_tool_calls(lines, blocks);
+        }
+        // agent_progress assistant entries do not render thinking blocks.
+        if printed {
+            lines.push(RenderedLine::new(vec![]));
+        }
+    }
+
+    // ---- block-pipeline steps ------------------------------------------------
+
+    fn step_user_text(&mut self, lines: &mut Vec<RenderedLine>, content: &UserContent) -> bool {
+        let text = match content {
+            UserContent::String(s) => process_command_message(s),
+            UserContent::Blocks(blocks) => {
+                let texts: Vec<String> = blocks
+                    .iter()
+                    .filter_map(|block| {
+                        if let ContentBlock::Text { text } = block {
+                            process_command_message(text)
+                        } else {
+                            None
+                        }
+                    })
+                    .collect();
+                if texts.is_empty() {
+                    None
+                } else {
+                    Some(texts.join("\n\n"))
+                }
+            }
+        };
+        let Some(text) = text else { return false };
+        let md_lines = render_markdown_to_lines(&text, self.options.content_width);
+        if self.style.dimmed {
             render_ledger_block_styled_dimmed(
                 lines,
-                label,
-                th().text_primary,
+                &self.style.label,
+                self.style.label_color,
                 md_lines,
-                timing.show_timing(),
-            );
-        } else if is_skill {
-            render_ledger_block_styled_dimmed(
-                lines,
-                "You",
-                th().text_primary,
-                md_lines,
-                timing.show_timing(),
+                self.timing.show_timing(),
             );
         } else {
             render_ledger_block_styled(
                 lines,
-                "You",
-                th().text_primary,
-                true,
+                &self.style.label,
+                self.style.label_color,
+                self.style.bold,
                 md_lines,
-                timing.take_once(),
+                self.timing.take_once(),
             );
         }
-        // Whichever branch ran, the top-level timestamp slot is now spent.
-        let _ = timing.take_once();
-        printed = true;
+        // Top-level slot is now spent regardless of the branch taken.
+        let _ = self.timing.take_once();
+        true
     }
 
-    // Tool results (if enabled)
-    if options.tool_display.shows_details()
-        && let UserContent::Blocks(blocks) = &message.content
-    {
+    fn step_assistant_text(
+        &mut self,
+        lines: &mut Vec<RenderedLine>,
+        blocks: &[ContentBlock],
+    ) -> bool {
+        let mut printed = false;
+        for block in blocks {
+            let ContentBlock::Text { text } = block else {
+                continue;
+            };
+            if text.trim().is_empty() {
+                continue;
+            }
+            let md_lines = render_markdown_to_lines(text, self.options.content_width);
+            if self.style.dimmed {
+                render_ledger_block_styled_dimmed(
+                    lines,
+                    &self.style.label,
+                    self.style.label_color,
+                    md_lines,
+                    self.timing.show_timing(),
+                );
+                let _ = self.timing.take_once();
+            } else {
+                render_ledger_block_styled(
+                    lines,
+                    &self.style.label,
+                    self.style.label_color,
+                    self.style.bold,
+                    md_lines,
+                    self.timing.take_once(),
+                );
+            }
+            printed = true;
+        }
+        printed
+    }
+
+    /// Aggregated-text step used by agent_progress entries: joins all
+    /// `ContentBlock::Text` blocks and renders them as one styled block.
+    fn step_aggregated_text(
+        &mut self,
+        lines: &mut Vec<RenderedLine>,
+        blocks: &[ContentBlock],
+    ) -> bool {
+        let texts: Vec<&str> = blocks
+            .iter()
+            .filter_map(|b| {
+                if let ContentBlock::Text { text } = b {
+                    Some(text.as_str())
+                } else {
+                    None
+                }
+            })
+            .collect();
+        if texts.is_empty() {
+            return false;
+        }
+        let combined = texts.join("\n\n");
+        let md_lines = render_markdown_to_lines(&combined, self.options.content_width);
+        render_ledger_block_styled_dimmed(
+            lines,
+            &self.style.label,
+            self.style.label_color,
+            md_lines,
+            self.timing.show_timing(),
+        );
+        let _ = self.timing.take_once();
+        true
+    }
+
+    fn step_tool_summary(
+        &mut self,
+        lines: &mut Vec<RenderedLine>,
+        blocks: &[ContentBlock],
+    ) -> bool {
+        if !self.options.tool_display.is_summary() {
+            return false;
+        }
+        let summary = summarize_tool_calls(blocks);
+        if summary.is_empty() {
+            return false;
+        }
+        render_tool_activity_summary(
+            lines,
+            &self.style.label,
+            th().accent_dim,
+            self.style.is_subagent,
+            self.timing.consume(),
+            &summary,
+            None,
+        );
+        true
+    }
+
+    fn step_tool_calls(&mut self, lines: &mut Vec<RenderedLine>, blocks: &[ContentBlock]) -> bool {
+        let mut printed = false;
         for (block_idx, block) in blocks.iter().enumerate() {
-            if let ContentBlock::ToolResult {
+            let ContentBlock::ToolUse { id, name, input } = block else {
+                continue;
+            };
+            let output_id = make_tool_output_id(
+                self.entry_index,
+                self.parent_id,
+                block_idx,
+                ToolOutputKind::ToolCall,
+                Some(id),
+            );
+            let expanded = self.options.expanded_tool_outputs.contains(&output_id);
+            let timestamp = if self.style.is_subagent {
+                self.timing.pad()
+            } else {
+                self.timing.consume()
+            };
+            render_tool_call(
+                lines,
+                &ToolCallRenderSpec {
+                    name,
+                    input,
+                    label: &self.style.label,
+                    label_color: th().accent_dim,
+                    dimmed: self.style.dimmed,
+                    content_width: self.options.content_width,
+                    timestamp,
+                    tool_display: self.options.tool_display,
+                    tool_output_id: &output_id,
+                    expanded,
+                },
+            );
+            printed = true;
+        }
+        printed
+    }
+
+    fn step_thinking(&mut self, lines: &mut Vec<RenderedLine>, blocks: &[ContentBlock]) -> bool {
+        if !self.options.show_thinking || self.style.is_subagent {
+            return false;
+        }
+        let mut printed = false;
+        for block in blocks {
+            let ContentBlock::Thinking { thinking, .. } = block else {
+                continue;
+            };
+            if thinking.is_empty() {
+                continue;
+            }
+            let md_lines = render_markdown_to_lines(thinking, self.options.content_width);
+            let styled_lines = apply_thinking_style(md_lines);
+            render_ledger_block_styled(
+                lines,
+                "Thinking",
+                th().accent_dim,
+                false,
+                styled_lines,
+                self.timing.consume(),
+            );
+            printed = true;
+        }
+        printed
+    }
+
+    fn step_user_tool_results(
+        &mut self,
+        lines: &mut Vec<RenderedLine>,
+        blocks: &[ContentBlock],
+    ) -> bool {
+        let mut printed = false;
+        for (block_idx, block) in blocks.iter().enumerate() {
+            let ContentBlock::ToolResult {
                 content,
                 tool_use_id,
                 ..
             } = block
-            {
-                let output_id = make_tool_output_id(
-                    entry_index,
-                    parent_id,
-                    block_idx,
-                    ToolOutputKind::ToolResult,
-                    Some(tool_use_id),
-                );
-                let expanded = options.expanded_tool_outputs.contains(&output_id);
-                if nested_label.is_some() {
-                    let content_str = format_tool_result_content(content.as_ref());
-                    render_subagent_tool_result_header(lines, timing.show_timing());
-                    render_dimmed_tool_result_body(
-                        lines,
-                        options,
-                        &output_id,
-                        expanded,
-                        &content_str,
-                    );
-                } else {
-                    let content_str = tool_result_display_text(content.as_ref());
-                    render_tool_result(
-                        lines,
-                        &ToolResultRenderSpec {
-                            text: &content_str,
-                            content_width: options.content_width,
-                            timestamp: timing.consume(),
-                            tool_display: options.tool_display,
-                            tool_output_id: &output_id,
-                            expanded,
-                        },
-                    );
-                }
-                printed = true;
-            }
-        }
-    }
-
-    if printed {
-        lines.push(RenderedLine::new(vec![])); // Empty line after message
-    }
-}
-
-fn render_assistant_message(
-    lines: &mut Vec<RenderedLine>,
-    message: &AssistantMessage,
-    options: &RenderOptions,
-    timestamp: Option<&str>,
-    parent_id: Option<&str>,
-    entry_index: usize,
-) {
-    let mut printed = false;
-    let mut timing = RowTiming::new(options.show_timing, timestamp);
-    let nested_label = parent_id.map(subagent_label);
-
-    // Text blocks
-    for block in &message.content {
-        if let ContentBlock::Text { text } = block {
-            if text.trim().is_empty() {
+            else {
                 continue;
-            }
-            let md_lines = render_markdown_to_lines(text, options.content_width);
-            if let Some(ref label) = nested_label {
-                render_ledger_block_styled_dimmed(
-                    lines,
-                    label,
-                    th().accent,
-                    md_lines,
-                    timing.show_timing(),
-                );
-                // Nested rows do not display the timestamp, but a top-level
-                // timestamp is still considered consumed by the first
-                // rendered block — mirror the pre-refactor behavior.
-                let _ = timing.take_once();
-            } else {
-                render_ledger_block_styled(
-                    lines,
-                    "Claude",
-                    th().accent,
-                    true,
-                    md_lines,
-                    timing.take_once(),
-                );
-            }
-            printed = true;
-        }
-    }
-
-    if options.tool_display.is_summary() {
-        let summary = summarize_tool_calls(&message.content);
-        if !summary.is_empty() {
-            let label = nested_label.as_deref().unwrap_or("Claude");
-            render_tool_activity_summary(
-                lines,
-                label,
-                th().accent_dim,
-                nested_label.is_some(),
-                timing.consume(),
-                &summary,
-                None,
+            };
+            let output_id = make_tool_output_id(
+                self.entry_index,
+                self.parent_id,
+                block_idx,
+                ToolOutputKind::ToolResult,
+                Some(tool_use_id),
             );
+            let expanded = self.options.expanded_tool_outputs.contains(&output_id);
+            if self.style.is_subagent {
+                let content_str = format_tool_result_content(content.as_ref());
+                render_subagent_tool_result_header(lines, self.timing.show_timing());
+                render_dimmed_tool_result_body(
+                    lines,
+                    self.options,
+                    &output_id,
+                    expanded,
+                    &content_str,
+                );
+            } else {
+                let content_str = tool_result_display_text(content.as_ref());
+                render_tool_result(
+                    lines,
+                    &ToolResultRenderSpec {
+                        text: &content_str,
+                        content_width: self.options.content_width,
+                        timestamp: self.timing.consume(),
+                        tool_display: self.options.tool_display,
+                        tool_output_id: &output_id,
+                        expanded,
+                    },
+                );
+            }
             printed = true;
         }
+        printed
     }
 
-    // Tool calls (if enabled)
-    if options.tool_display.shows_details() {
-        for (block_idx, block) in message.content.iter().enumerate() {
-            if let ContentBlock::ToolUse { id, name, input } = block {
-                let output_id = make_tool_output_id(
-                    entry_index,
-                    parent_id,
-                    block_idx,
-                    ToolOutputKind::ToolCall,
-                    Some(id),
-                );
-                let expanded = options.expanded_tool_outputs.contains(&output_id);
-                if let Some(ref label) = nested_label {
-                    render_tool_call(
-                        lines,
-                        &ToolCallRenderSpec {
-                            name,
-                            input,
-                            label,
-                            label_color: th().accent_dim,
-                            dimmed: true,
-                            content_width: options.content_width,
-                            timestamp: timing.pad(),
-                            tool_display: options.tool_display,
-                            tool_output_id: &output_id,
-                            expanded,
-                        },
-                    );
-                } else {
-                    render_tool_call(
-                        lines,
-                        &ToolCallRenderSpec {
-                            name,
-                            input,
-                            label: "Claude",
-                            label_color: th().accent_dim,
-                            dimmed: false,
-                            content_width: options.content_width,
-                            timestamp: timing.consume(),
-                            tool_display: options.tool_display,
-                            tool_output_id: &output_id,
-                            expanded,
-                        },
-                    );
-                }
-                printed = true;
-            }
+    /// Tool-result step for agent_progress user blocks. Always renders
+    /// as a dimmed subagent result regardless of `style.is_subagent`,
+    /// because agent_progress user content always uses the dimmed
+    /// subagent result presentation.
+    fn step_agent_tool_results(
+        &mut self,
+        lines: &mut Vec<RenderedLine>,
+        blocks: &[ContentBlock],
+    ) -> bool {
+        let mut printed = false;
+        for (block_idx, block) in blocks.iter().enumerate() {
+            let ContentBlock::ToolResult {
+                content,
+                tool_use_id,
+                ..
+            } = block
+            else {
+                continue;
+            };
+            let output_id = make_tool_output_id(
+                self.entry_index,
+                self.parent_id,
+                block_idx,
+                ToolOutputKind::ToolResult,
+                Some(tool_use_id),
+            );
+            let expanded = self.options.expanded_tool_outputs.contains(&output_id);
+            render_subagent_tool_result_header(lines, self.options.show_timing);
+            let content_str = format_tool_result_content(content.as_ref());
+            render_dimmed_tool_result_body(lines, self.options, &output_id, expanded, &content_str);
+            printed = true;
         }
-    }
-
-    // Thinking blocks (if enabled, skip for subagents)
-    if options.show_thinking && nested_label.is_none() {
-        for block in &message.content {
-            if let ContentBlock::Thinking { thinking, .. } = block {
-                if thinking.is_empty() {
-                    continue;
-                }
-                let md_lines = render_markdown_to_lines(thinking, options.content_width);
-                let styled_lines = apply_thinking_style(md_lines);
-                render_ledger_block_styled(
-                    lines,
-                    "Thinking",
-                    th().accent_dim,
-                    false,
-                    styled_lines,
-                    timing.consume(),
-                );
-                printed = true;
-            }
-        }
-    }
-
-    if printed {
-        lines.push(RenderedLine::new(vec![]));
+        printed
     }
 }
 
@@ -363,167 +575,39 @@ pub(super) fn subagent_label(parent_tool_use_id: &str) -> String {
     format!("↳{}", claude::short_parent_id(parent_tool_use_id))
 }
 
-/// Render agent (subagent) progress message
+/// Render agent (subagent) progress message.
+///
+/// agent_progress entries wrap a nested user/assistant message; this
+/// function dispatches to the matching pipeline template above. The
+/// `agent_id` is reused as the synthetic `parent_id` for tool output
+/// IDs so that expanded-tool keys remain stable across re-renders.
 fn render_agent_message(
     lines: &mut Vec<RenderedLine>,
     entry_index: usize,
     agent_progress: &crate::claude::AgentProgressData,
     options: &RenderOptions,
 ) {
-    use crate::claude::{AgentContent, ContentBlock};
+    use crate::claude::AgentContent;
 
     let agent_id = &agent_progress.agent_id;
     let short_id = short_agent_id(agent_id);
     let msg = &agent_progress.message;
-    let mut printed = false;
 
     match msg.message_type.as_str() {
         "user" => {
             let AgentContent::Blocks(blocks) = &msg.message.content;
-
-            // Aggregate text blocks and render together
-            let texts: Vec<&str> = blocks
-                .iter()
-                .filter_map(|b| {
-                    if let ContentBlock::Text { text } = b {
-                        Some(text.as_str())
-                    } else {
-                        None
-                    }
-                })
-                .collect();
-
-            if !texts.is_empty() {
-                let combined = texts.join("\n\n");
-                let md_lines = render_markdown_to_lines(&combined, options.content_width);
-                let name = format!("↳{}", short_id);
-                render_ledger_block_styled_dimmed(
-                    lines,
-                    &name,
-                    th().text_primary,
-                    md_lines,
-                    options.show_timing,
-                );
-                printed = true;
-            }
-
-            // Tool results
-            if options.tool_display.shows_details() {
-                for (block_idx, block) in blocks.iter().enumerate() {
-                    if let ContentBlock::ToolResult {
-                        content,
-                        tool_use_id,
-                        ..
-                    } = block
-                    {
-                        let output_id = make_tool_output_id(
-                            entry_index,
-                            Some(agent_id),
-                            block_idx,
-                            ToolOutputKind::ToolResult,
-                            Some(tool_use_id),
-                        );
-                        let expanded = options.expanded_tool_outputs.contains(&output_id);
-                        render_subagent_tool_result_header(lines, options.show_timing);
-                        let content_str = format_tool_result_content(content.as_ref());
-                        render_dimmed_tool_result_body(
-                            lines,
-                            options,
-                            &output_id,
-                            expanded,
-                            &content_str,
-                        );
-                        printed = true;
-                    }
-                }
-            }
+            let style = MessageStyle::for_agent_user(short_id);
+            let mut renderer =
+                MessageRenderer::new(style, Some(agent_id), entry_index, options, None);
+            renderer.render_agent_progress_user(lines, blocks);
         }
         "assistant" => {
             let AgentContent::Blocks(blocks) = &msg.message.content;
-
-            // Aggregate text blocks and render together
-            let texts: Vec<&str> = blocks
-                .iter()
-                .filter_map(|b| {
-                    if let ContentBlock::Text { text } = b {
-                        Some(text.as_str())
-                    } else {
-                        None
-                    }
-                })
-                .collect();
-
-            if !texts.is_empty() {
-                let combined = texts.join("\n\n");
-                let md_lines = render_markdown_to_lines(&combined, options.content_width);
-                let name = format!("↳{}", short_id);
-                render_ledger_block_styled_dimmed(
-                    lines,
-                    &name,
-                    th().accent,
-                    md_lines,
-                    options.show_timing,
-                );
-                printed = true;
-            }
-
-            let pad_ts = if options.show_timing {
-                Some("     ")
-            } else {
-                None
-            };
-            if options.tool_display.is_summary() {
-                let summary = summarize_tool_calls(blocks);
-                let name = format!("↳{}", short_id);
-                render_tool_activity_summary(
-                    lines,
-                    &name,
-                    th().accent_dim,
-                    true,
-                    pad_ts,
-                    &summary,
-                    None,
-                );
-                printed |= !summary.is_empty();
-            }
-
-            // Tool calls
-            if options.tool_display.shows_details() {
-                for (block_idx, block) in blocks.iter().enumerate() {
-                    if let ContentBlock::ToolUse { id, name, input } = block {
-                        let output_id = make_tool_output_id(
-                            entry_index,
-                            Some(agent_id),
-                            block_idx,
-                            ToolOutputKind::ToolCall,
-                            Some(id),
-                        );
-                        let expanded = options.expanded_tool_outputs.contains(&output_id);
-                        let label = format!("↳{}", short_id);
-                        render_tool_call(
-                            lines,
-                            &ToolCallRenderSpec {
-                                name,
-                                input,
-                                label: &label,
-                                label_color: th().accent_dim,
-                                dimmed: true,
-                                content_width: options.content_width,
-                                timestamp: pad_ts,
-                                tool_display: options.tool_display,
-                                tool_output_id: &output_id,
-                                expanded,
-                            },
-                        );
-                        printed = true;
-                    }
-                }
-            }
+            let style = MessageStyle::for_agent_assistant(short_id);
+            let mut renderer =
+                MessageRenderer::new(style, Some(agent_id), entry_index, options, None);
+            renderer.render_agent_progress_assistant(lines, blocks);
         }
         _ => {}
-    }
-
-    if printed {
-        lines.push(RenderedLine::new(vec![]));
     }
 }

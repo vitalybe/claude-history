@@ -1526,4 +1526,118 @@ mod tests {
         assert!(rendered.messages[0].start_line < rendered.messages[0].end_line);
         assert!(rendered.messages[1].start_line < rendered.messages[1].end_line);
     }
+
+    // -----------------------------------------------------------------
+    // Message renderer template ordering
+    //
+    // Pin the template-order contract: regardless of raw JSON block
+    // order, assistant messages render text first, then tool activity,
+    // then thinking. Skill-marker user messages render dimmed but
+    // remain top-level (not nested with the ↳ arrow).
+    // -----------------------------------------------------------------
+
+    fn first_index(text: &str, needle: &str) -> Option<usize> {
+        text.find(needle)
+    }
+
+    #[test]
+    fn assistant_template_order_is_text_then_tool_then_thinking() {
+        // Raw JSON order: thinking, tool_use, text. Template ordering
+        // (text → tool → thinking) must override that.
+        let entries = vec![RenderableEntry {
+            entry_index: 0,
+            entry: serde_json::from_str(
+                r#"{"type":"assistant","message":{"role":"assistant","content":[
+                    {"type":"thinking","thinking":"deep thought","signature":"sig"},
+                    {"type":"tool_use","id":"toolu_1","name":"Bash","input":{"command":"ls"}},
+                    {"type":"text","text":"text reply"}
+                ]}}"#,
+            )
+            .unwrap(),
+        }];
+        let mut options = test_render_options(ToolDisplayMode::Truncated);
+        options.show_thinking = true;
+        let rendered = render_parsed_conversation(&entries, &options);
+        let text = rendered_text(&rendered);
+
+        let i_text = first_index(&text, "text reply").expect("text block rendered");
+        let i_tool = first_index(&text, "Bash").expect("tool call rendered");
+        let i_think = first_index(&text, "deep thought").expect("thinking rendered");
+
+        assert!(i_text < i_tool, "text must precede tool call: {}", text);
+        assert!(
+            i_tool < i_think,
+            "tool call must precede thinking: {}",
+            text
+        );
+    }
+
+    #[test]
+    fn skill_marker_user_message_renders_dimmed_but_top_level() {
+        let entries = vec![RenderableEntry {
+            entry_index: 0,
+            entry: serde_json::from_str(
+                r#"{"type":"user","message":{"role":"user","content":"Base directory for this skill: /tmp/x"}}"#,
+            )
+            .unwrap(),
+        }];
+        let rendered =
+            render_parsed_conversation(&entries, &test_render_options(ToolDisplayMode::Hidden));
+        let line = &rendered.lines[0];
+        let name_text = format!("{:>width$}", "You", width = NAME_WIDTH);
+        let style = line_style_at(line, &name_text);
+
+        // Skill messages keep the "You" label (not ↳…), but render
+        // dimmed without bold.
+        assert!(style.dimmed);
+        assert!(!style.bold);
+    }
+
+    #[test]
+    fn agent_progress_user_with_text_and_result_keeps_template_order() {
+        // agent_progress user blocks aggregate text then render tool
+        // results. Both must appear, in that order.
+        let entries = vec![RenderableEntry {
+            entry_index: 0,
+            entry: serde_json::from_str(
+                r#"{"type":"progress","data":{"type":"agent_progress","agentId":"agent-abc1234","message":{"type":"user","message":{"role":"user","content":[
+                    {"type":"text","text":"agent says hi"},
+                    {"type":"tool_result","tool_use_id":"toolu_1","content":"result body"}
+                ]}}}}"#,
+            )
+            .unwrap(),
+        }];
+        let mut options = test_render_options(ToolDisplayMode::Truncated);
+        options.show_thinking = true;
+        let rendered = render_parsed_conversation(&entries, &options);
+        let text = rendered_text(&rendered);
+
+        let i_text = first_index(&text, "agent says hi").expect("text rendered");
+        let i_result = first_index(&text, "result body").expect("result rendered");
+        assert!(i_text < i_result, "text must precede result: {}", text);
+    }
+
+    #[test]
+    fn excluded_entry_kinds_produce_no_lines() {
+        // Summary, system, custom-title, file-history, agent-name
+        // entries are inert — they render nothing and do not produce
+        // message ranges.
+        let entries = vec![
+            RenderableEntry {
+                entry_index: 0,
+                entry: serde_json::from_str(r#"{"type":"summary","summary":"x"}"#).unwrap(),
+            },
+            RenderableEntry {
+                entry_index: 1,
+                entry: serde_json::from_str(
+                    r#"{"type":"system","subtype":"info","message":"sys"}"#,
+                )
+                .unwrap(),
+            },
+        ];
+        let rendered =
+            render_parsed_conversation(&entries, &test_render_options(ToolDisplayMode::Hidden));
+        assert!(rendered.lines.is_empty());
+        assert!(rendered.messages.is_empty());
+    }
 }
