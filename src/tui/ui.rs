@@ -157,7 +157,9 @@ fn render_list_mode(frame: &mut Frame, app: &App) {
     }
 
     match app.dialog_mode() {
-        DialogMode::Help { scroll } => render_help_overlay(frame, false, false, app.keys(), *scroll),
+        DialogMode::Help { scroll } => {
+            render_help_overlay(frame, false, false, app.keys(), *scroll)
+        }
         DialogMode::Rename { input, cursor } => render_rename_dialog(frame, input, *cursor),
         _ => {}
     }
