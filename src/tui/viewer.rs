@@ -59,7 +59,7 @@ pub enum ToolDisplayMode {
 }
 
 impl ToolDisplayMode {
-    /// Cycle to the next mode: Hidden → Truncated → Full → Hidden
+    /// Cycle to the next mode: Summary → Truncated → Full → Summary
     pub fn next(self) -> Self {
         match self {
             Self::Hidden => Self::Truncated,
@@ -68,15 +68,24 @@ impl ToolDisplayMode {
         }
     }
 
-    /// Whether tools should be rendered at all
-    pub fn is_visible(self) -> bool {
+    pub fn is_summary(self) -> bool {
+        matches!(self, Self::Hidden)
+    }
+
+    /// Whether full or truncated tool details should be rendered
+    pub fn shows_details(self) -> bool {
         !matches!(self, Self::Hidden)
+    }
+
+    /// Whether tools should be included in exported text
+    pub fn is_visible(self) -> bool {
+        self.shows_details()
     }
 
     /// Fixed-width label for the status bar (3 chars each)
     pub fn status_label(self) -> &'static str {
         match self {
-            Self::Hidden => "off",
+            Self::Hidden => "sum",
             Self::Truncated => "trn",
             Self::Full => "all",
         }
@@ -153,10 +162,57 @@ pub fn render_parsed_conversation(
 ) -> RenderedConversation {
     let mut lines = Vec::new();
     let mut messages = Vec::new();
+    let mut pending_tool_summary: Option<(
+        usize,
+        Option<String>,
+        Option<String>,
+        ToolActivitySummary,
+    )> = None;
 
     for parsed in entries {
         let entry_index = parsed.entry_index;
         let entry = &parsed.entry;
+
+        if options.tool_display.is_summary() {
+            if let Some((parent_id, timestamp, summary)) =
+                tool_only_assistant_summary(entry, options)
+            {
+                match &mut pending_tool_summary {
+                    Some((_, pending_parent, _, pending_summary))
+                        if pending_parent.as_deref() == parent_id =>
+                    {
+                        pending_summary.merge(summary);
+                    }
+                    _ => {
+                        flush_tool_summary(
+                            &mut lines,
+                            &mut messages,
+                            &mut pending_tool_summary,
+                            options,
+                        );
+                        pending_tool_summary = Some((
+                            entry_index,
+                            parent_id.map(str::to_string),
+                            timestamp.map(str::to_string),
+                            summary,
+                        ));
+                    }
+                }
+                continue;
+            }
+
+            if user_entry_is_only_tool_results(entry, options) {
+                continue;
+            }
+        }
+
+        flush_tool_summary(
+            &mut lines,
+            &mut messages,
+            &mut pending_tool_summary,
+            options,
+        );
+
         let is_message = matches!(entry, LogEntry::User { .. } | LogEntry::Assistant { .. })
             || matches!(entry, LogEntry::Progress { data, .. }
                 if options.show_thinking && crate::claude::parse_agent_progress(data).is_some());
@@ -164,7 +220,6 @@ pub fn render_parsed_conversation(
         render_entry(&mut lines, entry_index, entry, options);
         let end_line = lines.len();
 
-        // Track message ranges (exclude trailing blank line from the range)
         if is_message && end_line > start_line {
             let effective_end =
                 if end_line > 0 && lines.get(end_line - 1).is_some_and(|l| l.spans.is_empty()) {
@@ -181,6 +236,13 @@ pub fn render_parsed_conversation(
             }
         }
     }
+
+    flush_tool_summary(
+        &mut lines,
+        &mut messages,
+        &mut pending_tool_summary,
+        options,
+    );
 
     // Collapse consecutive empty lines into single empty lines.
     // Multiple render functions each add trailing empty lines, which can
@@ -271,6 +333,260 @@ fn make_tool_output_id(
         "entry:{entry_index}:parent:{parent}:block:{block_index}:kind:{}:id:{raw}",
         kind.as_str()
     ))
+}
+
+#[derive(Default)]
+struct ToolActivitySummary {
+    searched_patterns: usize,
+    searched_file_patterns: usize,
+    read_files: usize,
+    shell_commands: usize,
+    edited_files: usize,
+    wrote_files: usize,
+    agents: usize,
+    fetched_urls: usize,
+    web_searches: usize,
+    other_tools: usize,
+}
+
+impl ToolActivitySummary {
+    fn add_call(&mut self, name: &str) {
+        match name {
+            "Bash" => self.shell_commands += 1,
+            "Read" => self.read_files += 1,
+            "Grep" => self.searched_patterns += 1,
+            "Glob" => self.searched_file_patterns += 1,
+            "Edit" => self.edited_files += 1,
+            "Write" => self.wrote_files += 1,
+            "Task" => self.agents += 1,
+            "WebFetch" => self.fetched_urls += 1,
+            "WebSearch" => self.web_searches += 1,
+            _ => self.other_tools += 1,
+        }
+    }
+
+    fn merge(&mut self, other: Self) {
+        self.searched_patterns += other.searched_patterns;
+        self.searched_file_patterns += other.searched_file_patterns;
+        self.read_files += other.read_files;
+        self.shell_commands += other.shell_commands;
+        self.edited_files += other.edited_files;
+        self.wrote_files += other.wrote_files;
+        self.agents += other.agents;
+        self.fetched_urls += other.fetched_urls;
+        self.web_searches += other.web_searches;
+        self.other_tools += other.other_tools;
+    }
+
+    fn is_empty(&self) -> bool {
+        self.searched_patterns
+            + self.searched_file_patterns
+            + self.read_files
+            + self.shell_commands
+            + self.edited_files
+            + self.wrote_files
+            + self.agents
+            + self.fetched_urls
+            + self.web_searches
+            + self.other_tools
+            == 0
+    }
+
+    fn sentence(&self) -> String {
+        let mut parts = Vec::new();
+        push_summary_item(
+            &mut parts,
+            self.searched_patterns,
+            "Searched for",
+            "pattern",
+        );
+        push_summary_item(
+            &mut parts,
+            self.searched_file_patterns,
+            "Searched for",
+            "file pattern",
+        );
+        push_summary_item(&mut parts, self.read_files, "read", "file");
+        push_summary_item(&mut parts, self.shell_commands, "ran", "shell command");
+        push_summary_item(&mut parts, self.edited_files, "edited", "file");
+        push_summary_item(&mut parts, self.wrote_files, "wrote", "file");
+        push_summary_item(&mut parts, self.agents, "started", "agent");
+        push_summary_item(&mut parts, self.fetched_urls, "fetched", "URL");
+        push_summary_item(&mut parts, self.web_searches, "searched", "web");
+        push_summary_item(&mut parts, self.other_tools, "called", "tool");
+        capitalize_first(parts.join(", "))
+    }
+}
+
+fn capitalize_first(text: String) -> String {
+    let mut chars = text.chars();
+    let Some(first) = chars.next() else {
+        return text;
+    };
+    first.to_uppercase().chain(chars).collect()
+}
+
+fn push_summary_item(parts: &mut Vec<String>, count: usize, verb: &str, noun: &str) {
+    if count == 0 {
+        return;
+    }
+    let suffix = if count == 1 { "" } else { "s" };
+    parts.push(format!("{verb} {count} {noun}{suffix}"));
+}
+
+fn render_tool_activity_summary(
+    lines: &mut Vec<RenderedLine>,
+    label: &str,
+    label_color: (u8, u8, u8),
+    dimmed: bool,
+    timestamp: Option<&str>,
+    summary: &ToolActivitySummary,
+) {
+    if summary.is_empty() {
+        return;
+    }
+
+    let mut spans = Vec::new();
+    if let Some(ts) = timestamp {
+        spans.push((
+            format!(" {} ", ts),
+            LineStyle {
+                fg: Some((140, 140, 140)),
+                dimmed: false,
+                bold: false,
+                italic: false,
+            },
+        ));
+    }
+    spans.push((
+        format!("{:>width$}", label, width = NAME_WIDTH),
+        LineStyle {
+            fg: Some(label_color),
+            bold: false,
+            dimmed,
+            italic: false,
+        },
+    ));
+    spans.push((
+        " │ ".to_string(),
+        LineStyle {
+            fg: Some(th().border),
+            dimmed,
+            ..Default::default()
+        },
+    ));
+    spans.push((
+        summary.sentence(),
+        LineStyle {
+            fg: Some(th().tool_text),
+            dimmed: true,
+            ..Default::default()
+        },
+    ));
+    lines.push(RenderedLine::new(spans));
+}
+
+fn summarize_tool_calls(blocks: &[ContentBlock]) -> ToolActivitySummary {
+    let mut summary = ToolActivitySummary::default();
+    for block in blocks {
+        if let ContentBlock::ToolUse { name, .. } = block {
+            summary.add_call(name);
+        }
+    }
+    summary
+}
+
+fn assistant_blocks_are_tool_only(blocks: &[ContentBlock]) -> bool {
+    blocks
+        .iter()
+        .all(|block| matches!(block, ContentBlock::ToolUse { .. }))
+}
+
+fn tool_only_assistant_summary<'a>(
+    entry: &'a LogEntry,
+    options: &RenderOptions,
+) -> Option<(Option<&'a str>, Option<&'a str>, ToolActivitySummary)> {
+    let LogEntry::Assistant {
+        message,
+        timestamp,
+        parent_tool_use_id,
+        ..
+    } = entry
+    else {
+        return None;
+    };
+
+    if parent_tool_use_id.is_some() && !options.show_thinking {
+        return None;
+    }
+    if message.content.is_empty() || !assistant_blocks_are_tool_only(&message.content) {
+        return None;
+    }
+
+    let summary = summarize_tool_calls(&message.content);
+    (!summary.is_empty()).then_some((parent_tool_use_id.as_deref(), timestamp.as_deref(), summary))
+}
+
+fn user_entry_is_only_tool_results(entry: &LogEntry, options: &RenderOptions) -> bool {
+    let LogEntry::User {
+        message,
+        parent_tool_use_id,
+        ..
+    } = entry
+    else {
+        return false;
+    };
+
+    if parent_tool_use_id.is_some() && !options.show_thinking {
+        return false;
+    }
+
+    let UserContent::Blocks(blocks) = &message.content else {
+        return false;
+    };
+    !blocks.is_empty()
+        && blocks
+            .iter()
+            .all(|block| matches!(block, ContentBlock::ToolResult { .. }))
+}
+
+fn flush_tool_summary(
+    lines: &mut Vec<RenderedLine>,
+    messages: &mut Vec<MessageRange>,
+    pending: &mut Option<(usize, Option<String>, Option<String>, ToolActivitySummary)>,
+    options: &RenderOptions,
+) {
+    let Some((entry_index, parent_id, timestamp, summary)) = pending.take() else {
+        return;
+    };
+
+    let start_line = lines.len();
+    let label = parent_id
+        .as_deref()
+        .map(subagent_label)
+        .unwrap_or_else(|| "Claude".to_string());
+    let ts = if options.show_timing {
+        timestamp.as_deref().and_then(format_timestamp)
+    } else {
+        None
+    };
+    render_tool_activity_summary(
+        lines,
+        &label,
+        th().accent_dim,
+        parent_id.is_some(),
+        ts.as_deref(),
+        &summary,
+    );
+    let end_line = lines.len();
+    if end_line > start_line {
+        messages.push(MessageRange {
+            entry_index,
+            start_line,
+            end_line,
+        });
+        lines.push(RenderedLine::new(vec![]));
+    }
 }
 
 fn render_entry(
@@ -419,7 +735,7 @@ fn render_user_message(
     }
 
     // Tool results (if enabled)
-    if options.tool_display.is_visible()
+    if options.tool_display.shows_details()
         && let UserContent::Blocks(blocks) = &message.content
     {
         for (block_idx, block) in blocks.iter().enumerate() {
@@ -594,8 +910,33 @@ fn render_assistant_message(
         }
     }
 
+    if options.tool_display.is_summary() {
+        let summary = summarize_tool_calls(&message.content);
+        if !summary.is_empty() {
+            let label = nested_label.as_deref().unwrap_or("Claude");
+            let ts = if ts_remaining.is_some() {
+                let t = ts_remaining;
+                ts_remaining = None;
+                t
+            } else if options.show_timing {
+                Some("     ")
+            } else {
+                None
+            };
+            render_tool_activity_summary(
+                lines,
+                label,
+                th().accent_dim,
+                nested_label.is_some(),
+                ts,
+                &summary,
+            );
+            printed = true;
+        }
+    }
+
     // Tool calls (if enabled)
-    if options.tool_display.is_visible() {
+    if options.tool_display.shows_details() {
         for (block_idx, block) in message.content.iter().enumerate() {
             if let ContentBlock::ToolUse { id, name, input } = block {
                 let output_id = make_tool_output_id(
@@ -1235,7 +1576,7 @@ fn render_agent_message(
             }
 
             // Tool results
-            if options.tool_display.is_visible() {
+            if options.tool_display.shows_details() {
                 for (block_idx, block) in blocks.iter().enumerate() {
                     if let ContentBlock::ToolResult {
                         content,
@@ -1329,8 +1670,22 @@ fn render_agent_message(
                 printed = true;
             }
 
+            if options.tool_display.is_summary() {
+                let summary = summarize_tool_calls(blocks);
+                let name = format!("↳{}", short_id);
+                render_tool_activity_summary(
+                    lines,
+                    &name,
+                    th().accent_dim,
+                    true,
+                    options.show_timing.then_some("     "),
+                    &summary,
+                );
+                printed |= !summary.is_empty();
+            }
+
             // Tool calls
-            if options.tool_display.is_visible() {
+            if options.tool_display.shows_details() {
                 let align_ts = if options.show_timing {
                     Some("     ")
                 } else {
@@ -1916,6 +2271,83 @@ mod tests {
 
     fn line_text(line: &RenderedLine) -> String {
         line.spans.iter().map(|(text, _)| text.as_str()).collect()
+    }
+
+    fn rendered_text(conversation: &RenderedConversation) -> String {
+        conversation
+            .lines
+            .iter()
+            .map(line_text)
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    fn test_render_options(tool_display: ToolDisplayMode) -> RenderOptions {
+        RenderOptions {
+            tool_display,
+            show_thinking: false,
+            show_timing: false,
+            content_width: 80,
+            expanded_tool_outputs: BTreeSet::new(),
+        }
+    }
+
+    #[test]
+    fn hidden_tool_mode_renders_activity_summary() {
+        let entry = RenderableEntry {
+            entry_index: 0,
+            entry: serde_json::from_str(
+                r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"toolu_1","name":"Grep","input":{"pattern":"one"}},{"type":"tool_use","id":"toolu_2","name":"Grep","input":{"pattern":"two"}},{"type":"tool_use","id":"toolu_3","name":"Read","input":{"file_path":"src/main.rs"}}]}}"#,
+            )
+            .unwrap(),
+        };
+        let rendered =
+            render_parsed_conversation(&[entry], &test_render_options(ToolDisplayMode::Hidden));
+        let text = rendered_text(&rendered);
+
+        assert!(text.contains("Searched for 2 patterns"));
+        assert!(text.contains("read 1 file"));
+        assert!(!text.contains("Grep:"));
+        assert!(!text.contains("Read:"));
+    }
+
+    #[test]
+    fn hidden_tool_mode_coalesces_tool_only_entries_across_results() {
+        let entries = vec![
+            RenderableEntry {
+                entry_index: 0,
+                entry: serde_json::from_str(
+                    r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"toolu_1","name":"Grep","input":{"pattern":"one"}}]}}"#,
+                )
+                .unwrap(),
+            },
+            RenderableEntry {
+                entry_index: 1,
+                entry: serde_json::from_str(
+                    r#"{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_1","content":"result"}]}}"#,
+                )
+                .unwrap(),
+            },
+            RenderableEntry {
+                entry_index: 2,
+                entry: serde_json::from_str(
+                    r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"toolu_2","name":"Read","input":{"file_path":"src/main.rs"}},{"type":"tool_use","id":"toolu_3","name":"Bash","input":{"command":"cargo test"}}]}}"#,
+                )
+                .unwrap(),
+            },
+        ];
+        let rendered =
+            render_parsed_conversation(&entries, &test_render_options(ToolDisplayMode::Hidden));
+        let text = rendered_text(&rendered);
+
+        assert!(text.contains("Searched for 1 pattern, read 1 file, ran 1 shell command"));
+        assert_eq!(text.matches("Claude").count(), 1);
+        assert!(!text.contains("Result"));
+    }
+
+    #[test]
+    fn hidden_tool_mode_status_label_is_summary() {
+        assert_eq!(ToolDisplayMode::Hidden.status_label(), "sum");
     }
 
     #[test]

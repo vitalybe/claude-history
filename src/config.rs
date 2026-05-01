@@ -58,6 +58,25 @@ exclude_projects = ["Hidden", "hidden", " spaced "]
             vec!["Hidden", "hidden", " spaced "]
         );
     }
+
+    #[test]
+    fn parses_function_key_binding() {
+        let binding = parse_key_binding("f2").unwrap();
+        assert_eq!(binding.code, KeyCode::F(2));
+        assert_eq!(binding.modifiers, KeyModifiers::NONE);
+        assert_eq!(binding.short_label(), "F2");
+        assert_eq!(binding.help_label(), "F2");
+    }
+
+    #[test]
+    fn applies_rename_key_config() {
+        let keys = KeyBindings::from_config(Some(KeysConfig {
+            rename: Some(parse_key_binding("alt+r").unwrap()),
+            ..Default::default()
+        }));
+
+        assert!(keys.rename.matches(KeyCode::Char('r'), KeyModifiers::ALT));
+    }
 }
 
 #[derive(Deserialize, Debug, Default)]
@@ -248,30 +267,6 @@ fn get_config_path() -> Option<PathBuf> {
 ///
 /// Returns a default `ConfigFile` if the file or home directory doesn't exist.
 /// Returns an error if the file exists but cannot be read or parsed.
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn parses_function_key_binding() {
-        let binding = parse_key_binding("f2").unwrap();
-        assert_eq!(binding.code, KeyCode::F(2));
-        assert_eq!(binding.modifiers, KeyModifiers::NONE);
-        assert_eq!(binding.short_label(), "F2");
-        assert_eq!(binding.help_label(), "F2");
-    }
-
-    #[test]
-    fn applies_rename_key_config() {
-        let keys = KeyBindings::from_config(Some(KeysConfig {
-            rename: Some(parse_key_binding("alt+r").unwrap()),
-            ..Default::default()
-        }));
-
-        assert!(keys.rename.matches(KeyCode::Char('r'), KeyModifiers::ALT));
-    }
-}
-
 pub fn load_config() -> Result<ConfigFile> {
     let config_path = match get_config_path() {
         Some(path) => path,

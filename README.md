@@ -114,7 +114,7 @@ preview.
 | `/`            | Start search                                       |
 | `n`            | Next search match                                  |
 | `N`            | Previous search match                              |
-| `t`            | Cycle tools: off/truncated/full                    |
+| `t`            | Cycle tools: summary/truncated/full                |
 | `T`            | Toggle thinking                                    |
 | `e`            | Export conversation to file                        |
 | `y`            | Copy to clipboard (message if selected, else menu) |
@@ -191,7 +191,7 @@ conversations in a ledger-style format with scrolling support.
   mouse wheel
 - **Search**: Press `/` to search within the conversation, then `n`/`N` to
   navigate matches
-- **Cycle tools**: Press `t` to cycle tool display (off → truncated → full)
+- **Cycle tools**: Press `t` to cycle tool display (summary → truncated → full)
 - **Toggle thinking**: Press `T` to show/hide thinking blocks
 - **Show path**: Press `p` to display the conversation file path
 - **Light/dark theme**: Automatically detects terminal background color and
@@ -246,9 +246,10 @@ Options:
 In the TUI viewer, tool calls default to **truncated** mode — showing the tool
 header plus the first few body lines with a "(N more lines...)" indicator. Click
 a truncated tool call/result to expand that specific output, and click it again
-to collapse it. Press `t` to cycle through modes: off → truncated → full. Use
-`--show-tools` (or `-t`) to start in full mode, or `--no-tools` to start with
-tools hidden.
+to collapse it. Press `t` to cycle through modes: summary → truncated → full.
+Summary mode shows condensed activity like "Searched for 2 patterns, read 1 file"
+without tool inputs or outputs. Use `--show-tools` (or `-t`) to start in full
+mode, or `--no-tools` to start in summary mode.
 
 ### Showing thinking blocks and subagent messages
 
@@ -435,8 +436,8 @@ EOF
 
 #### Display options
 
-- `no_tools` (boolean): When `true`, hides tool calls; when `false`, shows them
-  in full. When unset (default), tools display in truncated mode
+- `no_tools` (boolean): When `true`, shows tool summaries; when `false`, shows
+  full tool details. When unset (default), tools display in truncated mode
 - `last` (boolean): Show last messages instead of first in TUI preview (default:
   true)
 - `show_thinking` (boolean): Show thinking blocks and subagent internals in
@@ -482,8 +483,8 @@ Each display option has opposing flags for explicit override:
 - `--plain` (no opposite flag)
 - `--no-pager` / `--pager`
 
-For example, if your config has `no_tools = false` (showing tools), you can
-temporarily hide them with `--no-tools`.
+For example, if your config has `no_tools = false` (showing full tool details),
+you can temporarily switch to summaries with `--no-tools`.
 
 ## Custom Claude config directory
 
