@@ -450,7 +450,7 @@ fn render_user_message(
                     if options.tool_display == ToolDisplayMode::Truncated && !expanded {
                         let content_lines: Vec<&str> = content_str.lines().collect();
                         let total = content_lines.len();
-                        if total > TRUNCATED_RESULT_LINES {
+                        if total > TRUNCATED_RESULT_LINES + 1 {
                             let truncated = content_lines[..TRUNCATED_RESULT_LINES].join("\n");
                             render_continuation_dimmed(
                                 lines,
@@ -996,7 +996,7 @@ fn render_tool_call(
         if tool_display == ToolDisplayMode::Truncated && !expanded {
             let body_lines: Vec<&str> = body.lines().collect();
             let total = body_lines.len();
-            if total > TRUNCATED_BODY_LINES {
+            if total > TRUNCATED_BODY_LINES + 1 {
                 let truncated = body_lines[..TRUNCATED_BODY_LINES].join("\n");
                 render_tool_body(
                     lines,
@@ -1109,7 +1109,7 @@ fn render_tool_result(
     let total = styled_lines.len();
     let limit = if tool_display == ToolDisplayMode::Truncated
         && !expanded
-        && total > TRUNCATED_RESULT_LINES
+        && total > TRUNCATED_RESULT_LINES + 1
     {
         TRUNCATED_RESULT_LINES
     } else {
@@ -1262,7 +1262,7 @@ fn render_agent_message(
                         if options.tool_display == ToolDisplayMode::Truncated && !expanded {
                             let content_lines: Vec<&str> = content_str.lines().collect();
                             let total = content_lines.len();
-                            if total > TRUNCATED_RESULT_LINES {
+                            if total > TRUNCATED_RESULT_LINES + 1 {
                                 let truncated = content_lines[..TRUNCATED_RESULT_LINES].join("\n");
                                 render_continuation_dimmed(
                                     lines,
