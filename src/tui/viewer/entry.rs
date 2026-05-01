@@ -3,10 +3,10 @@ use crate::claude::{self, AssistantMessage, ContentBlock, LogEntry, UserContent}
 use super::RenderedLine;
 
 use super::commands::process_command_message;
-use super::ledger::{
-    render_continuation_dimmed, render_ledger_block_plain_dimmed, render_ledger_block_styled,
-    render_ledger_block_styled_dimmed, render_truncation_indicator,
+use super::context::{
+    RowTiming, render_dimmed_tool_result_body, render_subagent_tool_result_header,
 };
+use super::ledger::{render_ledger_block_styled, render_ledger_block_styled_dimmed};
 use super::markdown::{apply_thinking_style, render_markdown_to_lines};
 use super::summary::{render_tool_activity_summary, summarize_tool_calls};
 use super::tools::{
@@ -95,7 +95,7 @@ fn render_user_message(
     entry_index: usize,
 ) {
     let mut printed = false;
-    let mut ts_remaining = timestamp;
+    let mut timing = RowTiming::new(options.show_timing, timestamp);
     let nested_label = parent_id.map(subagent_label);
 
     // Detect if this is a skill invocation message
@@ -136,7 +136,7 @@ fn render_user_message(
                 label,
                 th().text_primary,
                 md_lines,
-                options.show_timing,
+                timing.show_timing(),
             );
         } else if is_skill {
             render_ledger_block_styled_dimmed(
@@ -144,7 +144,7 @@ fn render_user_message(
                 "You",
                 th().text_primary,
                 md_lines,
-                options.show_timing,
+                timing.show_timing(),
             );
         } else {
             render_ledger_block_styled(
@@ -153,11 +153,12 @@ fn render_user_message(
                 th().text_primary,
                 true,
                 md_lines,
-                ts_remaining,
+                timing.take_once(),
             );
         }
+        // Whichever branch ran, the top-level timestamp slot is now spent.
+        let _ = timing.take_once();
         printed = true;
-        ts_remaining = None;
     }
 
     // Tool results (if enabled)
@@ -180,66 +181,25 @@ fn render_user_message(
                 );
                 let expanded = options.expanded_tool_outputs.contains(&output_id);
                 if nested_label.is_some() {
-                    // Dimmed tool result for subagent
                     let content_str = format_tool_result_content(content.as_ref());
-                    render_ledger_block_plain_dimmed(
+                    render_subagent_tool_result_header(lines, timing.show_timing());
+                    render_dimmed_tool_result_body(
                         lines,
-                        "  ↳ Tool",
-                        th().accent_dim,
-                        "<Result>",
-                        options.show_timing,
+                        options,
+                        &output_id,
+                        expanded,
+                        &content_str,
                     );
-                    if options.tool_display == ToolDisplayMode::Truncated && !expanded {
-                        let content_lines: Vec<&str> = content_str.lines().collect();
-                        let total = content_lines.len();
-                        if total > TRUNCATED_RESULT_LINES {
-                            let truncated = content_lines[..TRUNCATED_RESULT_LINES].join("\n");
-                            render_continuation_dimmed(
-                                lines,
-                                &truncated,
-                                options.show_timing,
-                                Some(&output_id),
-                            );
-                            render_truncation_indicator(
-                                lines,
-                                total - TRUNCATED_RESULT_LINES,
-                                true,
-                                options.show_timing,
-                                Some(&output_id),
-                            );
-                        } else {
-                            render_continuation_dimmed(
-                                lines,
-                                &content_str,
-                                options.show_timing,
-                                None,
-                            );
-                        }
-                    } else {
-                        let id = (options.tool_display == ToolDisplayMode::Truncated)
-                            .then_some(&output_id);
-                        render_continuation_dimmed(lines, &content_str, options.show_timing, id);
-                    }
                 } else {
                     let content_str = match extract_tool_result_text(content.as_ref()) {
                         Some(text) => text,
                         None => format_tool_result_content(content.as_ref()),
                     };
-                    // Pass timestamp to first tool result if no text block consumed it
-                    let ts = if ts_remaining.is_some() {
-                        let t = ts_remaining;
-                        ts_remaining = None;
-                        t
-                    } else if options.show_timing {
-                        Some("     ")
-                    } else {
-                        None
-                    };
                     render_tool_result(
                         lines,
                         &content_str,
                         options.content_width,
-                        ts,
+                        timing.consume(),
                         options.tool_display,
                         &output_id,
                         expanded,
@@ -264,7 +224,7 @@ fn render_assistant_message(
     entry_index: usize,
 ) {
     let mut printed = false;
-    let mut ts_remaining = timestamp;
+    let mut timing = RowTiming::new(options.show_timing, timestamp);
     let nested_label = parent_id.map(subagent_label);
 
     // Text blocks
@@ -280,8 +240,12 @@ fn render_assistant_message(
                     label,
                     th().accent,
                     md_lines,
-                    options.show_timing,
+                    timing.show_timing(),
                 );
+                // Nested rows do not display the timestamp, but a top-level
+                // timestamp is still considered consumed by the first
+                // rendered block — mirror the pre-refactor behavior.
+                let _ = timing.take_once();
             } else {
                 render_ledger_block_styled(
                     lines,
@@ -289,14 +253,10 @@ fn render_assistant_message(
                     th().accent,
                     true,
                     md_lines,
-                    ts_remaining,
+                    timing.take_once(),
                 );
             }
             printed = true;
-            // After first block consumes the timestamp, use blank padding for alignment
-            if ts_remaining.is_some() {
-                ts_remaining = None;
-            }
         }
     }
 
@@ -304,21 +264,12 @@ fn render_assistant_message(
         let summary = summarize_tool_calls(&message.content);
         if !summary.is_empty() {
             let label = nested_label.as_deref().unwrap_or("Claude");
-            let ts = if ts_remaining.is_some() {
-                let t = ts_remaining;
-                ts_remaining = None;
-                t
-            } else if options.show_timing {
-                Some("     ")
-            } else {
-                None
-            };
             render_tool_activity_summary(
                 lines,
                 label,
                 th().accent_dim,
                 nested_label.is_some(),
-                ts,
+                timing.consume(),
                 &summary,
                 None,
             );
@@ -339,11 +290,6 @@ fn render_assistant_message(
                 );
                 let expanded = options.expanded_tool_outputs.contains(&output_id);
                 if let Some(ref label) = nested_label {
-                    let align_ts = if options.show_timing {
-                        Some("     ")
-                    } else {
-                        None
-                    };
                     render_tool_call(
                         lines,
                         name,
@@ -352,22 +298,12 @@ fn render_assistant_message(
                         th().accent_dim,
                         true,
                         options.content_width,
-                        align_ts,
+                        timing.pad(),
                         options.tool_display,
                         &output_id,
                         expanded,
                     );
                 } else {
-                    // Pass timestamp to first tool call if no text block consumed it
-                    let ts = if ts_remaining.is_some() {
-                        let t = ts_remaining;
-                        ts_remaining = None;
-                        t
-                    } else if options.show_timing {
-                        Some("     ")
-                    } else {
-                        None
-                    };
                     render_tool_call(
                         lines,
                         name,
@@ -376,7 +312,7 @@ fn render_assistant_message(
                         th().accent_dim,
                         false,
                         options.content_width,
-                        ts,
+                        timing.consume(),
                         options.tool_display,
                         &output_id,
                         expanded,
@@ -396,23 +332,13 @@ fn render_assistant_message(
                 }
                 let md_lines = render_markdown_to_lines(thinking, options.content_width);
                 let styled_lines = apply_thinking_style(md_lines);
-                // Pass timestamp if no previous block consumed it
-                let ts = if ts_remaining.is_some() {
-                    let t = ts_remaining;
-                    ts_remaining = None;
-                    t
-                } else if options.show_timing {
-                    Some("     ")
-                } else {
-                    None
-                };
                 render_ledger_block_styled(
                     lines,
                     "Thinking",
                     th().accent_dim,
                     false,
                     styled_lines,
-                    ts,
+                    timing.consume(),
                 );
                 printed = true;
             }
@@ -495,50 +421,15 @@ fn render_agent_message(
                             Some(tool_use_id),
                         );
                         let expanded = options.expanded_tool_outputs.contains(&output_id);
-                        render_ledger_block_plain_dimmed(
-                            lines,
-                            "  ↳ Tool",
-                            th().accent_dim,
-                            "<Result>",
-                            options.show_timing,
-                        );
+                        render_subagent_tool_result_header(lines, options.show_timing);
                         let content_str = format_tool_result_content(content.as_ref());
-                        if options.tool_display == ToolDisplayMode::Truncated && !expanded {
-                            let content_lines: Vec<&str> = content_str.lines().collect();
-                            let total = content_lines.len();
-                            if total > TRUNCATED_RESULT_LINES {
-                                let truncated = content_lines[..TRUNCATED_RESULT_LINES].join("\n");
-                                render_continuation_dimmed(
-                                    lines,
-                                    &truncated,
-                                    options.show_timing,
-                                    Some(&output_id),
-                                );
-                                render_truncation_indicator(
-                                    lines,
-                                    total - TRUNCATED_RESULT_LINES,
-                                    true,
-                                    options.show_timing,
-                                    Some(&output_id),
-                                );
-                            } else {
-                                render_continuation_dimmed(
-                                    lines,
-                                    &content_str,
-                                    options.show_timing,
-                                    None,
-                                );
-                            }
-                        } else {
-                            let id = (options.tool_display == ToolDisplayMode::Truncated)
-                                .then_some(&output_id);
-                            render_continuation_dimmed(
-                                lines,
-                                &content_str,
-                                options.show_timing,
-                                id,
-                            );
-                        }
+                        render_dimmed_tool_result_body(
+                            lines,
+                            options,
+                            &output_id,
+                            expanded,
+                            &content_str,
+                        );
                         printed = true;
                     }
                 }
@@ -573,6 +464,11 @@ fn render_agent_message(
                 printed = true;
             }
 
+            let pad_ts = if options.show_timing {
+                Some("     ")
+            } else {
+                None
+            };
             if options.tool_display.is_summary() {
                 let summary = summarize_tool_calls(blocks);
                 let name = format!("↳{}", short_id);
@@ -581,7 +477,7 @@ fn render_agent_message(
                     &name,
                     th().accent_dim,
                     true,
-                    options.show_timing.then_some("     "),
+                    pad_ts,
                     &summary,
                     None,
                 );
@@ -590,11 +486,6 @@ fn render_agent_message(
 
             // Tool calls
             if options.tool_display.shows_details() {
-                let align_ts = if options.show_timing {
-                    Some("     ")
-                } else {
-                    None
-                };
                 for (block_idx, block) in blocks.iter().enumerate() {
                     if let ContentBlock::ToolUse { id, name, input } = block {
                         let output_id = make_tool_output_id(
@@ -614,7 +505,7 @@ fn render_agent_message(
                             th().accent_dim,
                             true,
                             options.content_width,
-                            align_ts,
+                            pad_ts,
                             options.tool_display,
                             &output_id,
                             expanded,

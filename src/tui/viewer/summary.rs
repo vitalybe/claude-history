@@ -1,5 +1,6 @@
 use crate::claude::{ContentBlock, LogEntry, UserContent};
 
+use super::context::assistant_label;
 use super::ledger::{LedgerRow, NameCol, TimestampCol, push_row};
 use super::tools::{
     ToolOutputKind, extract_tool_result_text, format_tool_result_content, make_tool_output_id,
@@ -230,6 +231,11 @@ fn render_summary_group_details(
 ) {
     let first_line = lines.len();
     let mut rendered_any = false;
+    let pad_ts = if options.show_timing {
+        Some("     ")
+    } else {
+        None
+    };
     for parsed in &entries[pending.first_parsed_idx..=pending.last_parsed_idx] {
         match &parsed.entry {
             LogEntry::Assistant {
@@ -258,7 +264,7 @@ fn render_summary_group_details(
                             th().accent_dim,
                             true,
                             options.content_width,
-                            options.show_timing.then_some("     "),
+                            pad_ts,
                             ToolDisplayMode::Truncated,
                             &output_id,
                             expanded,
@@ -301,7 +307,7 @@ fn render_summary_group_details(
                             lines,
                             &content_str,
                             options.content_width,
-                            options.show_timing.then_some("     "),
+                            pad_ts,
                             ToolDisplayMode::Truncated,
                             &output_id,
                             expanded,
@@ -331,11 +337,7 @@ pub(super) fn flush_tool_summary(
     };
 
     let start_line = lines.len();
-    let label = pending
-        .parent_id
-        .as_deref()
-        .map(subagent_label)
-        .unwrap_or_else(|| "Claude".to_string());
+    let label = assistant_label(pending.parent_id.as_deref());
     let ts = if options.show_timing {
         pending.timestamp.as_deref().and_then(format_timestamp)
     } else {

@@ -13,6 +13,7 @@ use std::path::Path;
 use crate::tui::theme::{self, Theme};
 
 mod commands;
+mod context;
 mod entry;
 mod ledger;
 mod markdown;
@@ -22,7 +23,7 @@ mod tools;
 
 pub use output::{LineStyle, RenderedLine};
 
-use entry::{render_entry, subagent_label};
+use entry::render_entry;
 use summary::{
     PendingToolSummary, flush_tool_summary, tool_only_assistant_summary,
     user_entry_is_only_tool_results,
