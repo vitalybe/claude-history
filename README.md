@@ -243,13 +243,13 @@ Options:
 
 ### Showing tool calls
 
-In the TUI viewer, tool calls default to **truncated** mode — showing the tool
-header plus the first few body lines with a "(N more lines...)" indicator. Click
-a truncated tool call/result to expand that specific output, and click it again
-to collapse it. Press `t` to cycle through modes: summary → truncated → full.
-Summary mode shows condensed activity like "Searched for 2 patterns, read 1 file"
-without tool inputs or outputs. Use `--show-tools` (or `-t`) to start in full
-mode, or `--no-tools` to start in summary mode.
+In the TUI viewer, tool calls default to **summary** mode — showing condensed
+activity like "Searched for 2 patterns, read 1 file" without tool inputs or
+outputs. Press `t` to cycle through modes: summary → truncated → full. Truncated
+mode shows the tool header plus the first few body lines with a "(N more
+lines...)" indicator. Click a truncated tool call/result to expand that specific
+output, and click it again to collapse it. Use `--show-tools` (or `-t`) to start
+in full mode, or `--no-tools` to start in summary mode.
 
 ### Showing thinking blocks and subagent messages
 
@@ -400,7 +400,7 @@ Create the config file:
 mkdir -p ~/.config/claude-history
 cat > ~/.config/claude-history/config.toml << 'EOF'
 [display]
-# Tool display: true = hidden, false = full (default: unset = truncated)
+# Tool display: true = summary, false = full (default: unset = summary)
 # no_tools = false
 
 # Show last messages in TUI preview (default: true)
@@ -436,8 +436,8 @@ EOF
 
 #### Display options
 
-- `no_tools` (boolean): When `true`, shows tool summaries; when `false`, shows
-  full tool details. When unset (default), tools display in truncated mode
+- `no_tools` (boolean): When `true` or unset (default), shows tool summaries;
+  when `false`, shows full tool details
 - `last` (boolean): Show last messages instead of first in TUI preview (default:
   true)
 - `show_thinking` (boolean): Show thinking blocks and subagent internals in

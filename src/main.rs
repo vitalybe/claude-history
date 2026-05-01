@@ -94,7 +94,7 @@ fn run() -> Result<()> {
         false, // Default: hide tools
     );
     // Map CLI flag to ToolDisplayMode
-    // --show-tools → Full, --no-tools → Hidden, default → Truncated
+    // --show-tools → Full, --no-tools → Hidden, default → Hidden summary
     let tool_display = if args.show_tools {
         tui::ToolDisplayMode::Full
     } else if args.no_tools {
@@ -103,7 +103,7 @@ fn run() -> Result<()> {
         match display_config.no_tools {
             Some(true) => tui::ToolDisplayMode::Hidden,
             Some(false) => tui::ToolDisplayMode::Full,
-            None => tui::ToolDisplayMode::Truncated,
+            None => tui::ToolDisplayMode::Hidden,
         }
     };
     let show_last = resolve_bool_setting(args.last, args.first, display_config.last, true);

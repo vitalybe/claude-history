@@ -52,8 +52,8 @@ impl ToolOutputKind {
 /// Controls how tool calls and results are displayed
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum ToolDisplayMode {
-    Hidden,
     #[default]
+    Hidden,
     Truncated,
     Full,
 }
