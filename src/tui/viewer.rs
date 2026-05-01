@@ -572,6 +572,7 @@ fn render_summary_group_details(
     pending: &PendingToolSummary,
     options: &RenderOptions,
 ) {
+    let first_line = lines.len();
     for parsed in &entries[pending.first_parsed_idx..=pending.last_parsed_idx] {
         match &parsed.entry {
             LogEntry::Assistant {
@@ -593,7 +594,7 @@ fn render_summary_group_details(
                             lines,
                             name,
                             input,
-                            "",
+                            "Claude",
                             th().accent_dim,
                             true,
                             options.content_width,
@@ -647,6 +648,10 @@ fn render_summary_group_details(
             _ => {}
         }
     }
+    if let Some(line) = lines.get_mut(first_line) {
+        line.tool_output_id = Some(pending.id.clone());
+        line.clickable = true;
+    }
 }
 
 fn flush_tool_summary(
@@ -671,18 +676,18 @@ fn flush_tool_summary(
     } else {
         None
     };
-    render_tool_activity_summary(
-        lines,
-        &label,
-        th().accent_dim,
-        pending.parent_id.is_some(),
-        ts.as_deref(),
-        &pending.summary,
-        Some(&pending.id),
-    );
-
     if options.expanded_tool_outputs.contains(&pending.id) {
         render_summary_group_details(lines, entries, &pending, options);
+    } else {
+        render_tool_activity_summary(
+            lines,
+            &label,
+            th().accent_dim,
+            pending.parent_id.is_some(),
+            ts.as_deref(),
+            &pending.summary,
+            Some(&pending.id),
+        );
     }
 
     let end_line = lines.len();
@@ -2468,7 +2473,7 @@ mod tests {
         let rendered = render_parsed_conversation(&entries, &options);
         let text = rendered_text(&rendered);
 
-        assert!(text.contains("Searched for 1 pattern, read 1 file, ran 1 shell command"));
+        assert!(!text.contains("Searched for 1 pattern, read 1 file, ran 1 shell command"));
         assert!(text.contains("Grep: \"one\" in ."));
         assert!(text.contains("Read: src/main.rs"));
         assert!(text.contains("Bash: cargo test"));
