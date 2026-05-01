@@ -200,6 +200,9 @@ pub fn render_parsed_conversation(
             }
 
             if user_entry_is_only_tool_results(entry, options) {
+                if let Some(pending) = &mut pending_tool_summary {
+                    pending.last_parsed_idx = parsed_idx;
+                }
                 continue;
             }
         }
@@ -2427,7 +2430,7 @@ mod tests {
             RenderableEntry {
                 entry_index: 1,
                 entry: serde_json::from_str(
-                    r#"{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_1","content":"result"}]}}"#,
+                    r#"{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_1","content":"grep result"}]}}"#,
                 )
                 .unwrap(),
             },
@@ -2435,6 +2438,13 @@ mod tests {
                 entry_index: 2,
                 entry: serde_json::from_str(
                     r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"toolu_2","name":"Read","input":{"file_path":"src/main.rs"}},{"type":"tool_use","id":"toolu_3","name":"Bash","input":{"command":"cargo test"}}]}}"#,
+                )
+                .unwrap(),
+            },
+            RenderableEntry {
+                entry_index: 3,
+                entry: serde_json::from_str(
+                    r#"{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_3","content":"bash result"}]}}"#,
                 )
                 .unwrap(),
             },
@@ -2487,6 +2497,7 @@ mod tests {
         assert!(text.contains("Read: src/main.rs"));
         assert!(text.contains("Bash: cargo test"));
         assert!(text.contains("↳ Result"));
+        assert!(text.contains("bash result"));
         assert!(rendered.lines.iter().any(|line| {
             line.clickable
                 && line.tool_output_id.as_ref() == Some(&make_tool_summary_output_id(0, None))
