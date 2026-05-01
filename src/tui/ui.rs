@@ -977,7 +977,7 @@ fn render_confirm_dialog(frame: &mut Frame, area: Rect) {
 fn render_rename_dialog(frame: &mut Frame, input: &str, cursor: usize) {
     let area = frame.area();
     let menu_width = area.width.saturating_sub(4).clamp(30, 70);
-    let menu_height = 5;
+    let menu_height = 4;
     let menu_area = Rect {
         x: (area.width.saturating_sub(menu_width)) / 2,
         y: (area.height.saturating_sub(menu_height)) / 2,
