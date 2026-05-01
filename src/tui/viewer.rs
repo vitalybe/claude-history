@@ -118,15 +118,16 @@ fn format_timestamp(iso_timestamp: &str) -> Option<String> {
         .map(|dt| dt.with_timezone(&Local).format("%H:%M").to_string())
 }
 
-/// Render a conversation file to lines for display in the TUI viewer
-pub fn render_conversation(
-    file_path: &Path,
-    options: &RenderOptions,
-) -> std::io::Result<RenderedConversation> {
+#[derive(Debug)]
+pub struct RenderableEntry {
+    pub entry_index: usize,
+    entry: LogEntry,
+}
+
+pub fn parse_conversation_file(file_path: &Path) -> std::io::Result<Vec<RenderableEntry>> {
     let file = File::open(file_path)?;
     let reader = BufReader::new(file);
-    let mut lines = Vec::new();
-    let mut messages = Vec::new();
+    let mut entries = Vec::new();
     let mut entry_index: usize = 0;
 
     for line_result in reader.lines() {
@@ -136,31 +137,48 @@ pub fn render_conversation(
         }
 
         if let Ok(entry) = serde_json::from_str::<LogEntry>(&line) {
-            let is_message = matches!(entry, LogEntry::User { .. } | LogEntry::Assistant { .. })
-                || matches!(&entry, LogEntry::Progress { data, .. }
-                    if options.show_thinking && crate::claude::parse_agent_progress(data).is_some());
-            let start_line = lines.len();
-            render_entry(&mut lines, entry_index, &entry, options);
-            let end_line = lines.len();
+            if !matches!(entry, LogEntry::FileHistorySnapshot { .. }) {
+                entries.push(RenderableEntry { entry_index, entry });
+            }
+            entry_index += 1;
+        }
+    }
 
-            // Track message ranges (exclude trailing blank line from the range)
-            if is_message && end_line > start_line {
-                let effective_end = if end_line > 0
-                    && lines.get(end_line - 1).is_some_and(|l| l.spans.is_empty())
-                {
+    Ok(entries)
+}
+
+pub fn render_parsed_conversation(
+    entries: &[RenderableEntry],
+    options: &RenderOptions,
+) -> RenderedConversation {
+    let mut lines = Vec::new();
+    let mut messages = Vec::new();
+
+    for parsed in entries {
+        let entry_index = parsed.entry_index;
+        let entry = &parsed.entry;
+        let is_message = matches!(entry, LogEntry::User { .. } | LogEntry::Assistant { .. })
+            || matches!(entry, LogEntry::Progress { data, .. }
+                if options.show_thinking && crate::claude::parse_agent_progress(data).is_some());
+        let start_line = lines.len();
+        render_entry(&mut lines, entry_index, entry, options);
+        let end_line = lines.len();
+
+        // Track message ranges (exclude trailing blank line from the range)
+        if is_message && end_line > start_line {
+            let effective_end =
+                if end_line > 0 && lines.get(end_line - 1).is_some_and(|l| l.spans.is_empty()) {
                     end_line - 1
                 } else {
                     end_line
                 };
-                if effective_end > start_line {
-                    messages.push(MessageRange {
-                        entry_index,
-                        start_line,
-                        end_line: effective_end,
-                    });
-                }
+            if effective_end > start_line {
+                messages.push(MessageRange {
+                    entry_index,
+                    start_line,
+                    end_line: effective_end,
+                });
             }
-            entry_index += 1;
         }
     }
 
@@ -228,7 +246,16 @@ pub fn render_conversation(
     // Remove empty ranges
     messages.retain(|m| m.start_line < m.end_line);
 
-    Ok(RenderedConversation { lines, messages })
+    RenderedConversation { lines, messages }
+}
+
+/// Render a conversation file to lines for display in the TUI viewer
+pub fn render_conversation(
+    file_path: &Path,
+    options: &RenderOptions,
+) -> std::io::Result<RenderedConversation> {
+    let entries = parse_conversation_file(file_path)?;
+    Ok(render_parsed_conversation(&entries, options))
 }
 
 fn make_tool_output_id(

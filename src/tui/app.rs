@@ -6,7 +6,7 @@ use crate::history::{
 };
 use crate::tui::search::{self, SearchableConversation};
 use crate::tui::ui;
-use crate::tui::viewer::{MessageRange, ToolDisplayMode, ToolOutputId};
+use crate::tui::viewer::{MessageRange, RenderableEntry, ToolDisplayMode, ToolOutputId};
 use chrono::Local;
 use crossterm::event::{
     self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEventKind, KeyModifiers,
@@ -70,6 +70,8 @@ pub enum AppMode {
 pub struct ViewState {
     /// Path to the conversation file (stable identity)
     pub conversation_path: PathBuf,
+    /// Parsed renderable entries for the currently open view.
+    pub parsed_entries: Option<Arc<Vec<RenderableEntry>>>,
     /// Current scroll position (line offset)
     pub scroll_offset: usize,
     /// Pre-rendered conversation lines
@@ -419,6 +421,7 @@ impl App {
             dialog_mode: DialogMode::None,
             app_mode: AppMode::View(ViewState {
                 conversation_path: path,
+                parsed_entries: None,
                 scroll_offset: 0,
                 rendered_lines: Vec::new(),
                 total_lines: 0,
@@ -1992,7 +1995,9 @@ impl App {
 
     /// Enter view mode for the currently selected conversation
     pub fn enter_view_mode(&mut self, content_width: usize) {
-        use crate::tui::viewer::{RenderOptions, render_conversation};
+        use crate::tui::viewer::{
+            RenderOptions, parse_conversation_file, render_parsed_conversation,
+        };
 
         let Some(selected) = self.selected else {
             return;
@@ -2010,8 +2015,10 @@ impl App {
             expanded_tool_outputs: BTreeSet::new(),
         };
 
-        match render_conversation(&path, &options) {
-            Ok(rendered) => {
+        match parse_conversation_file(&path) {
+            Ok(entries) => {
+                let entries = Arc::new(entries);
+                let rendered = render_parsed_conversation(&entries, &options);
                 let total_lines = rendered.lines.len();
                 let first_msg = if rendered.messages.is_empty() {
                     None
@@ -2020,6 +2027,7 @@ impl App {
                 };
                 self.app_mode = AppMode::View(ViewState {
                     conversation_path: path,
+                    parsed_entries: Some(entries),
                     scroll_offset: 0,
                     rendered_lines: rendered.lines,
                     total_lines,
@@ -2155,7 +2163,9 @@ impl App {
 
     /// Re-render the view with current toggle settings
     fn re_render_view(&mut self, viewport_height: usize) {
-        use crate::tui::viewer::{RenderOptions, render_conversation};
+        use crate::tui::viewer::{
+            RenderOptions, parse_conversation_file, render_parsed_conversation,
+        };
 
         if let AppMode::View(ref mut state) = self.app_mode {
             let options = RenderOptions {
@@ -2176,58 +2186,67 @@ impl App {
             );
             let old_scroll = state.scroll_offset;
 
-            if let Ok(rendered) = render_conversation(&state.conversation_path, &options) {
-                state.total_lines = rendered.lines.len();
-                state.rendered_lines = rendered.lines;
-                state.message_ranges = rendered.messages;
-
-                let max_scroll = state.total_lines.saturating_sub(viewport_height);
-
-                // Resolve focused message by entry_index, falling back to the
-                // previous surviving entry if the exact one disappeared. If no
-                // anchor existed (ranges was previously empty) but ranges is now
-                // non-empty, default to the first message so nav mode has a
-                // valid focus target.
-                let resolved_idx = anchor
-                    .and_then(|a| find_message_idx_or_prev(&state.message_ranges, a.entry_index))
-                    .or_else(|| (!state.message_ranges.is_empty()).then_some(0));
-                state.focused_message = resolved_idx;
-
-                state.scroll_offset = match (anchor, resolved_idx) {
-                    (Some(a), Some(idx)) => {
-                        let new_msg = &state.message_ranges[idx];
-                        // If the anchor vanished, cap relative_row at 0 so the
-                        // fallback message sits at the top of the viewport rather
-                        // than being pushed down (revealing already-read content).
-                        let rel = if new_msg.entry_index == a.entry_index {
-                            a.relative_row
-                        } else {
-                            a.relative_row.min(0)
-                        };
-                        let raw = new_msg.start_line as isize - rel;
-                        raw.clamp(0, max_scroll as isize) as usize
+            let entries = match state.parsed_entries.clone() {
+                Some(entries) => entries,
+                None => match parse_conversation_file(&state.conversation_path) {
+                    Ok(entries) => {
+                        let entries = Arc::new(entries);
+                        state.parsed_entries = Some(entries.clone());
+                        entries
                     }
-                    _ => old_scroll.min(max_scroll),
-                };
+                    Err(_) => return,
+                },
+            };
+            let rendered = render_parsed_conversation(&entries, &options);
+            state.total_lines = rendered.lines.len();
+            state.rendered_lines = rendered.lines;
+            state.message_ranges = rendered.messages;
 
-                // Recompute search matches for new content
-                if state.search_mode == ViewSearchMode::Active && !state.search_query.is_empty() {
-                    let query_lower = state.search_query.to_lowercase();
-                    state.search_matches = state
-                        .rendered_lines
-                        .iter()
-                        .enumerate()
-                        .filter(|(_, line)| line_matches_query(line, &query_lower))
-                        .map(|(i, _)| i)
-                        .collect();
+            let max_scroll = state.total_lines.saturating_sub(viewport_height);
 
-                    // Clamp current_match to valid range
-                    if state.search_matches.is_empty() {
-                        state.current_match = 0;
+            // Resolve focused message by entry_index, falling back to the
+            // previous surviving entry if the exact one disappeared. If no
+            // anchor existed (ranges was previously empty) but ranges is now
+            // non-empty, default to the first message so nav mode has a
+            // valid focus target.
+            let resolved_idx = anchor
+                .and_then(|a| find_message_idx_or_prev(&state.message_ranges, a.entry_index))
+                .or_else(|| (!state.message_ranges.is_empty()).then_some(0));
+            state.focused_message = resolved_idx;
+
+            state.scroll_offset = match (anchor, resolved_idx) {
+                (Some(a), Some(idx)) => {
+                    let new_msg = &state.message_ranges[idx];
+                    // If the anchor vanished, cap relative_row at 0 so the
+                    // fallback message sits at the top of the viewport rather
+                    // than being pushed down (revealing already-read content).
+                    let rel = if new_msg.entry_index == a.entry_index {
+                        a.relative_row
                     } else {
-                        state.current_match =
-                            state.current_match.min(state.search_matches.len() - 1);
-                    }
+                        a.relative_row.min(0)
+                    };
+                    let raw = new_msg.start_line as isize - rel;
+                    raw.clamp(0, max_scroll as isize) as usize
+                }
+                _ => old_scroll.min(max_scroll),
+            };
+
+            // Recompute search matches for new content
+            if state.search_mode == ViewSearchMode::Active && !state.search_query.is_empty() {
+                let query_lower = state.search_query.to_lowercase();
+                state.search_matches = state
+                    .rendered_lines
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, line)| line_matches_query(line, &query_lower))
+                    .map(|(i, _)| i)
+                    .collect();
+
+                // Clamp current_match to valid range
+                if state.search_matches.is_empty() {
+                    state.current_match = 0;
+                } else {
+                    state.current_match = state.current_match.min(state.search_matches.len() - 1);
                 }
             }
         }
@@ -3067,15 +3086,9 @@ mod interaction_tests {
         app
     }
 
-    #[test]
-    fn view_click_toggles_clickable_output() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("tool.jsonl");
-        write_tool_conversation(&path);
-        let mut app = app_with_tool_conversation(path);
-        let frame = Rect::new(0, 0, 120, 20);
-        let row = if let AppMode::View(state) = app.app_mode() {
-            let layout = ui::view_layout_rects(frame, &app, state);
+    fn tool_click_row(app: &App, frame: Rect) -> u16 {
+        if let AppMode::View(state) = app.app_mode() {
+            let layout = ui::view_layout_rects(frame, app, state);
             let idx = state
                 .rendered_lines
                 .iter()
@@ -3084,28 +3097,96 @@ mod interaction_tests {
             layout.content.y + (idx - state.scroll_offset) as u16
         } else {
             unreachable!()
-        };
+        }
+    }
 
-        assert!(app.handle_view_click(row, frame, 17));
-        let expanded_id = if let AppMode::View(state) = app.app_mode() {
-            assert_eq!(state.expanded_tool_outputs.len(), 1);
-            let id = state.expanded_tool_outputs.iter().next().unwrap().clone();
-            let text: String = state
+    fn view_text(app: &App) -> String {
+        if let AppMode::View(state) = app.app_mode() {
+            state
                 .rendered_lines
                 .iter()
                 .flat_map(|line| line.spans.iter().map(|(text, _)| text.as_str()))
-                .collect();
-            assert!(text.contains("five"));
-            id
+                .collect()
         } else {
             unreachable!()
-        };
+        }
+    }
+
+    fn view_expanded_tool_id(app: &App) -> ToolOutputId {
+        if let AppMode::View(state) = app.app_mode() {
+            assert_eq!(state.expanded_tool_outputs.len(), 1);
+            state.expanded_tool_outputs.iter().next().unwrap().clone()
+        } else {
+            unreachable!()
+        }
+    }
+
+    #[test]
+    fn view_click_toggles_clickable_output() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("tool.jsonl");
+        write_tool_conversation(&path);
+        let mut app = app_with_tool_conversation(path);
+        let frame = Rect::new(0, 0, 120, 20);
+        let row = tool_click_row(&app, frame);
+
+        assert!(app.handle_view_click(row, frame, 17));
+        let expanded_id = view_expanded_tool_id(&app);
+        assert!(view_text(&app).contains("five"));
 
         assert!(app.handle_view_click(row, frame, 17));
         if let AppMode::View(state) = app.app_mode() {
             assert!(state.expanded_tool_outputs.is_empty());
             assert_eq!(state.hovered_tool_output, Some(expanded_id));
         }
+    }
+
+    #[test]
+    fn view_click_uses_cached_entries_after_file_removed() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("tool.jsonl");
+        write_tool_conversation(&path);
+        let mut app = app_with_tool_conversation(path.clone());
+        std::fs::remove_file(&path).unwrap();
+        let frame = Rect::new(0, 0, 120, 20);
+        let row = tool_click_row(&app, frame);
+
+        assert!(app.handle_view_click(row, frame, 17));
+        let expanded_id = view_expanded_tool_id(&app);
+        assert!(view_text(&app).contains("five"));
+
+        assert!(app.handle_view_click(row, frame, 17));
+        if let AppMode::View(state) = app.app_mode() {
+            assert!(state.expanded_tool_outputs.is_empty());
+            assert_eq!(state.hovered_tool_output, Some(expanded_id));
+        }
+        assert!(!view_text(&app).contains("five"));
+    }
+
+    #[test]
+    fn single_file_view_click_uses_cached_entries_after_file_removed() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("tool.jsonl");
+        write_tool_conversation(&path);
+        let mut app = App::new_single_file(
+            path.clone(),
+            ToolDisplayMode::Truncated,
+            false,
+            KeyBindings::default(),
+        );
+        app.check_view_resize(80, 17);
+        std::fs::remove_file(&path).unwrap();
+        let frame = Rect::new(0, 0, 120, 20);
+        let row = tool_click_row(&app, frame);
+
+        assert!(app.handle_view_click(row, frame, 17));
+        assert!(view_text(&app).contains("five"));
+
+        assert!(app.handle_view_click(row, frame, 17));
+        if let AppMode::View(state) = app.app_mode() {
+            assert!(state.expanded_tool_outputs.is_empty());
+        }
+        assert!(!view_text(&app).contains("five"));
     }
 
     #[test]
