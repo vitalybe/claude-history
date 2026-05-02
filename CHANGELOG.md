@@ -1,3 +1,10 @@
+## v0.1.57 (2026-05-01)
+
+- Tool activity now defaults to concise summaries in the TUI viewer, making long
+  conversations easier to scan while still showing what kinds of actions ran
+- Press `t` to cycle tool display through summary, truncated, and full details;
+  clicking a summary expands that group into its truncated tool calls and results
+
 ## v0.1.56 (2026-05-01)
 
 - Click truncated tool calls and results in the TUI viewer to expand or collapse
