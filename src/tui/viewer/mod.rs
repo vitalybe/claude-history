@@ -1263,6 +1263,98 @@ mod tests {
         );
     }
 
+    fn assistant_with_reordered_blocks_entry() -> RenderableEntry {
+        // Source order is intentionally the reverse of the rendered
+        // ordering contract (thinking → tool_use → text). The renderer
+        // must reorder to text → tool/summary → thinking.
+        RenderableEntry {
+            entry_index: 0,
+            entry: serde_json::from_str(
+                r#"{"type":"assistant","message":{"role":"assistant","content":[
+                    {"type":"thinking","thinking":"THINK_BLOCK","signature":"sig"},
+                    {"type":"tool_use","id":"toolu_1","name":"Bash","input":{"command":"echo hi"}},
+                    {"type":"text","text":"TEXT_BLOCK"}
+                ]}}"#,
+            )
+            .unwrap(),
+        }
+    }
+
+    #[test]
+    fn assistant_block_order_hidden_mode_text_then_summary_then_thinking() {
+        let entries = vec![assistant_with_reordered_blocks_entry()];
+        let mut options = test_render_options(ToolDisplayMode::Hidden);
+        options.show_thinking = true;
+
+        let rendered = render_parsed_conversation(&entries, &options);
+        let text = rendered_text(&rendered);
+
+        let pos_text = text.find("TEXT_BLOCK").expect("text block rendered");
+        let pos_thinking = text.find("THINK_BLOCK").expect("thinking block rendered");
+        // Hidden mode emits a tool-activity summary row instead of tool calls.
+        let pos_summary = text
+            .find("shell command")
+            .or_else(|| text.find("ran 1"))
+            .expect("tool summary row rendered");
+
+        assert!(
+            pos_text < pos_summary,
+            "text must precede tool summary in Hidden mode: {}",
+            text
+        );
+        assert!(
+            pos_summary < pos_thinking,
+            "thinking must follow tool summary in Hidden mode: {}",
+            text
+        );
+    }
+
+    #[test]
+    fn assistant_block_order_truncated_mode_text_then_tools_then_thinking() {
+        let entries = vec![assistant_with_reordered_blocks_entry()];
+        let mut options = test_render_options(ToolDisplayMode::Truncated);
+        options.show_thinking = true;
+
+        let rendered = render_parsed_conversation(&entries, &options);
+        let text = rendered_text(&rendered);
+
+        let pos_text = text.find("TEXT_BLOCK").expect("text block rendered");
+        let pos_tool = text.find("Bash").expect("tool call rendered");
+        let pos_thinking = text.find("THINK_BLOCK").expect("thinking block rendered");
+
+        assert!(
+            pos_text < pos_tool,
+            "text must precede tool call in Truncated mode: {}",
+            text
+        );
+        assert!(
+            pos_tool < pos_thinking,
+            "thinking must follow tool call in Truncated mode: {}",
+            text
+        );
+    }
+
+    #[test]
+    fn assistant_block_order_full_mode_text_then_tools_then_thinking() {
+        let entries = vec![assistant_with_reordered_blocks_entry()];
+        let mut options = test_render_options(ToolDisplayMode::Full);
+        options.show_thinking = true;
+
+        let rendered = render_parsed_conversation(&entries, &options);
+        let text = rendered_text(&rendered);
+
+        let pos_text = text.find("TEXT_BLOCK").expect("text block rendered");
+        let pos_tool = text.find("Bash").expect("tool call rendered");
+        let pos_thinking = text.find("THINK_BLOCK").expect("thinking block rendered");
+
+        assert!(pos_text < pos_tool, "text must precede tool: {}", text);
+        assert!(
+            pos_tool < pos_thinking,
+            "thinking must follow tool: {}",
+            text
+        );
+    }
+
     #[test]
     fn fixture_file_round_trip_renders_user_and_assistant() {
         let dir = tempfile::tempdir().unwrap();
