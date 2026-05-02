@@ -800,6 +800,69 @@ mod tests {
     }
 
     #[test]
+    fn subagent_summary_label_parity() {
+        // Subagent tool-only assistant followed by its tool-result. The
+        // collapsed summary uses the nested ↳ label; the expanded detail
+        // rows must use the same nested label, not the literal "Claude".
+        let entries = vec![
+            RenderableEntry {
+                entry_index: 0,
+                entry: serde_json::from_str(
+                    r#"{"type":"assistant","parent_tool_use_id":"toolu_parent_abc","message":{"role":"assistant","content":[{"type":"tool_use","id":"toolu_1","name":"Grep","input":{"pattern":"one"}}]}}"#,
+                )
+                .unwrap(),
+            },
+            RenderableEntry {
+                entry_index: 1,
+                entry: serde_json::from_str(
+                    r#"{"type":"user","parent_tool_use_id":"toolu_parent_abc","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_1","content":"grep result"}]}}"#,
+                )
+                .unwrap(),
+            },
+        ];
+        let expected_label = "↳parent_";
+        let summary_id = make_tool_summary_output_id(0, Some("toolu_parent_abc"));
+
+        // Collapsed: subagent label appears, no literal "Claude".
+        let mut options = test_render_options(ToolDisplayMode::Hidden);
+        options.show_thinking = true;
+        let collapsed = render_parsed_conversation(&entries, &options);
+        let collapsed_text = rendered_text(&collapsed);
+        assert!(
+            collapsed_text.contains(expected_label),
+            "collapsed summary should use nested label: {}",
+            collapsed_text
+        );
+        assert!(
+            !collapsed_text.contains("Claude"),
+            "collapsed subagent summary should not use literal Claude label: {}",
+            collapsed_text
+        );
+
+        // Expanded: detail rows must use the same nested label, not "Claude".
+        let mut options = test_render_options(ToolDisplayMode::Hidden);
+        options.show_thinking = true;
+        options.expanded_tool_outputs.insert(summary_id);
+        let expanded = render_parsed_conversation(&entries, &options);
+        let expanded_text = rendered_text(&expanded);
+        assert!(
+            expanded_text.contains("Grep: \"one\" in ."),
+            "expanded detail row should render tool call: {}",
+            expanded_text
+        );
+        assert!(
+            expanded_text.contains(expected_label),
+            "expanded detail row should use nested label: {}",
+            expanded_text
+        );
+        assert!(
+            !expanded_text.contains("Claude"),
+            "expanded subagent detail rows must not use literal Claude label: {}",
+            expanded_text
+        );
+    }
+
+    #[test]
     fn hidden_tool_mode_status_label_is_summary() {
         assert_eq!(ToolDisplayMode::Hidden.status_label(), "sum");
     }

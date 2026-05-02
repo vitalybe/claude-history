@@ -230,6 +230,7 @@ fn render_summary_group_details(
     let first_line = lines.len();
     let mut rendered_any = false;
     let pad_timing = TimingSlot::from_show_timing(options.show_timing);
+    let label = assistant_label(pending.parent_id.as_deref());
     for parsed in &entries[pending.first_parsed_idx..=pending.last_parsed_idx] {
         match &parsed.entry {
             LogEntry::Assistant {
@@ -255,7 +256,7 @@ fn render_summary_group_details(
                             &ToolCallRenderSpec {
                                 name,
                                 input,
-                                label: "Claude",
+                                label: &label,
                                 label_color: th().accent_dim,
                                 dimmed: true,
                                 content_width: options.content_width,
