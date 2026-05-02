@@ -1,7 +1,8 @@
 use crate::tool_format;
 
-use super::ledger::{LedgerRow, NameCol, TimestampCol, push_row, render_truncation_indicator};
+use super::ledger::{LedgerRow, NameCol, push_row, render_truncation_indicator};
 use super::markdown::render_markdown_to_lines;
+use super::timing::TimingSlot;
 use super::*;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -91,7 +92,7 @@ pub(super) struct ToolCallRenderSpec<'a> {
     pub label_color: (u8, u8, u8),
     pub dimmed: bool,
     pub content_width: usize,
-    pub timestamp: Option<&'a str>,
+    pub timing: TimingSlot<'a>,
     pub tool_display: ToolDisplayMode,
     pub tool_output_id: &'a ToolOutputId,
     pub expanded: bool,
@@ -102,7 +103,7 @@ pub(super) struct ToolCallRenderSpec<'a> {
 pub(super) struct ToolResultRenderSpec<'a> {
     pub text: &'a str,
     pub content_width: usize,
-    pub timestamp: Option<&'a str>,
+    pub timing: TimingSlot<'a>,
     pub tool_display: ToolDisplayMode,
     pub tool_output_id: &'a ToolOutputId,
     pub expanded: bool,
@@ -116,7 +117,7 @@ pub(super) fn render_tool_call(lines: &mut Vec<RenderedLine>, spec: &ToolCallRen
         label_color,
         dimmed,
         content_width,
-        timestamp,
+        timing,
         tool_display,
         tool_output_id,
         expanded,
@@ -134,10 +135,7 @@ pub(super) fn render_tool_call(lines: &mut Vec<RenderedLine>, spec: &ToolCallRen
     push_row(
         lines,
         LedgerRow {
-            timestamp: match timestamp {
-                Some(ts) => TimestampCol::Stamp(ts),
-                None => TimestampCol::Disabled,
-            },
+            timing,
             name: NameCol::Label {
                 text: label,
                 color: label_color,
@@ -153,17 +151,13 @@ pub(super) fn render_tool_call(lines: &mut Vec<RenderedLine>, spec: &ToolCallRen
 
     // Render the body if present, with empty line separator
     if let Some(body) = formatted.body {
-        let show_timing = timestamp.is_some();
+        let body_timing = timing.continuation();
 
         // Empty line between header and body
         push_row(
             lines,
             LedgerRow {
-                timestamp: if show_timing {
-                    TimestampCol::Pad
-                } else {
-                    TimestampCol::Disabled
-                },
+                timing: body_timing,
                 name: NameCol::BlankPlain,
                 separator_dimmed: dimmed,
                 tool_output_id: Some(tool_output_id),
@@ -181,7 +175,7 @@ pub(super) fn render_tool_call(lines: &mut Vec<RenderedLine>, spec: &ToolCallRen
                     lines,
                     &truncated,
                     dimmed,
-                    show_timing,
+                    body_timing,
                     Some(tool_output_id),
                     true,
                 );
@@ -189,15 +183,15 @@ pub(super) fn render_tool_call(lines: &mut Vec<RenderedLine>, spec: &ToolCallRen
                     lines,
                     total - TRUNCATED_BODY_LINES,
                     dimmed,
-                    show_timing,
+                    body_timing,
                     Some(tool_output_id),
                 );
             } else {
-                render_tool_body(lines, &body, dimmed, show_timing, None, false);
+                render_tool_body(lines, &body, dimmed, body_timing, None, false);
             }
         } else {
             let id = (tool_display == ToolDisplayMode::Truncated).then_some(tool_output_id);
-            render_tool_body(lines, &body, dimmed, show_timing, id, id.is_some());
+            render_tool_body(lines, &body, dimmed, body_timing, id, id.is_some());
         }
     }
 }
@@ -207,7 +201,7 @@ fn render_tool_body(
     lines: &mut Vec<RenderedLine>,
     text: &str,
     dimmed: bool,
-    show_timing: bool,
+    timing: TimingSlot<'_>,
     tool_output_id: Option<&ToolOutputId>,
     clickable: bool,
 ) {
@@ -233,11 +227,7 @@ fn render_tool_body(
         push_row(
             lines,
             LedgerRow {
-                timestamp: if show_timing {
-                    TimestampCol::Pad
-                } else {
-                    TimestampCol::Disabled
-                },
+                timing,
                 name: NameCol::BlankPlain,
                 separator_dimmed: dimmed,
                 tool_output_id,
@@ -253,7 +243,7 @@ pub(super) fn render_tool_result(lines: &mut Vec<RenderedLine>, spec: &ToolResul
     let ToolResultRenderSpec {
         text,
         content_width,
-        timestamp,
+        timing,
         tool_display,
         tool_output_id,
         expanded,
@@ -278,12 +268,9 @@ pub(super) fn render_tool_result(lines: &mut Vec<RenderedLine>, spec: &ToolResul
         total
     };
 
+    let continuation = timing.continuation();
     for (i, styled_line) in styled_lines.iter().take(limit).enumerate() {
-        let timestamp_col = match (i, timestamp) {
-            (0, Some(ts)) => TimestampCol::Stamp(ts),
-            (_, Some(_)) => TimestampCol::Pad,
-            (_, None) => TimestampCol::Disabled,
-        };
+        let row_timing = if i == 0 { timing } else { continuation };
         let name_col = if i == 0 {
             NameCol::Label {
                 text: "↳ Result",
@@ -304,7 +291,7 @@ pub(super) fn render_tool_result(lines: &mut Vec<RenderedLine>, spec: &ToolResul
         push_row(
             lines,
             LedgerRow {
-                timestamp: timestamp_col,
+                timing: row_timing,
                 name: name_col,
                 separator_dimmed: false,
                 tool_output_id: id,
@@ -319,7 +306,7 @@ pub(super) fn render_tool_result(lines: &mut Vec<RenderedLine>, spec: &ToolResul
             lines,
             total - limit,
             false,
-            timestamp.is_some(),
+            continuation,
             Some(tool_output_id),
         );
     }

@@ -1,15 +1,6 @@
 use super::markdown::StyledLine;
+use super::timing::TimingSlot;
 use super::{LineStyle, NAME_WIDTH, RenderedLine, TIMESTAMP_WIDTH, ToolOutputId, th};
-
-/// The timestamp column for a single ledger row.
-pub(super) enum TimestampCol<'a> {
-    /// Timing disabled — no column at all.
-    Disabled,
-    /// Timing enabled, but this row has no timestamp text (continuation).
-    Pad,
-    /// Timing enabled, and this row carries the timestamp text (e.g. "12:34").
-    Stamp(&'a str),
-}
 
 /// The name column for a single ledger row.
 pub(super) enum NameCol<'a> {
@@ -30,7 +21,7 @@ pub(super) enum NameCol<'a> {
 
 /// Description of one ledger row's structural columns.
 pub(super) struct LedgerRow<'a> {
-    pub timestamp: TimestampCol<'a>,
+    pub timing: TimingSlot<'a>,
     pub name: NameCol<'a>,
     /// Whether the " │ " separator span renders dimmed.
     pub separator_dimmed: bool,
@@ -52,12 +43,12 @@ pub(super) fn push_row(
 ) {
     let mut spans = Vec::with_capacity(3 + content.len());
 
-    match row.timestamp {
-        TimestampCol::Disabled => {}
-        TimestampCol::Pad => {
+    match row.timing {
+        TimingSlot::Disabled => {}
+        TimingSlot::Pad => {
             spans.push((" ".repeat(TIMESTAMP_WIDTH), LineStyle::default()));
         }
-        TimestampCol::Stamp(ts) => {
+        TimingSlot::Stamp(ts) => {
             spans.push((
                 format!(" {} ", ts),
                 LineStyle {
@@ -129,38 +120,25 @@ pub(super) fn push_row(
     lines.push(line);
 }
 
-/// Timestamp slot for the `i`-th row of a block whose first row carries
-/// `timestamp` (or `None` when timing is disabled or no timestamp).
-fn block_timestamp<'a>(timestamp: Option<&'a str>, i: usize) -> TimestampCol<'a> {
-    match (i, timestamp) {
-        (0, Some(ts)) => TimestampCol::Stamp(ts),
-        (_, Some(_)) => TimestampCol::Pad,
-        (_, None) => TimestampCol::Disabled,
-    }
-}
-
-fn show_timing_col(show_timing: bool) -> TimestampCol<'static> {
-    if show_timing {
-        TimestampCol::Pad
-    } else {
-        TimestampCol::Disabled
-    }
-}
-
-/// Render ledger block with styled markdown lines
+/// Render ledger block with styled markdown lines.
+///
+/// `timing` describes the column for the first row. Continuation rows
+/// inherit the column's presence: when `timing` is `Stamp`/`Pad`,
+/// continuation rows render as `Pad`; when it is `Disabled`, every row
+/// of the block renders without a timing column.
 pub(super) fn render_ledger_block_styled(
     lines: &mut Vec<RenderedLine>,
     name: &str,
     color: (u8, u8, u8),
     bold: bool,
     styled_lines: Vec<StyledLine>,
-    timestamp: Option<&str>,
+    timing: TimingSlot<'_>,
 ) {
     if styled_lines.is_empty() {
         push_row(
             lines,
             LedgerRow {
-                timestamp: block_timestamp(timestamp, 0),
+                timing,
                 name: NameCol::Label {
                     text: name,
                     color,
@@ -176,7 +154,9 @@ pub(super) fn render_ledger_block_styled(
         return;
     }
 
+    let continuation = timing.continuation();
     for (i, styled_line) in styled_lines.iter().enumerate() {
+        let row_timing = if i == 0 { timing } else { continuation };
         let name_col = if i == 0 {
             NameCol::Label {
                 text: name,
@@ -195,7 +175,7 @@ pub(super) fn render_ledger_block_styled(
         push_row(
             lines,
             LedgerRow {
-                timestamp: block_timestamp(timestamp, i),
+                timing: row_timing,
                 name: name_col,
                 separator_dimmed: false,
                 tool_output_id: None,
@@ -211,7 +191,7 @@ pub(super) fn render_truncation_indicator(
     lines: &mut Vec<RenderedLine>,
     remaining: usize,
     dimmed: bool,
-    show_timing: bool,
+    timing: TimingSlot<'_>,
     tool_output_id: Option<&ToolOutputId>,
 ) {
     let content = vec![(
@@ -224,7 +204,7 @@ pub(super) fn render_truncation_indicator(
     push_row(
         lines,
         LedgerRow {
-            timestamp: show_timing_col(show_timing),
+            timing,
             name: NameCol::BlankPlain,
             separator_dimmed: dimmed,
             tool_output_id,
@@ -240,13 +220,13 @@ pub(super) fn render_ledger_block_styled_dimmed(
     name: &str,
     color: (u8, u8, u8),
     styled_lines: Vec<StyledLine>,
-    show_timing: bool,
+    timing: TimingSlot<'_>,
 ) {
     if styled_lines.is_empty() {
         push_row(
             lines,
             LedgerRow {
-                timestamp: show_timing_col(show_timing),
+                timing,
                 name: NameCol::Label {
                     text: name,
                     color,
@@ -285,7 +265,7 @@ pub(super) fn render_ledger_block_styled_dimmed(
         push_row(
             lines,
             LedgerRow {
-                timestamp: show_timing_col(show_timing),
+                timing,
                 name: name_col,
                 separator_dimmed: true,
                 tool_output_id: None,
@@ -302,7 +282,7 @@ pub(super) fn render_ledger_block_plain_dimmed(
     name: &str,
     color: (u8, u8, u8),
     text: &str,
-    show_timing: bool,
+    timing: TimingSlot<'_>,
 ) {
     for (i, line_text) in text.lines().enumerate() {
         let name_col = if i == 0 {
@@ -325,7 +305,7 @@ pub(super) fn render_ledger_block_plain_dimmed(
         push_row(
             lines,
             LedgerRow {
-                timestamp: show_timing_col(show_timing),
+                timing,
                 name: name_col,
                 separator_dimmed: true,
                 tool_output_id: None,
@@ -340,7 +320,7 @@ pub(super) fn render_ledger_block_plain_dimmed(
 pub(super) fn render_continuation_dimmed(
     lines: &mut Vec<RenderedLine>,
     text: &str,
-    show_timing: bool,
+    timing: TimingSlot<'_>,
     tool_output_id: Option<&ToolOutputId>,
 ) {
     for line_text in text.lines() {
@@ -354,7 +334,7 @@ pub(super) fn render_continuation_dimmed(
         push_row(
             lines,
             LedgerRow {
-                timestamp: show_timing_col(show_timing),
+                timing,
                 name: NameCol::BlankDim,
                 separator_dimmed: true,
                 tool_output_id,

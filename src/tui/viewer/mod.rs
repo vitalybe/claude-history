@@ -19,6 +19,7 @@ mod ledger;
 mod markdown;
 mod output;
 mod summary;
+mod timing;
 mod tools;
 
 pub use output::{LineStyle, RenderedLine};
@@ -897,7 +898,7 @@ mod tests {
                 label_color: th().accent_dim,
                 dimmed: false,
                 content_width: 80,
-                timestamp: None,
+                timing: timing::TimingSlot::Disabled,
                 tool_display: ToolDisplayMode::Truncated,
                 tool_output_id: &output_id,
                 expanded: false,
@@ -925,7 +926,7 @@ mod tests {
                 label_color: th().accent_dim,
                 dimmed: false,
                 content_width: 80,
-                timestamp: None,
+                timing: timing::TimingSlot::Disabled,
                 tool_display: ToolDisplayMode::Truncated,
                 tool_output_id: &output_id,
                 expanded: true,

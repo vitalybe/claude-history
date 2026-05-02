@@ -1,7 +1,8 @@
 use crate::claude::{ContentBlock, LogEntry, UserContent};
 
 use super::context::assistant_label;
-use super::ledger::{LedgerRow, NameCol, TimestampCol, push_row};
+use super::ledger::{LedgerRow, NameCol, push_row};
+use super::timing::TimingSlot;
 use super::tools::{
     ToolCallRenderSpec, ToolOutputKind, ToolResultRenderSpec, make_tool_output_id,
     render_tool_call, render_tool_result, tool_result_display_text,
@@ -122,7 +123,7 @@ pub(super) fn render_tool_activity_summary(
     label: &str,
     label_color: (u8, u8, u8),
     dimmed: bool,
-    timestamp: Option<&str>,
+    timing: TimingSlot<'_>,
     summary: &ToolActivitySummary,
     tool_output_id: Option<&ToolOutputId>,
 ) {
@@ -141,10 +142,7 @@ pub(super) fn render_tool_activity_summary(
     push_row(
         lines,
         LedgerRow {
-            timestamp: match timestamp {
-                Some(ts) => TimestampCol::Stamp(ts),
-                None => TimestampCol::Disabled,
-            },
+            timing,
             name: NameCol::Label {
                 text: label,
                 color: label_color,
@@ -231,11 +229,7 @@ fn render_summary_group_details(
 ) {
     let first_line = lines.len();
     let mut rendered_any = false;
-    let pad_ts = if options.show_timing {
-        Some("     ")
-    } else {
-        None
-    };
+    let pad_timing = TimingSlot::from_show_timing(options.show_timing);
     for parsed in &entries[pending.first_parsed_idx..=pending.last_parsed_idx] {
         match &parsed.entry {
             LogEntry::Assistant {
@@ -265,7 +259,7 @@ fn render_summary_group_details(
                                 label_color: th().accent_dim,
                                 dimmed: true,
                                 content_width: options.content_width,
-                                timestamp: pad_ts,
+                                timing: pad_timing,
                                 tool_display: ToolDisplayMode::Truncated,
                                 tool_output_id: &output_id,
                                 expanded,
@@ -307,7 +301,7 @@ fn render_summary_group_details(
                             &ToolResultRenderSpec {
                                 text: &content_str,
                                 content_width: options.content_width,
-                                timestamp: pad_ts,
+                                timing: pad_timing,
                                 tool_display: ToolDisplayMode::Truncated,
                                 tool_output_id: &output_id,
                                 expanded,
@@ -344,6 +338,10 @@ pub(super) fn flush_tool_summary(
     } else {
         None
     };
+    let timing = match ts.as_deref() {
+        Some(ts) => TimingSlot::Stamp(ts),
+        None => TimingSlot::Disabled,
+    };
     if options.expanded_tool_outputs.contains(&pending.id) {
         render_summary_group_details(lines, entries, &pending, options);
     } else {
@@ -352,7 +350,7 @@ pub(super) fn flush_tool_summary(
             &label,
             th().accent_dim,
             pending.parent_id.is_some(),
-            ts.as_deref(),
+            timing,
             &pending.summary,
             Some(&pending.id),
         );

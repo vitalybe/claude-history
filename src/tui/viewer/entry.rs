@@ -5,12 +5,11 @@ use crate::claude::{self, ContentBlock, LogEntry, UserContent};
 use super::RenderedLine;
 
 use super::commands::process_command_message;
-use super::context::{
-    RowTiming, render_dimmed_tool_result_body, render_subagent_tool_result_header,
-};
+use super::context::{render_dimmed_tool_result_body, render_subagent_tool_result_header};
 use super::ledger::{render_ledger_block_styled, render_ledger_block_styled_dimmed};
 use super::markdown::{apply_thinking_style, render_markdown_to_lines};
 use super::summary::{render_tool_activity_summary, summarize_tool_calls};
+use super::timing::{RowTiming, TimingSlot};
 use super::tools::{
     ToolCallRenderSpec, ToolOutputKind, ToolResultRenderSpec, format_tool_result_content,
     make_tool_output_id, render_tool_call, render_tool_result, tool_result_display_text,
@@ -48,8 +47,8 @@ pub(super) fn render_entry(
             let ts = entry_timestamp(options, timestamp.as_deref());
             let parent_id = parent_tool_use_id.as_deref();
             let style = MessageStyle::for_user(parent_id, &message.content);
-            let mut renderer =
-                MessageRenderer::new(style, parent_id, entry_index, options, ts.as_deref());
+            let timing = RowTiming::new(options.show_timing, ts.as_deref());
+            let mut renderer = MessageRenderer::new(style, parent_id, entry_index, options, timing);
             renderer.render_user_template(lines, &message.content);
         }
         LogEntry::Assistant {
@@ -64,8 +63,8 @@ pub(super) fn render_entry(
             let ts = entry_timestamp(options, timestamp.as_deref());
             let parent_id = parent_tool_use_id.as_deref();
             let style = MessageStyle::for_assistant(parent_id);
-            let mut renderer =
-                MessageRenderer::new(style, parent_id, entry_index, options, ts.as_deref());
+            let timing = RowTiming::new(options.show_timing, ts.as_deref());
+            let mut renderer = MessageRenderer::new(style, parent_id, entry_index, options, timing);
             renderer.render_assistant_template(lines, &message.content);
         }
     }
@@ -190,14 +189,14 @@ impl<'a> MessageRenderer<'a> {
         parent_id: Option<&'a str>,
         entry_index: usize,
         options: &'a RenderOptions,
-        timestamp: Option<&'a str>,
+        timing: RowTiming<'a>,
     ) -> Self {
         Self {
             style,
             parent_id,
             entry_index,
             options,
-            timing: RowTiming::new(options.show_timing, timestamp),
+            timing,
         }
     }
 
@@ -299,7 +298,7 @@ impl<'a> MessageRenderer<'a> {
                 &self.style.label,
                 self.style.label_color,
                 md_lines,
-                self.timing.show_timing(),
+                self.timing.pad(),
             );
         } else {
             render_ledger_block_styled(
@@ -336,7 +335,7 @@ impl<'a> MessageRenderer<'a> {
                     &self.style.label,
                     self.style.label_color,
                     md_lines,
-                    self.timing.show_timing(),
+                    self.timing.pad(),
                 );
                 let _ = self.timing.take_once();
             } else {
@@ -381,7 +380,7 @@ impl<'a> MessageRenderer<'a> {
             &self.style.label,
             self.style.label_color,
             md_lines,
-            self.timing.show_timing(),
+            self.timing.pad(),
         );
         let _ = self.timing.take_once();
         true
@@ -425,7 +424,7 @@ impl<'a> MessageRenderer<'a> {
                 Some(id),
             );
             let expanded = self.options.expanded_tool_outputs.contains(&output_id);
-            let timestamp = if self.style.is_subagent {
+            let timing = if self.style.is_subagent {
                 self.timing.pad()
             } else {
                 self.timing.consume()
@@ -439,7 +438,7 @@ impl<'a> MessageRenderer<'a> {
                     label_color: th().accent_dim,
                     dimmed: self.style.dimmed,
                     content_width: self.options.content_width,
-                    timestamp,
+                    timing,
                     tool_display: self.options.tool_display,
                     tool_output_id: &output_id,
                     expanded,
@@ -502,13 +501,15 @@ impl<'a> MessageRenderer<'a> {
             let expanded = self.options.expanded_tool_outputs.contains(&output_id);
             if self.style.is_subagent {
                 let content_str = format_tool_result_content(content.as_ref());
-                render_subagent_tool_result_header(lines, self.timing.show_timing());
+                let header_timing = self.timing.pad();
+                render_subagent_tool_result_header(lines, header_timing);
                 render_dimmed_tool_result_body(
                     lines,
                     self.options,
                     &output_id,
                     expanded,
                     &content_str,
+                    header_timing,
                 );
             } else {
                 let content_str = tool_result_display_text(content.as_ref());
@@ -517,7 +518,7 @@ impl<'a> MessageRenderer<'a> {
                     &ToolResultRenderSpec {
                         text: &content_str,
                         content_width: self.options.content_width,
-                        timestamp: self.timing.consume(),
+                        timing: self.timing.consume(),
                         tool_display: self.options.tool_display,
                         tool_output_id: &output_id,
                         expanded,
@@ -556,9 +557,17 @@ impl<'a> MessageRenderer<'a> {
                 Some(tool_use_id),
             );
             let expanded = self.options.expanded_tool_outputs.contains(&output_id);
-            render_subagent_tool_result_header(lines, self.options.show_timing);
+            let header_timing = TimingSlot::from_show_timing(self.options.show_timing);
+            render_subagent_tool_result_header(lines, header_timing);
             let content_str = format_tool_result_content(content.as_ref());
-            render_dimmed_tool_result_body(lines, self.options, &output_id, expanded, &content_str);
+            render_dimmed_tool_result_body(
+                lines,
+                self.options,
+                &output_id,
+                expanded,
+                &content_str,
+                header_timing,
+            );
             printed = true;
         }
         printed
@@ -597,15 +606,17 @@ fn render_agent_message(
         "user" => {
             let AgentContent::Blocks(blocks) = &msg.message.content;
             let style = MessageStyle::for_agent_user(short_id);
+            let timing = RowTiming::column_only(options.show_timing);
             let mut renderer =
-                MessageRenderer::new(style, Some(agent_id), entry_index, options, None);
+                MessageRenderer::new(style, Some(agent_id), entry_index, options, timing);
             renderer.render_agent_progress_user(lines, blocks);
         }
         "assistant" => {
             let AgentContent::Blocks(blocks) = &msg.message.content;
             let style = MessageStyle::for_agent_assistant(short_id);
+            let timing = RowTiming::column_only(options.show_timing);
             let mut renderer =
-                MessageRenderer::new(style, Some(agent_id), entry_index, options, None);
+                MessageRenderer::new(style, Some(agent_id), entry_index, options, timing);
             renderer.render_agent_progress_assistant(lines, blocks);
         }
         _ => {}
