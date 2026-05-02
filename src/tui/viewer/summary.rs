@@ -1,7 +1,7 @@
 use crate::claude::{ContentBlock, LogEntry, UserContent};
 
-use super::context::assistant_label;
 use super::ledger::{LedgerRow, NameCol, push_row};
+use super::style::assistant_label;
 use super::timing::TimingSlot;
 use super::tools::{
     ToolCallRenderSpec, ToolOutputKind, ToolResultRenderSpec, make_tool_output_id,

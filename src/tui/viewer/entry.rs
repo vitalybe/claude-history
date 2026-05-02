@@ -1,18 +1,19 @@
 use std::borrow::Cow;
 
-use crate::claude::{self, ContentBlock, LogEntry, UserContent};
+use crate::claude::{ContentBlock, LogEntry, UserContent};
 
 use super::RenderedLine;
 
 use super::commands::process_command_message;
-use super::context::{render_dimmed_tool_result_body, render_subagent_tool_result_header};
 use super::ledger::{render_ledger_block_styled, render_ledger_block_styled_dimmed};
 use super::markdown::{apply_thinking_style, render_markdown_to_lines};
+use super::style::subagent_label;
 use super::summary::{render_tool_activity_summary, summarize_tool_calls};
 use super::timing::{RowTiming, TimingSlot};
 use super::tools::{
     ToolCallRenderSpec, ToolOutputKind, ToolResultRenderSpec, format_tool_result_content,
-    make_tool_output_id, render_tool_call, render_tool_result, tool_result_display_text,
+    make_tool_output_id, render_dimmed_tool_result_body, render_subagent_tool_result_header,
+    render_tool_call, render_tool_result, tool_result_display_text,
 };
 use super::*;
 
@@ -577,11 +578,6 @@ impl<'a> MessageRenderer<'a> {
 /// Get a truncated agent ID for display (max 7 characters)
 fn short_agent_id(agent_id: &str) -> &str {
     &agent_id[..agent_id.len().min(7)]
-}
-
-/// Create a label for subagent entries from a parent_tool_use_id.
-pub(super) fn subagent_label(parent_tool_use_id: &str) -> String {
-    format!("↳{}", claude::short_parent_id(parent_tool_use_id))
 }
 
 /// Render agent (subagent) progress message.

@@ -13,11 +13,11 @@ use std::path::Path;
 use crate::tui::theme::{self, Theme};
 
 mod commands;
-mod context;
 mod entry;
 mod ledger;
 mod markdown;
 mod output;
+mod style;
 mod summary;
 mod timing;
 mod tools;
