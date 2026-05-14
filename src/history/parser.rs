@@ -154,8 +154,7 @@ pub(crate) fn process_conversation_reader<R: BufRead>(
                             };
 
                         if !search_text.is_empty() {
-                            all_parts.push(search_text.clone());
-                            semantic_turns.push(search_text);
+                            all_parts.push(search_text);
                         }
 
                         // Check if this is a warmup message (first user message is "Warmup")
@@ -164,6 +163,7 @@ pub(crate) fn process_conversation_reader<R: BufRead>(
                         if is_warmup {
                             skip_next_assistant = true;
                         } else if !effective_preview.is_empty() {
+                            semantic_turns.push(effective_preview.clone());
                             message_count += 1;
                             preview_parts.push(effective_preview);
                             seen_real_user_message = true;
@@ -208,14 +208,14 @@ pub(crate) fn process_conversation_reader<R: BufRead>(
                         let search_text = extract_search_text_from_assistant(&message);
 
                         if !search_text.is_empty() {
-                            all_parts.push(search_text.clone());
-                            semantic_turns.push(search_text);
+                            all_parts.push(search_text);
                         }
 
                         // Skip this assistant message if it follows a warmup user message
                         if skip_next_assistant {
                             skip_next_assistant = false;
                         } else if seen_real_user_message && !preview_text.is_empty() {
+                            semantic_turns.push(preview_text.clone());
                             // Only add assistant messages to preview after we've seen a real user message
                             message_count += 1;
                             preview_parts.push(preview_text);
@@ -1242,6 +1242,34 @@ mod tests {
             "Text blocks should still be in preview: {}",
             conv.preview
         );
+    }
+
+    #[test]
+    fn tool_result_not_in_semantic_turns() {
+        let content = [
+            user_msg_with_tool_result(
+                "run this",
+                "verbose tool output should not be embedded semantically",
+            ),
+            assistant_msg("Done"),
+        ]
+        .join("\n");
+
+        let conv = parse_jsonl(&content).unwrap().unwrap();
+        assert!(
+            conv.full_text.contains("verbose tool output"),
+            "Tool result should remain in lexical full_text: {}",
+            conv.full_text
+        );
+        assert!(
+            !conv
+                .semantic_turns
+                .join(" ")
+                .contains("verbose tool output"),
+            "Tool result should not be in semantic_turns: {:?}",
+            conv.semantic_turns
+        );
+        assert_eq!(conv.semantic_turns, vec!["run this", "Done"]);
     }
 
     #[test]
