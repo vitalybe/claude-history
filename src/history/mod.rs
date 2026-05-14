@@ -54,6 +54,7 @@ pub struct Conversation {
     /// Preview showing last 3 messages (used when show_last=true)
     pub preview_last: String,
     pub full_text: String,
+    pub semantic_turns: Vec<String>,
     /// Pre-normalized lowercase search text (avoids re-normalizing on every startup)
     pub search_text_lower: String,
     pub project_name: Option<String>,

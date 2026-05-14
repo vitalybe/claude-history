@@ -61,6 +61,7 @@ pub(crate) fn process_conversation_reader<R: BufRead>(
     }
 
     let mut all_parts = Vec::new();
+    let mut semantic_turns = Vec::new();
     let mut preview_parts = Vec::new();
     let mut user_messages = Vec::new();
     let mut seen_real_user_message = false;
@@ -153,7 +154,8 @@ pub(crate) fn process_conversation_reader<R: BufRead>(
                             };
 
                         if !search_text.is_empty() {
-                            all_parts.push(search_text);
+                            all_parts.push(search_text.clone());
+                            semantic_turns.push(search_text);
                         }
 
                         // Check if this is a warmup message (first user message is "Warmup")
@@ -206,7 +208,8 @@ pub(crate) fn process_conversation_reader<R: BufRead>(
                         let search_text = extract_search_text_from_assistant(&message);
 
                         if !search_text.is_empty() {
-                            all_parts.push(search_text);
+                            all_parts.push(search_text.clone());
+                            semantic_turns.push(search_text);
                         }
 
                         // Skip this assistant message if it follows a warmup user message
@@ -363,6 +366,11 @@ pub(crate) fn process_conversation_reader<R: BufRead>(
         preview_first,
         preview_last,
         full_text,
+        semantic_turns: semantic_turns
+            .into_iter()
+            .map(|turn| normalize_whitespace(&turn))
+            .filter(|turn| !turn.is_empty())
+            .collect(),
         search_text_lower,
         project_name: None,
         project_path: None,

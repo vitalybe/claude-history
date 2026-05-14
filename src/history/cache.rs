@@ -13,7 +13,7 @@ use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 const CACHE_MAGIC: [u8; 8] = *b"CLHIST01";
-const SCHEMA_VERSION: u32 = 1;
+const SCHEMA_VERSION: u32 = 2;
 
 #[derive(Serialize, Deserialize)]
 struct ProjectCache {
@@ -36,6 +36,8 @@ pub struct CacheEntry {
     pub preview_first: String,
     pub preview_last: String,
     pub full_text: String,
+    #[serde(default)]
+    pub semantic_turns: Vec<String>,
     pub search_text_lower: String,
     pub cwd: Option<PathBuf>,
     pub message_count: usize,
@@ -134,6 +136,7 @@ pub fn empty_entry(file_size: u64, mtime: SystemTime) -> CacheEntry {
         preview_first: String::new(),
         preview_last: String::new(),
         full_text: String::new(),
+        semantic_turns: Vec::new(),
         search_text_lower: String::new(),
         cwd: None,
         message_count: 0,
@@ -162,6 +165,7 @@ pub fn entry_from_conversation(
         preview_first: conv.preview_first.clone(),
         preview_last: conv.preview_last.clone(),
         full_text: conv.full_text.clone(),
+        semantic_turns: conv.semantic_turns.clone(),
         search_text_lower: conv.search_text_lower.clone(),
         cwd: conv.cwd.clone(),
         message_count: conv.message_count,
@@ -204,6 +208,7 @@ pub fn conversation_from_entry(entry: &CacheEntry, path: PathBuf, show_last: boo
         preview_first: entry.preview_first.clone(),
         preview_last: entry.preview_last.clone(),
         full_text: entry.full_text.clone(),
+        semantic_turns: entry.semantic_turns.clone(),
         search_text_lower: entry.search_text_lower.clone(),
         project_name: None,
         project_path: None,
@@ -252,6 +257,7 @@ mod tests {
             preview_first: "Hello world ... Hi there".to_string(),
             preview_last: "Hi there ... Hello world".to_string(),
             full_text: "Hello world Hi there".to_string(),
+            semantic_turns: vec!["Hello world".to_string(), "Hi there".to_string()],
             search_text_lower: normalize_for_search("Hello world Hi there"),
             project_name: Some("test-project".to_string()),
             project_path: Some(PathBuf::from("/test/project")),
@@ -290,6 +296,7 @@ mod tests {
         assert_eq!(restored.preview_first, conv.preview_first);
         assert_eq!(restored.preview_last, conv.preview_last);
         assert_eq!(restored.full_text, conv.full_text);
+        assert_eq!(restored.semantic_turns, conv.semantic_turns);
         assert_eq!(restored.search_text_lower, conv.search_text_lower);
         assert_eq!(restored.cwd, conv.cwd);
         assert_eq!(restored.message_count, conv.message_count);

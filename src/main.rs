@@ -8,6 +8,7 @@ mod error;
 mod history;
 mod markdown;
 mod pager;
+mod semantic_poc;
 mod syntax;
 mod tool_format;
 mod tui;
@@ -239,6 +240,19 @@ fn run() -> Result<()> {
         }
 
         return Ok(());
+    }
+
+    // Handle --semantic-search flag: run semantic search proof of concept
+    if let Some(ref query) = args.semantic_search {
+        let mut conversations = history::load_all_conversations(show_last, args.debug)?;
+        conversations.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
+        return semantic_poc::run(
+            query,
+            &conversations,
+            args.semantic_top,
+            args.semantic_limit,
+            args.local,
+        );
     }
 
     // Handle --render flag: render a JSONL file in ledger format and exit

@@ -167,9 +167,34 @@ pub struct Args {
         long = "debug-search",
         value_name = "QUERY",
         help = "Debug search result scoring for a query",
-        conflicts_with_all = ["show_dir", "resume", "show_path", "show_id", "plain", "render", "delete", "input_file"]
+        conflicts_with_all = ["show_dir", "resume", "show_path", "show_id", "plain", "render", "delete", "input_file", "semantic_search"]
     )]
     pub debug_search: Option<String>,
+
+    /// Run a semantic search proof of concept over conversations
+    #[arg(
+        long = "semantic-search",
+        value_name = "QUERY",
+        help = "Run a semantic search proof of concept over conversations",
+        conflicts_with_all = ["show_dir", "resume", "show_path", "show_id", "plain", "render", "delete", "input_file", "debug_search"]
+    )]
+    pub semantic_search: Option<String>,
+
+    /// Number of semantic search results to show
+    #[arg(
+        long = "semantic-top",
+        default_value_t = 20,
+        requires = "semantic_search"
+    )]
+    pub semantic_top: usize,
+
+    /// Number of recent conversations to include in the semantic search proof of concept
+    #[arg(
+        long = "semantic-limit",
+        default_value_t = 200,
+        requires = "semantic_search"
+    )]
+    pub semantic_limit: usize,
 
     /// Input JSONL file to view directly (skips conversation selection)
     #[arg(
