@@ -1,6 +1,7 @@
 use crate::config::KeyBindings;
 use crate::tui::app::{
-    App, AppMode, DialogMode, ListSearchMode, LoadingState, ViewSearchMode, ViewState,
+    App, AppMode, DialogMode, ListSearchMode, LoadingState, SemanticResultMetadata, ViewSearchMode,
+    ViewState, list_lines_per_item,
 };
 use crate::tui::search::normalize_for_search;
 use crate::tui::theme::{self, Theme};
@@ -20,9 +21,6 @@ fn th() -> &'static Theme {
 fn rgb(c: (u8, u8, u8)) -> Color {
     Color::Rgb(c.0, c.1, c.2)
 }
-
-/// Lines per conversation item (header + preview + separator)
-const LINES_PER_ITEM: usize = 3;
 
 /// Duration before status messages auto-clear
 const STATUS_TTL: std::time::Duration = std::time::Duration::from_secs(3);
@@ -189,6 +187,11 @@ fn render_list_status_bar(frame: &mut Frame, app: &App, area: Rect) {
     let dim_key_style = Style::default().fg(rgb(th().dim_key));
     let dim_label_style = Style::default().fg(rgb(th().dim_label));
 
+    if let Some(metadata) = selected_semantic_metadata(app) {
+        render_semantic_status_bar(frame, metadata, area);
+        return;
+    }
+
     let (action_key, action_label) = if is_loading {
         (dim_key_style, dim_label_style)
     } else {
@@ -249,6 +252,46 @@ fn render_list_status_bar(frame: &mut Frame, app: &App, area: Rect) {
 
     let status_line = Line::from(spans);
     let status = Paragraph::new(status_line).style(Style::default().bg(rgb(th().status_bar_bg)));
+    frame.render_widget(status, area);
+}
+
+fn selected_semantic_metadata(app: &App) -> Option<&SemanticResultMetadata> {
+    if app.list_search_mode() != ListSearchMode::Semantic {
+        return None;
+    }
+    let selected = app.selected()?;
+    let conversation_index = *app.filtered().get(selected)?;
+    app.semantic_result_metadata(conversation_index)
+}
+
+fn semantic_rationale_label(metadata: &SemanticResultMetadata) -> &'static str {
+    match metadata.explanation.rationale_kind {
+        crate::semantic::types::SemanticRationaleKind::SemanticOnly => "semantic",
+        crate::semantic::types::SemanticRationaleKind::LexicalBoosted => "lex boost",
+        crate::semantic::types::SemanticRationaleKind::WeakMatch => "weak",
+    }
+}
+
+fn semantic_row_metadata(metadata: &SemanticResultMetadata) -> String {
+    format!(
+        "{} · h {:.2}",
+        metadata.explanation.quality_label, metadata.score_breakdown.hybrid
+    )
+}
+
+fn render_semantic_status_bar(frame: &mut Frame, metadata: &SemanticResultMetadata, area: Rect) {
+    let details = format!(
+        "sem {:.2}  lex {:.2}  {}",
+        metadata.score_breakdown.semantic,
+        metadata.score_breakdown.lexical,
+        semantic_rationale_label(metadata)
+    );
+    let display = simple_truncate(&details, area.width.saturating_sub(2) as usize);
+    let line = Line::from(vec![
+        Span::raw("  "),
+        Span::styled(display, Style::default().fg(rgb(th().text_muted))),
+    ]);
+    let status = Paragraph::new(line).style(Style::default().bg(rgb(th().status_bar_bg)));
     frame.render_widget(status, area);
 }
 
@@ -1331,15 +1374,8 @@ fn render_list(frame: &mut Frame, app: &App, area: Rect) {
         .collect::<Vec<_>>()
         .join(" ");
 
-    // Calculate visible range FIRST (before building any items)
-    // When searching, items may have 4 lines (with context), so use 4 lines per item
-    // to ensure the offset calculation matches the actual rendered heights
     let semantic_mode = app.list_search_mode() == ListSearchMode::Semantic;
-    let lines_per_item = if query_normalized.is_empty() || semantic_mode {
-        LINES_PER_ITEM
-    } else {
-        4
-    };
+    let lines_per_item = list_lines_per_item(app.list_search_mode(), app.query());
     let items_per_page = (area.height as usize) / lines_per_item;
     let offset = match (app.selected(), items_per_page) {
         (Some(sel), n) if n > 0 => (sel / n) * n,
@@ -1413,25 +1449,35 @@ fn render_list(frame: &mut Frame, app: &App, area: Rect) {
                     }
                 });
 
-            // Calculate right-side length first to determine available space for summary
+            let semantic_metadata = app.semantic_result_metadata(conv_idx);
+            let semantic_meta_part = semantic_mode
+                .then(|| semantic_metadata.map(semantic_row_metadata))
+                .flatten();
+            let semantic_meta_len = semantic_meta_part
+                .as_ref()
+                .map(|s| UnicodeWidthStr::width(s.as_str()) + 3)
+                .unwrap_or(0);
+
             let duration_len = duration
                 .as_ref()
-                .map(|d| d.chars().count() + 3)
-                .unwrap_or(0); // 3 for " · "
-            let right_len =
-                msg_count.chars().count() + duration_len + 3 + timestamp.chars().count(); // 3 for " · "
-            let indicator_len = indicator.chars().count();
-            let project_len = project_part.chars().count();
+                .map(|d| UnicodeWidthStr::width(d.as_str()) + 3)
+                .unwrap_or(0);
+            let right_len = UnicodeWidthStr::width(msg_count.as_str())
+                + duration_len
+                + semantic_meta_len
+                + 3
+                + UnicodeWidthStr::width(timestamp.as_str());
+            let indicator_len = UnicodeWidthStr::width(indicator);
+            let project_len = UnicodeWidthStr::width(project_part.as_str());
             let custom_title_len = custom_title_part
                 .as_ref()
-                .map(|s| s.chars().count())
+                .map(|s| UnicodeWidthStr::width(s.as_str()))
                 .unwrap_or(0);
-            let min_padding = 2; // Minimum padding between content and timestamp
+            let min_padding = 2;
 
-            // Calculate available width for summary (filter empty summaries)
             let available_for_summary = width.saturating_sub(
                 indicator_len + project_len + custom_title_len + right_len + min_padding + 4,
-            ); // 4 for " · " prefix and ellipsis
+            );
 
             // Build summary part (dimmer, dynamically truncated based on available space)
             let summary_part = conv
@@ -1439,14 +1485,8 @@ fn render_list(frame: &mut Frame, app: &App, area: Rect) {
                 .as_ref()
                 .filter(|s| !s.is_empty() && available_for_summary > 5)
                 .map(|s| {
-                    let summary_chars = s.chars().count();
-                    if summary_chars > available_for_summary {
-                        format!(
-                            " · {}…",
-                            s.chars()
-                                .take(available_for_summary.saturating_sub(1))
-                                .collect::<String>()
-                        )
+                    if UnicodeWidthStr::width(s.as_str()) > available_for_summary {
+                        format!(" · {}", simple_truncate(s, available_for_summary))
                     } else {
                         format!(" · {}", s)
                     }
@@ -1458,7 +1498,7 @@ fn render_list(frame: &mut Frame, app: &App, area: Rect) {
                 + custom_title_len
                 + summary_part
                     .as_ref()
-                    .map(|s| s.chars().count())
+                    .map(|s| UnicodeWidthStr::width(s.as_str()))
                     .unwrap_or(0);
             let padding = width.saturating_sub(left_len + right_len + 1);
 
@@ -1523,6 +1563,16 @@ fn render_list(frame: &mut Frame, app: &App, area: Rect) {
                 msg_count,
                 Style::default().fg(rgb(th().msg_count)),
             ));
+            if let Some(ref metadata_text) = semantic_meta_part {
+                header_spans.push(Span::styled(
+                    " · ",
+                    Style::default().fg(rgb(th().dot_separator)),
+                ));
+                header_spans.push(Span::styled(
+                    metadata_text.clone(),
+                    Style::default().fg(rgb(th().accent)),
+                ));
+            }
             // Add conversation duration if present
             if let Some(ref d) = duration {
                 header_spans.push(Span::styled(
@@ -1552,7 +1602,6 @@ fn render_list(frame: &mut Frame, app: &App, area: Rect) {
 
             let header = Line::from(header_spans).style(selection_bg);
 
-            let semantic_metadata = app.semantic_result_metadata(conv_idx);
             let preview_text = if semantic_mode {
                 semantic_metadata
                     .map(|metadata| sanitize_preview(&metadata.explanation.evidence_preview))
@@ -1561,7 +1610,13 @@ fn render_list(frame: &mut Frame, app: &App, area: Rect) {
                 sanitize_preview(&conv.preview)
             };
             let max_preview_len = width.saturating_sub(4);
-            let truncated_preview = if query_normalized.is_empty() || semantic_mode {
+            let truncated_preview = if query_normalized.is_empty() {
+                simple_truncate(&preview_text, max_preview_len)
+            } else if semantic_mode
+                && !find_normalized_match_ranges(&preview_text, &query_normalized).is_empty()
+            {
+                build_match_segments(&preview_text, &query_normalized, max_preview_len)
+            } else if semantic_mode {
                 simple_truncate(&preview_text, max_preview_len)
             } else {
                 build_match_segments(&preview_text, &query_normalized, max_preview_len)
@@ -1799,13 +1854,63 @@ fn build_match_segments(text: &str, query: &str, max_width: usize) -> String {
         result.push('…');
     }
 
-    // Final safety truncation
-    if result.chars().count() > max_width {
-        let truncated: String = result.chars().take(max_width.saturating_sub(1)).collect();
-        return format!("{}…", truncated);
+    if find_normalized_match_ranges(&result, query).is_empty() {
+        return truncate_around_match(text, query, max_width);
+    }
+    if UnicodeWidthStr::width(result.as_str()) > max_width {
+        return truncate_around_match(&result, query, max_width);
     }
 
     result
+}
+
+fn truncate_start(text: &str, max_width: usize) -> String {
+    if UnicodeWidthStr::width(text) <= max_width {
+        return text.to_string();
+    }
+    if max_width == 0 {
+        return String::new();
+    }
+
+    let ellipsis_width = UnicodeWidthChar::width('…').unwrap_or(1);
+    let mut chars = Vec::new();
+    let mut width = 0;
+    for ch in text.chars().rev() {
+        let ch_width = UnicodeWidthChar::width(ch).unwrap_or(0);
+        if width + ch_width + ellipsis_width > max_width {
+            break;
+        }
+        chars.push(ch);
+        width += ch_width;
+    }
+    chars.reverse();
+    format!("…{}", chars.into_iter().collect::<String>())
+}
+
+fn truncate_around_match(text: &str, query: &str, max_width: usize) -> String {
+    if max_width == 0 {
+        return String::new();
+    }
+    let ranges = find_normalized_match_ranges(text, query);
+    let Some((start, end)) = ranges.first().copied() else {
+        return simple_truncate(text, max_width);
+    };
+    let matched = &text[start..end];
+    let matched_width = UnicodeWidthStr::width(matched);
+    if matched_width >= max_width {
+        return simple_truncate(matched, max_width);
+    }
+
+    let ellipsis_budget = usize::from(start > 0) + usize::from(end < text.len());
+    let context_budget = max_width.saturating_sub(matched_width + ellipsis_budget);
+    let left_budget = context_budget / 2;
+    let right_budget = context_budget - left_budget;
+    format!(
+        "{}{}{}",
+        truncate_start(&text[..start], left_budget + usize::from(start > 0)),
+        matched,
+        simple_truncate(&text[end..], right_budget + usize::from(end < text.len()))
+    )
 }
 
 /// One cluster of nearby term hits in `full_text`.
@@ -2557,18 +2662,30 @@ mod tests {
     }
 
     fn test_semantic_metadata(evidence_preview: &str) -> SemanticResultMetadata {
-        SemanticResultMetadata {
-            score_breakdown: SemanticScoreBreakdown {
+        test_semantic_metadata_with_scores(
+            evidence_preview,
+            SemanticScoreBreakdown {
                 hybrid: 1.0,
                 semantic: 1.0,
                 lexical: 0.0,
             },
+            SemanticRationaleKind::SemanticOnly,
+        )
+    }
+
+    fn test_semantic_metadata_with_scores(
+        evidence_preview: &str,
+        score_breakdown: SemanticScoreBreakdown,
+        rationale_kind: SemanticRationaleKind,
+    ) -> SemanticResultMetadata {
+        SemanticResultMetadata {
+            score_breakdown,
             explanation: SemanticExplanation {
                 quality: SemanticQuality::Strong,
                 quality_label: "strong",
                 matched_terms: Vec::new(),
                 evidence_preview: evidence_preview.to_string(),
-                rationale_kind: SemanticRationaleKind::SemanticOnly,
+                rationale_kind,
                 chunk: SemanticChunkIdentity {
                     conversation_index: 0,
                     session: "test-session".to_string(),
@@ -2644,6 +2761,163 @@ mod tests {
         assert!(line.contains("1/1"), "{line:?}");
         assert!(line.contains("sem cache missing 42"), "{line:?}");
         assert_cursor_inside(&mut terminal, width);
+    }
+
+    fn complete_semantic_search(app: &mut App, metadata: SemanticResultMetadata) {
+        let (response_tx, response_rx) = mpsc::channel();
+        app.set_semantic_receiver_for_test(7, response_rx);
+        response_tx
+            .send(SemanticSearchMessage::Complete(SemanticSearchResponse {
+                generation: 7,
+                filtered: vec![0],
+                metadata: HashMap::from([(0, metadata)]),
+                error: None,
+                progress: SemanticProgress::Complete,
+            }))
+            .unwrap();
+        app.receive_search_results();
+    }
+
+    #[test]
+    fn semantic_list_shows_quality_and_score_metadata() {
+        let mut app = semantic_app();
+        app.set_query_for_test("sentinel");
+        complete_semantic_search(
+            &mut app,
+            test_semantic_metadata_with_scores(
+                "semantic evidence only",
+                SemanticScoreBreakdown {
+                    hybrid: 1.23,
+                    semantic: 1.0,
+                    lexical: 0.23,
+                },
+                SemanticRationaleKind::LexicalBoosted,
+            ),
+        );
+        let backend = TestBackend::new(100, 8);
+        let mut terminal = Terminal::new(backend).unwrap();
+
+        terminal
+            .draw(|frame| render_list(frame, &app, frame.area()))
+            .unwrap();
+
+        let contents = terminal_contents(&terminal);
+        assert!(contents.contains("strong"), "{contents:?}");
+        assert!(contents.contains("h 1.23"), "{contents:?}");
+    }
+
+    #[test]
+    fn semantic_status_bar_shows_selected_score_breakdown_and_rationale() {
+        let mut app = App::new_with_options(
+            vec![test_conversation(), test_conversation()],
+            ToolDisplayMode::Truncated,
+            false,
+            KeyBindings::default(),
+            vec![],
+            TuiSearchOptions {
+                semantic_enabled: true,
+                ..Default::default()
+            },
+        );
+        app.set_query_for_test("sentinel");
+        let (response_tx, response_rx) = mpsc::channel();
+        app.set_semantic_receiver_for_test(7, response_rx);
+        response_tx
+            .send(SemanticSearchMessage::Complete(SemanticSearchResponse {
+                generation: 7,
+                filtered: vec![1, 0],
+                metadata: HashMap::from([(
+                    1,
+                    test_semantic_metadata_with_scores(
+                        "semantic evidence only",
+                        SemanticScoreBreakdown {
+                            hybrid: 1.23,
+                            semantic: 0.98,
+                            lexical: 0.25,
+                        },
+                        SemanticRationaleKind::LexicalBoosted,
+                    ),
+                )]),
+                error: None,
+                progress: SemanticProgress::Complete,
+            }))
+            .unwrap();
+        app.receive_search_results();
+        let backend = TestBackend::new(80, 2);
+        let mut terminal = Terminal::new(backend).unwrap();
+
+        terminal
+            .draw(|frame| render_list_status_bar(frame, &app, frame.area()))
+            .unwrap();
+
+        let line = row_text(&terminal, 0);
+        assert!(line.contains("sem 0.98"), "{line:?}");
+        assert!(line.contains("lex 0.25"), "{line:?}");
+        assert!(line.contains("lex boost"), "{line:?}");
+    }
+
+    #[test]
+    fn semantic_evidence_preview_highlights_query_terms() {
+        let metadata = test_semantic_metadata(
+            "prefix text before the important semantic needle appears near the end",
+        );
+        let spans = highlight_text(
+            &build_match_segments(&metadata.explanation.evidence_preview, "needle", 40),
+            "needle",
+            Style::default(),
+            Style::default().fg(Color::Yellow),
+        );
+        let highlighted: Vec<_> = span_info(&spans, Style::default().fg(Color::Yellow))
+            .into_iter()
+            .filter(|(_, highlighted)| *highlighted)
+            .collect();
+        assert_eq!(highlighted.len(), 1);
+        assert_eq!(highlighted[0].0, "needle");
+    }
+
+    #[test]
+    fn semantic_list_truncates_cleanly_at_narrow_width() {
+        let mut app = semantic_app();
+        app.set_query_for_test("needle");
+        let evidence_preview = format!("{} needle{}", "宽字符前缀".repeat(8), "x".repeat(120));
+        complete_semantic_search(
+            &mut app,
+            test_semantic_metadata_with_scores(
+                &evidence_preview,
+                SemanticScoreBreakdown {
+                    hybrid: 123.45,
+                    semantic: 67.89,
+                    lexical: 55.56,
+                },
+                SemanticRationaleKind::WeakMatch,
+            ),
+        );
+        let width = 28;
+        let backend = TestBackend::new(width, 6);
+        let mut terminal = Terminal::new(backend).unwrap();
+
+        terminal
+            .draw(|frame| render_list_mode(frame, &app))
+            .unwrap();
+
+        let truncated = build_match_segments(
+            &evidence_preview,
+            "needle",
+            width.saturating_sub(4) as usize,
+        );
+        assert!(truncated.contains("needle"), "{truncated:?}");
+        assert!(
+            UnicodeWidthStr::width(truncated.as_str()) <= width.saturating_sub(4) as usize,
+            "{truncated:?}"
+        );
+        for y in 0..6 {
+            let line = row_text(&terminal, y);
+            assert_eq!(
+                UnicodeWidthStr::width(line.as_str()),
+                width as usize,
+                "{line:?}"
+            );
+        }
     }
 
     #[test]

@@ -5,7 +5,7 @@ use crate::history::{
     Conversation, LoaderMessage, format_short_name_from_path, process_conversation_file,
 };
 use crate::semantic::types::{SemanticExplanation, SemanticScoreBreakdown};
-use crate::tui::search::{self, SearchableConversation};
+use crate::tui::search::{self, SearchableConversation, normalize_for_search};
 use crate::tui::semantic_worker::{
     SemanticSearchCandidate, SemanticSearchMessage, SemanticSearchRequest, spawn_semantic_worker,
 };
@@ -155,6 +155,20 @@ impl ListSearchMode {
             ListSearchMode::Lexical => "lex",
             ListSearchMode::Semantic => "sem",
         }
+    }
+}
+
+pub const LIST_LINES_PER_ITEM: usize = 3;
+
+pub fn list_lines_per_item(mode: ListSearchMode, query: &str) -> usize {
+    let query_normalized: String = normalize_for_search(query.trim())
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    if query_normalized.is_empty() || mode == ListSearchMode::Semantic {
+        LIST_LINES_PER_ITEM
+    } else {
+        4
     }
 }
 
@@ -2810,9 +2824,7 @@ impl App {
             return false;
         }
 
-        // Mirror render_list: 4 lines per item when searching (extra context line),
-        // otherwise the LINES_PER_ITEM constant of 3.
-        let lines_per_item = if self.query.trim().is_empty() { 3 } else { 4 };
+        let lines_per_item = list_lines_per_item(self.list_search_mode, &self.query);
         let items_per_page = (list_height as usize) / lines_per_item;
         if items_per_page == 0 {
             return false;
@@ -4261,6 +4273,59 @@ mod interaction_tests {
         assert!(matches!(app.app_mode(), AppMode::List));
         assert_eq!(app.filtered(), &[1, 0]);
         assert_eq!(app.selected(), Some(0));
+    }
+
+    #[test]
+    fn semantic_list_click_uses_three_line_rows() {
+        let dir = tempfile::tempdir().unwrap();
+        let first = dir.path().join("first.jsonl");
+        let second = dir.path().join("second.jsonl");
+        write_named_conversation(&first, "first body");
+        write_named_conversation(&second, "second body");
+        let mut app = App::new_with_options(
+            vec![
+                test_conversation(first, None),
+                test_conversation(second, None),
+            ],
+            ToolDisplayMode::Hidden,
+            false,
+            KeyBindings::default(),
+            vec![],
+            TuiSearchOptions {
+                semantic_enabled: true,
+                ..Default::default()
+            },
+        );
+        let (_request_tx, request_rx) = mpsc::channel();
+        let (response_tx, response_rx) = mpsc::channel();
+        app.semantic_search.worker_tx = Some(_request_tx);
+        app.semantic_search.worker_rx = Some(response_rx);
+        app.list_search_mode = ListSearchMode::Semantic;
+        app.query = "needle".to_string();
+        app.cursor_pos = app.query.chars().count();
+        app.search_generation = 7;
+        app.semantic_search.pending_generation = Some(7);
+        drop(request_rx);
+        response_tx
+            .send(SemanticSearchMessage::Complete(
+                crate::tui::semantic_worker::SemanticSearchResponse {
+                    generation: 7,
+                    filtered: vec![0, 1],
+                    metadata: HashMap::from([
+                        (0, test_semantic_metadata(0, "first")),
+                        (1, test_semantic_metadata(1, "second")),
+                    ]),
+                    error: None,
+                    progress: SemanticProgress::Complete,
+                },
+            ))
+            .unwrap();
+        app.receive_search_results();
+        let frame = Rect::new(0, 0, 80, 20);
+
+        assert!(app.handle_list_click(6, frame));
+
+        assert_eq!(app.selected(), Some(1));
     }
 
     #[test]
