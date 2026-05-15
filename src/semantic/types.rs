@@ -39,6 +39,7 @@ pub struct SemanticChunk {
 pub struct EmbeddedChunk {
     pub conversation_index: usize,
     pub session: String,
+    pub chunk_index: usize,
     pub text: String,
     pub embedding: Vec<f32>,
 }
@@ -47,6 +48,7 @@ pub struct EmbeddedChunk {
 pub struct SemanticHit {
     pub conversation_index: usize,
     pub session: String,
+    pub chunk_index: usize,
     pub semantic_score: f32,
     pub lexical_score: f32,
     pub hybrid_score: f32,

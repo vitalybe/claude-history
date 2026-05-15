@@ -28,6 +28,7 @@ pub fn embed_chunks(
             embedded.push(EmbeddedChunk {
                 conversation_index: chunk.conversation_index,
                 session: chunk.session,
+                chunk_index: chunk.chunk_index,
                 text: entry.text.clone(),
                 embedding: entry.embedding.clone(),
             });
@@ -37,7 +38,10 @@ pub fn embed_chunks(
     }
 
     if !misses.is_empty() {
-        eprintln!("Semantic POC: embedding {} changed chunk(s)", misses.len());
+        eprintln!(
+            "Semantic search: embedding {} changed chunk(s)",
+            misses.len()
+        );
         let texts = misses
             .iter()
             .map(|chunk| chunk.text.clone())
@@ -59,6 +63,7 @@ pub fn embed_chunks(
             embedded.push(EmbeddedChunk {
                 conversation_index: chunk.conversation_index,
                 session: chunk.session,
+                chunk_index: chunk.chunk_index,
                 text: chunk.text,
                 embedding,
             });
@@ -198,10 +203,14 @@ mod tests {
     }
 
     fn chunk(key: &str, text: &str) -> SemanticChunk {
+        let chunk_index = key
+            .rsplit_once(':')
+            .and_then(|(_, index)| index.parse::<usize>().ok())
+            .unwrap_or(0);
         SemanticChunk {
             conversation_index: 0,
             session: "session".to_string(),
-            chunk_index: 0,
+            chunk_index,
             key: key.to_string(),
             text: text.to_string(),
             metadata: Some(metadata()),
@@ -236,6 +245,7 @@ mod tests {
 
         assert_eq!(embedder.calls, 0);
         assert_eq!(embedded[0].embedding, vec![0.5, 0.5]);
+        assert_eq!(embedded[0].chunk_index, 0);
     }
 
     #[test]
@@ -253,6 +263,7 @@ mod tests {
 
         assert_eq!(embedder.calls, 1);
         assert_eq!(embedded[0].embedding, vec![8.0, 1.0]);
+        assert_eq!(embedded[0].chunk_index, 0);
         assert!(cache.entries.contains_key("session:0"));
     }
 

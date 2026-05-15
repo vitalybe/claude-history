@@ -1,6 +1,4 @@
-#[cfg(not(feature = "semantic-poc"))]
-use crate::error::AppError;
-use crate::error::Result;
+use crate::error::{AppError, Result};
 use crate::history::Conversation;
 
 pub fn run(
@@ -22,7 +20,7 @@ fn run_impl(
     _local: bool,
 ) -> Result<()> {
     Err(AppError::ConfigError(
-        "semantic search POC requires building with `--features semantic-poc`".to_string(),
+        "semantic search requires building with `--features semantic-poc`".to_string(),
     ))
 }
 
@@ -42,16 +40,16 @@ fn run_impl(
     use crate::semantic::rank::rank_chunks;
     use crate::semantic::types::{ChunkConfig, MODEL_NAME};
 
-    let selected = select_conversations(conversations, limit, local);
+    let selected = select_conversations(conversations, limit, local)?;
     if selected.is_empty() {
-        eprintln!("No conversations available for semantic search.");
+        eprintln!("{}", no_conversations_message(local));
         return Ok(());
     }
 
     let chunk_config = ChunkConfig::default();
     let chunks = build_chunks(&selected, chunk_config);
     if chunks.is_empty() {
-        eprintln!("No conversation text available for semantic search.");
+        eprintln!("No visible dialogue text available for semantic search.");
         return Ok(());
     }
 
@@ -61,7 +59,7 @@ fn run_impl(
     write_embedding_cache(&cache);
 
     eprintln!(
-        "Semantic POC: searching {} cached chunk(s) from {} recent conversation(s) with fastembed {MODEL_NAME}",
+        "Semantic search: searching {} cached chunk(s) from {} recent conversation(s) with fastembed {MODEL_NAME}",
         embedded_chunks.len(),
         selected.len()
     );
@@ -88,11 +86,10 @@ fn select_conversations(
     conversations: &[Conversation],
     limit: usize,
     local: bool,
-) -> Vec<&Conversation> {
+) -> Result<Vec<&Conversation>> {
     let current_project_dir_name = if local {
-        std::env::current_dir()
-            .ok()
-            .map(|dir| crate::history::convert_path_to_project_dir_name(&dir))
+        let dir = std::env::current_dir().map_err(AppError::Io)?;
+        Some(crate::history::convert_path_to_project_dir_name(&dir))
     } else {
         None
     };
@@ -117,7 +114,16 @@ fn select_conversations(
             break;
         }
     }
-    selected
+    Ok(selected)
+}
+
+#[cfg(feature = "semantic-poc")]
+fn no_conversations_message(local: bool) -> &'static str {
+    if local {
+        "No conversations available for semantic search in the current workspace."
+    } else {
+        "No conversations available for semantic search."
+    }
 }
 
 #[cfg(feature = "semantic-poc")]
@@ -175,9 +181,51 @@ mod tests {
             ),
         ];
 
-        let selected = select_conversations(&conversations, 1, false);
+        let selected =
+            select_conversations(&conversations, 1, false).expect("select conversations");
 
         assert_eq!(selected.len(), 1);
         assert_eq!(selected[0].custom_title.as_deref(), Some("one"));
+    }
+
+    #[test]
+    fn selection_filters_to_current_workspace_when_local() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let cwd = std::env::current_dir().expect("cwd");
+        std::env::set_current_dir(dir.path()).expect("set cwd");
+        let project = crate::history::convert_path_to_project_dir_name(
+            &std::env::current_dir().expect("current temp cwd"),
+        );
+        let conversations = vec![
+            test_conversation(
+                &format!("projects/{project}/session-1.jsonl"),
+                "local",
+                vec!["local".to_string()],
+            ),
+            test_conversation(
+                "projects/other-project/session-2.jsonl",
+                "other",
+                vec!["other".to_string()],
+            ),
+        ];
+
+        let selected =
+            select_conversations(&conversations, 10, true).expect("select conversations");
+        std::env::set_current_dir(cwd).expect("restore cwd");
+
+        assert_eq!(selected.len(), 1);
+        assert_eq!(selected[0].custom_title.as_deref(), Some("local"));
+    }
+
+    #[test]
+    fn empty_conversation_message_mentions_local_scope() {
+        assert_eq!(
+            no_conversations_message(true),
+            "No conversations available for semantic search in the current workspace."
+        );
+        assert_eq!(
+            no_conversations_message(false),
+            "No conversations available for semantic search."
+        );
     }
 }

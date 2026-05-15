@@ -171,29 +171,35 @@ pub struct Args {
     )]
     pub debug_search: Option<String>,
 
-    /// Run a semantic search proof of concept over conversations
+    /// Run a local semantic search over conversations
     #[arg(
         long = "semantic-search",
         value_name = "QUERY",
-        help = "Run a semantic search proof of concept over conversations",
+        help = "Run a local semantic search over conversations",
+        value_parser = non_empty_string,
         conflicts_with_all = ["show_dir", "resume", "show_path", "show_id", "plain", "render", "delete", "input_file", "debug_search"]
     )]
+    #[cfg_attr(not(feature = "semantic-poc"), arg(hide = true))]
     pub semantic_search: Option<String>,
 
     /// Number of semantic search results to show
     #[arg(
         long = "semantic-top",
         default_value_t = 20,
+        value_parser = non_zero_usize,
         requires = "semantic_search"
     )]
+    #[cfg_attr(not(feature = "semantic-poc"), arg(hide = true))]
     pub semantic_top: usize,
 
-    /// Number of recent conversations to include in the semantic search proof of concept
+    /// Number of recent conversations to include in semantic search
     #[arg(
         long = "semantic-limit",
         default_value_t = 200,
+        value_parser = non_zero_usize,
         requires = "semantic_search"
     )]
+    #[cfg_attr(not(feature = "semantic-poc"), arg(hide = true))]
     pub semantic_limit: usize,
 
     /// Input JSONL file to view directly (skips conversation selection)
@@ -203,4 +209,93 @@ pub struct Args {
         conflicts_with_all = ["global", "local", "show_dir", "resume", "show_path", "show_id", "plain", "render", "delete"]
     )]
     pub input_file: Option<PathBuf>,
+}
+
+fn non_empty_string(value: &str) -> std::result::Result<String, String> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        Err("value must not be empty".to_string())
+    } else {
+        Ok(trimmed.to_string())
+    }
+}
+
+fn non_zero_usize(value: &str) -> std::result::Result<usize, String> {
+    let parsed = value
+        .parse::<usize>()
+        .map_err(|_| format!("invalid positive integer: {value}"))?;
+    if parsed == 0 {
+        Err("value must be greater than zero".to_string())
+    } else {
+        Ok(parsed)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clap::CommandFactory;
+
+    #[test]
+    fn semantic_query_must_not_be_empty() {
+        let err = Args::try_parse_from(["claude-history", "--semantic-search", "   "])
+            .expect_err("empty query should fail");
+
+        assert!(err.to_string().contains("value must not be empty"));
+    }
+
+    #[test]
+    fn semantic_top_must_be_positive() {
+        let err = Args::try_parse_from([
+            "claude-history",
+            "--semantic-search",
+            "cache",
+            "--semantic-top",
+            "0",
+        ])
+        .expect_err("zero top should fail");
+
+        assert!(err.to_string().contains("value must be greater than zero"));
+    }
+
+    #[test]
+    fn semantic_limit_must_be_positive() {
+        let err = Args::try_parse_from([
+            "claude-history",
+            "--semantic-search",
+            "cache",
+            "--semantic-limit",
+            "0",
+        ])
+        .expect_err("zero limit should fail");
+
+        assert!(err.to_string().contains("value must be greater than zero"));
+    }
+
+    #[test]
+    fn semantic_help_text_is_polished_when_available() {
+        let help = Args::command().render_long_help().to_string();
+
+        assert!(!help.contains("proof of concept"));
+        assert!(!help.contains("POC"));
+    }
+
+    #[cfg(not(feature = "semantic-poc"))]
+    #[test]
+    fn default_help_hides_semantic_flags() {
+        let help = Args::command().render_long_help().to_string();
+
+        assert!(!help.contains("--semantic-search"));
+        assert!(!help.contains("--semantic-top"));
+        assert!(!help.contains("--semantic-limit"));
+    }
+
+    #[cfg(feature = "semantic-poc")]
+    #[test]
+    fn semantic_help_shows_semantic_flags() {
+        let help = Args::command().render_long_help().to_string();
+
+        assert!(help.contains("--semantic-search"));
+        assert!(help.contains("Run a local semantic search over conversations"));
+    }
 }

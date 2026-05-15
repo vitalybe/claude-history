@@ -244,10 +244,22 @@ fn run() -> Result<()> {
         return Ok(());
     }
 
-    // Handle --semantic-search flag: run semantic search proof of concept
+    // Handle --semantic-search flag
     if let Some(ref query) = args.semantic_search {
+        #[cfg(not(feature = "semantic-poc"))]
+        return semantic_poc::run(
+            query,
+            &[],
+            args.semantic_top,
+            args.semantic_limit,
+            args.local,
+        );
+
+        #[cfg(feature = "semantic-poc")]
         let mut conversations = history::load_all_conversations(show_last, args.debug)?;
+        #[cfg(feature = "semantic-poc")]
         conversations.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
+        #[cfg(feature = "semantic-poc")]
         return semantic_poc::run(
             query,
             &conversations,

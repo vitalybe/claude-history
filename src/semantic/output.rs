@@ -9,13 +9,28 @@ pub fn format_hit(rank: usize, hit: &SemanticHit, conversations: &[&Conversation
         .as_deref()
         .or(conversation.summary.as_deref())
         .unwrap_or(&conversation.preview);
+    let session_is_ambiguous = hit.session != "?"
+        && conversations
+            .iter()
+            .filter(|conversation| {
+                conversation.path.file_stem().and_then(|stem| stem.to_str())
+                    == Some(hit.session.as_str())
+            })
+            .take(2)
+            .count()
+            > 1;
+    let session_or_path = if hit.session == "?" || session_is_ambiguous {
+        conversation.path.display().to_string()
+    } else {
+        hit.session.clone()
+    };
 
     format!(
         "#{rank:2} hybrid={:.3} semantic={:.3} lexical={:.3} | {project} | {}\n     {title}\n     {}\n",
         hit.hybrid_score,
         hit.semantic_score,
         hit.lexical_score,
-        hit.session,
+        session_or_path,
         truncate(&hit.snippet, 260)
     )
 }
@@ -66,6 +81,7 @@ mod tests {
         let hit = SemanticHit {
             conversation_index: 0,
             session: "session-1".to_string(),
+            chunk_index: 0,
             semantic_score: 0.5,
             lexical_score: 0.2,
             hybrid_score: 0.7,
@@ -78,6 +94,44 @@ mod tests {
         assert!(formatted.contains("project-a | session-1"));
         assert!(formatted.contains("custom title"));
         assert!(formatted.contains("snippet text"));
+    }
+
+    #[test]
+    fn formats_path_when_session_is_unknown() {
+        let conversation = conversation();
+        let hit = SemanticHit {
+            conversation_index: 0,
+            session: "?".to_string(),
+            chunk_index: 0,
+            semantic_score: 0.5,
+            lexical_score: 0.2,
+            hybrid_score: 0.7,
+            snippet: "snippet text".to_string(),
+        };
+
+        let formatted = format_hit(1, &hit, &[&conversation]);
+
+        assert!(formatted.contains("project-a | /projects/project-a/session-1.jsonl"));
+    }
+
+    #[test]
+    fn formats_path_when_session_is_ambiguous() {
+        let first = conversation();
+        let mut second = conversation();
+        second.path = PathBuf::from("/projects/project-b/session-1.jsonl");
+        let hit = SemanticHit {
+            conversation_index: 0,
+            session: "session-1".to_string(),
+            chunk_index: 0,
+            semantic_score: 0.5,
+            lexical_score: 0.2,
+            hybrid_score: 0.7,
+            snippet: "snippet text".to_string(),
+        };
+
+        let formatted = format_hit(1, &hit, &[&first, &second]);
+
+        assert!(formatted.contains("project-a | /projects/project-a/session-1.jsonl"));
     }
 
     #[test]
