@@ -59,7 +59,7 @@ pub fn run(
 
 pub fn generate_cache(conversations: &[Conversation], limit: usize, local: bool) -> Result<()> {
     use crate::semantic::cache::{
-        embed_chunks_with_progress, read_embedding_cache, write_embedding_cache,
+        embed_chunks_with_progress_and_save, read_embedding_cache, write_embedding_cache,
     };
     use crate::semantic::chunk::build_chunks;
     use crate::semantic::fastembed::FastembedEmbedder;
@@ -85,10 +85,15 @@ pub fn generate_cache(conversations: &[Conversation], limit: usize, local: bool)
         "Semantic cache: checking {chunk_count} chunk(s) from {} recent conversation(s).",
         selected.len()
     );
-    let embedded_chunks =
-        embed_chunks_with_progress(&mut embedder, chunks, &mut cache, |done, total| {
+    let embedded_chunks = embed_chunks_with_progress_and_save(
+        &mut embedder,
+        chunks,
+        &mut cache,
+        |done, total| {
             eprintln!("Semantic cache: embedded {done}/{total} changed chunk(s)");
-        })?;
+        },
+        write_embedding_cache,
+    )?;
     write_embedding_cache(&cache);
 
     eprintln!(

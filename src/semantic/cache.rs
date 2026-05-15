@@ -20,7 +20,17 @@ pub fn embed_chunks_with_progress(
     embedder: &mut dyn SemanticEmbedder,
     chunks: Vec<SemanticChunk>,
     cache: &mut EmbeddingCache,
+    progress: impl FnMut(usize, usize),
+) -> Result<Vec<EmbeddedChunk>> {
+    embed_chunks_with_progress_and_save(embedder, chunks, cache, progress, |_| {})
+}
+
+pub fn embed_chunks_with_progress_and_save(
+    embedder: &mut dyn SemanticEmbedder,
+    chunks: Vec<SemanticChunk>,
+    cache: &mut EmbeddingCache,
     mut progress: impl FnMut(usize, usize),
+    mut save: impl FnMut(&EmbeddingCache),
 ) -> Result<Vec<EmbeddedChunk>> {
     prune_stale_entries(cache, &chunks);
 
@@ -76,6 +86,7 @@ pub fn embed_chunks_with_progress(
             });
         }
         completed += batch.len();
+        save(cache);
         progress(completed, total_misses);
     }
 
