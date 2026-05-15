@@ -171,6 +171,16 @@ pub struct Args {
     )]
     pub debug_search: Option<String>,
 
+    /// Debug semantic search matching for a query
+    #[arg(
+        long = "debug-semantic-search",
+        value_name = "QUERY",
+        value_parser = non_empty_string,
+        hide = true,
+        conflicts_with_all = ["show_dir", "resume", "show_path", "show_id", "plain", "render", "delete", "input_file", "debug_search", "semantic_search", "semantic", "generate_semantic_cache"]
+    )]
+    pub debug_semantic_search: Option<String>,
+
     /// Run a local semantic search over conversations
     #[arg(
         long = "semantic-search",
@@ -300,6 +310,15 @@ mod tests {
         assert!(!help.contains("--semantic-limit"));
         assert!(!help.contains("--semantic"));
         assert!(!help.contains("--generate-semantic-cache"));
+        assert!(!help.contains("--debug-semantic-search"));
+    }
+
+    #[test]
+    fn debug_semantic_search_flag_is_parseable() {
+        let args =
+            Args::try_parse_from(["claude-history", "--debug-semantic-search", "cache"]).unwrap();
+
+        assert_eq!(args.debug_semantic_search.as_deref(), Some("cache"));
     }
 
     #[test]

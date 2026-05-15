@@ -476,12 +476,30 @@ pub(crate) fn is_clear_only_conversation(user_messages: &[String]) -> bool {
 }
 
 fn semantic_embedding_turn(turn: &str) -> Option<String> {
-    let normalized = normalize_whitespace(turn);
+    let without_code = strip_markdown_code_fences(turn);
+    let normalized = normalize_whitespace(&without_code);
     if normalized.is_empty() || is_low_value_semantic_turn(&normalized) {
         None
     } else {
         Some(normalized)
     }
+}
+
+fn strip_markdown_code_fences(text: &str) -> String {
+    let mut output = Vec::new();
+    let mut in_fence = false;
+
+    for line in text.lines() {
+        if line.trim_start().starts_with("```") {
+            in_fence = !in_fence;
+            continue;
+        }
+        if !in_fence {
+            output.push(line);
+        }
+    }
+
+    output.join("\n")
 }
 
 fn is_low_value_semantic_turn(turn: &str) -> bool {
@@ -1489,6 +1507,35 @@ mod tests {
                 "Semantic cache stores visible dialogue embeddings."
             ]
         );
+    }
+
+    #[test]
+    fn markdown_code_fences_remain_lexical_only() {
+        let content = [
+            user_msg("Explain semantic cache", None),
+            serde_json::json!({
+                "type": "assistant",
+                "timestamp": "2024-01-01T00:00:00Z",
+                "message": {
+                    "role": "assistant",
+                    "content": [{
+                        "type": "text",
+                        "text": "Semantic cache stores dialogue.\n```rust\nlet secret = tool_output();\n```\nUse generated embeddings."
+                    }]
+                }
+            })
+            .to_string(),
+        ]
+        .join("\n");
+
+        let conv = parse_jsonl(&content).unwrap().unwrap();
+        let semantic = conv.semantic_turns.join(" ");
+
+        assert!(conv.full_text.contains("let secret"));
+        assert!(semantic.contains("Semantic cache stores dialogue."));
+        assert!(semantic.contains("Use generated embeddings."));
+        assert!(!semantic.contains("let secret"));
+        assert!(!semantic.contains("```"));
     }
 
     #[test]

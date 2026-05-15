@@ -173,6 +173,10 @@ pub fn write_embedding_cache(cache: &EmbeddingCache) {
     write_embedding_cache_to_path(cache, &path);
 }
 
+pub fn embedding_cache_file_path() -> Option<PathBuf> {
+    embedding_cache_path()
+}
+
 fn write_embedding_cache_to_path(cache: &EmbeddingCache, path: &Path) {
     let Some(parent) = path.parent() else {
         return;

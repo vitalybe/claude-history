@@ -105,6 +105,181 @@ pub fn generate_cache(conversations: &[Conversation], limit: usize, local: bool)
     Ok(())
 }
 
+pub fn debug_search(
+    query: &str,
+    conversations: &[Conversation],
+    limit: usize,
+    local: bool,
+) -> Result<()> {
+    use crate::semantic::cache::{
+        cache_entry_matches, cached_chunks, embedding_cache_file_path, read_embedding_cache,
+    };
+    use crate::semantic::chunk::build_chunks;
+    use crate::semantic::embed::SemanticEmbedder;
+    use crate::semantic::fastembed::FastembedEmbedder;
+    use crate::semantic::output::format_hit;
+    use crate::semantic::rank::rank_chunks;
+    use crate::semantic::types::{ChunkConfig, MODEL_NAME};
+    use std::collections::HashMap;
+
+    let selected = select_conversations(conversations, limit, local)?;
+    eprintln!(
+        "Semantic debug: selected {} conversation(s).",
+        selected.len()
+    );
+    eprintln!(
+        "Semantic debug: model cache: {}",
+        model_cache_dir().display()
+    );
+    match embedding_cache_file_path() {
+        Some(path) => eprintln!("Semantic debug: embedding cache: {}", path.display()),
+        None => eprintln!("Semantic debug: embedding cache: unavailable"),
+    }
+
+    if selected.is_empty() {
+        eprintln!("{}", no_conversations_message(local));
+        return Ok(());
+    }
+
+    let turn_count = selected
+        .iter()
+        .map(|conversation| conversation.semantic_turns.len())
+        .sum::<usize>();
+    let chunk_config = ChunkConfig::default();
+    let chunks = build_chunks(&selected, chunk_config);
+    eprintln!(
+        "Semantic debug: {} semantic turn(s), {} chunk(s), target={} overlap={} context_turns={}",
+        turn_count,
+        chunks.len(),
+        chunk_config.target_chars,
+        chunk_config.overlap_chars,
+        chunk_config.context_turns
+    );
+
+    let mut chunk_counts = HashMap::<usize, usize>::new();
+    for chunk in &chunks {
+        *chunk_counts.entry(chunk.conversation_index).or_default() += 1;
+    }
+    let mut chunk_counts = chunk_counts.into_iter().collect::<Vec<_>>();
+    chunk_counts.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+    for (rank, (index, count)) in chunk_counts.iter().take(10).enumerate() {
+        let conversation = selected[*index];
+        let title = conversation
+            .custom_title
+            .as_deref()
+            .or(conversation.summary.as_deref())
+            .unwrap_or(&conversation.preview);
+        eprintln!(
+            "Semantic debug: chunk-heavy #{:2}: {} chunk(s) | {} | {}",
+            rank + 1,
+            count,
+            conversation.path.display(),
+            title
+        );
+    }
+
+    let suspicious = chunks
+        .iter()
+        .filter(|chunk| {
+            chunk.text.contains("```")
+                || chunk.text.contains("<system-reminder>")
+                || chunk.text.contains("<local-command-stdout>")
+                || chunk.text.contains("<command-message>")
+        })
+        .take(5)
+        .collect::<Vec<_>>();
+    if suspicious.is_empty() {
+        eprintln!(
+            "Semantic debug: no sampled chunks contain code fences or command/system markers."
+        );
+    } else {
+        for chunk in suspicious {
+            eprintln!(
+                "Semantic debug: suspicious chunk {}:{}: {}",
+                chunk.session,
+                chunk.chunk_index,
+                truncate_debug(&chunk.text, 220)
+            );
+        }
+    }
+
+    if chunks.is_empty() {
+        eprintln!("Semantic debug: no visible dialogue text available.");
+        return Ok(());
+    }
+
+    let cache = read_embedding_cache(chunk_config);
+    let missing = chunks
+        .iter()
+        .filter(|chunk| {
+            cache
+                .entries
+                .get(&chunk.key)
+                .is_none_or(|entry| !cache_entry_matches(entry, &chunk.text))
+        })
+        .count();
+    let cached_count = chunks.len().saturating_sub(missing);
+    eprintln!(
+        "Semantic debug: cache entries={}, hits={}, misses={}",
+        cache.entries.len(),
+        cached_count,
+        missing
+    );
+    for chunk in chunks
+        .iter()
+        .filter(|chunk| {
+            cache
+                .entries
+                .get(&chunk.key)
+                .is_none_or(|entry| !cache_entry_matches(entry, &chunk.text))
+        })
+        .take(5)
+    {
+        eprintln!(
+            "Semantic debug: missing cache chunk {}:{}: {}",
+            chunk.session,
+            chunk.chunk_index,
+            truncate_debug(&chunk.text, 180)
+        );
+    }
+
+    let (embedded_chunks, _) = cached_chunks(chunks, &cache);
+    if embedded_chunks.is_empty() {
+        eprintln!("Semantic debug: no cached chunks available for ranking.");
+        return Ok(());
+    }
+
+    let mut embedder = FastembedEmbedder::new(model_cache_dir())?;
+    let Some(query_embedding) = embedder.embed_query(query)? else {
+        eprintln!("Semantic debug: no query embedding returned.");
+        return Ok(());
+    };
+    let hits = rank_chunks(query, &query_embedding, &embedded_chunks);
+    eprintln!(
+        "Semantic debug: ranked {} cached chunk(s) with fastembed {MODEL_NAME}.",
+        embedded_chunks.len()
+    );
+
+    for (rank, hit) in hits.iter().take(20).enumerate() {
+        eprintln!("{}", format_hit(rank + 1, hit, &selected));
+    }
+    if hits.is_empty() {
+        eprintln!("Semantic debug: no semantic matches found.");
+    }
+
+    Ok(())
+}
+
+fn truncate_debug(text: &str, max_chars: usize) -> String {
+    if text.chars().count() <= max_chars {
+        return text.to_owned();
+    }
+
+    let mut out: String = text.chars().take(max_chars.saturating_sub(1)).collect();
+    out.push('…');
+    out
+}
+
 fn select_conversations(
     conversations: &[Conversation],
     limit: usize,

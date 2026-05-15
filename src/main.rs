@@ -243,6 +243,12 @@ fn run() -> Result<()> {
         return Ok(());
     }
 
+    if let Some(ref query) = args.debug_semantic_search {
+        let mut conversations = history::load_all_conversations(show_last, args.debug)?;
+        conversations.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
+        return semantic_poc::debug_search(query, &conversations, args.semantic_limit, args.local);
+    }
+
     if args.generate_semantic_cache {
         let mut conversations = history::load_all_conversations(show_last, args.debug)?;
         conversations.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
