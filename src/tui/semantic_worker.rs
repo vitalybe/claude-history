@@ -1,12 +1,14 @@
 use crate::error::Result;
 use crate::history::Conversation;
-use crate::semantic::cache::{embed_chunks_quiet, read_embedding_cache, write_embedding_cache};
+use crate::semantic::cache::{
+    cache_entry_matches, embed_chunks_quiet, read_embedding_cache, write_embedding_cache,
+};
 use crate::semantic::chunk::build_chunks_with_indices;
 use crate::semantic::embed::SemanticEmbedder;
 use crate::semantic::fastembed::FastembedEmbedder;
 use crate::semantic::rank::rank_chunks;
 use crate::semantic::types::{ChunkConfig, EmbeddedChunk, EmbeddingCache};
-use crate::tui::app::SemanticResultMetadata;
+use crate::tui::app::{SemanticProgress, SemanticResultMetadata};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -20,11 +22,20 @@ pub struct SemanticSearchRequest {
     pub candidate_indices: Vec<usize>,
 }
 
+pub enum SemanticSearchMessage {
+    Progress {
+        generation: u64,
+        progress: SemanticProgress,
+    },
+    Complete(SemanticSearchResponse),
+}
+
 pub struct SemanticSearchResponse {
     pub generation: u64,
     pub filtered: Vec<usize>,
     pub metadata: HashMap<usize, SemanticResultMetadata>,
     pub error: Option<String>,
+    pub progress: SemanticProgress,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -61,10 +72,10 @@ impl SemanticWorkerState {
 
 pub fn spawn_semantic_worker() -> (
     mpsc::Sender<SemanticSearchRequest>,
-    mpsc::Receiver<SemanticSearchResponse>,
+    mpsc::Receiver<SemanticSearchMessage>,
 ) {
     let (cmd_tx, cmd_rx) = mpsc::channel::<SemanticSearchRequest>();
-    let (res_tx, res_rx) = mpsc::channel::<SemanticSearchResponse>();
+    let (res_tx, res_rx) = mpsc::channel::<SemanticSearchMessage>();
 
     std::thread::Builder::new()
         .name("semantic-search-worker".into())
@@ -86,15 +97,22 @@ pub fn spawn_semantic_worker() -> (
                 );
                 let response = if has_chunks {
                     if embedder.is_none() {
+                        let _ = res_tx.send(SemanticSearchMessage::Progress {
+                            generation: request.generation,
+                            progress: SemanticProgress::InitializingModel,
+                        });
                         embedder = match FastembedEmbedder::new_quiet(model_cache_dir()) {
                             Ok(embedder) => Some(embedder),
                             Err(error) => {
-                                let _ = res_tx.send(SemanticSearchResponse {
-                                    generation: request.generation,
-                                    filtered: Vec::new(),
-                                    metadata: HashMap::new(),
-                                    error: Some(error.to_string()),
-                                });
+                                let _ = res_tx.send(SemanticSearchMessage::Complete(
+                                    SemanticSearchResponse {
+                                        generation: request.generation,
+                                        filtered: Vec::new(),
+                                        metadata: HashMap::new(),
+                                        error: Some(error.to_string()),
+                                        progress: SemanticProgress::Failed,
+                                    },
+                                ));
                                 continue;
                             }
                         };
@@ -106,12 +124,14 @@ pub fn spawn_semantic_worker() -> (
                         &mut state.cache,
                         state.chunk_config,
                         embedder.as_mut().unwrap(),
+                        &res_tx,
                     )
                     .unwrap_or_else(|error| SemanticSearchResponse {
                         generation: request.generation,
                         filtered: Vec::new(),
                         metadata: HashMap::new(),
                         error: Some(error.to_string()),
+                        progress: SemanticProgress::Failed,
                     })
                 } else {
                     state.signature = Some(next_signature);
@@ -121,10 +141,11 @@ pub fn spawn_semantic_worker() -> (
                         filtered: Vec::new(),
                         metadata: HashMap::new(),
                         error: None,
+                        progress: SemanticProgress::EmptyCorpus,
                     }
                 };
 
-                let _ = res_tx.send(response);
+                let _ = res_tx.send(SemanticSearchMessage::Complete(response));
             }
         })
         .expect("failed to spawn semantic search worker thread");
@@ -139,6 +160,7 @@ fn rank_semantic_request(
     cache: &mut EmbeddingCache,
     chunk_config: ChunkConfig,
     embedder: &mut dyn SemanticEmbedder,
+    res_tx: &mpsc::Sender<SemanticSearchMessage>,
 ) -> Result<SemanticSearchResponse> {
     let next_signature = semantic_index_signature(request, chunk_config);
     if signature.as_ref() != Some(&next_signature) {
@@ -152,12 +174,28 @@ fn rank_semantic_request(
                 filtered: Vec::new(),
                 metadata: HashMap::new(),
                 error: None,
+                progress: SemanticProgress::EmptyCorpus,
             });
         }
 
+        let miss_count = cache_miss_count(&chunks, cache);
+        let progress = if miss_count == 0 {
+            SemanticProgress::CacheReady
+        } else {
+            SemanticProgress::EmbeddingChangedChunks { count: miss_count }
+        };
+        let _ = res_tx.send(SemanticSearchMessage::Progress {
+            generation: request.generation,
+            progress,
+        });
         *embedded_chunks = embed_chunks_quiet(embedder, chunks, cache)?;
         write_embedding_cache(cache);
         *signature = Some(next_signature);
+    } else {
+        let _ = res_tx.send(SemanticSearchMessage::Progress {
+            generation: request.generation,
+            progress: SemanticProgress::CacheReady,
+        });
     }
 
     if embedded_chunks.is_empty() {
@@ -166,15 +204,21 @@ fn rank_semantic_request(
             filtered: Vec::new(),
             metadata: HashMap::new(),
             error: None,
+            progress: SemanticProgress::EmptyCorpus,
         });
     }
 
+    let _ = res_tx.send(SemanticSearchMessage::Progress {
+        generation: request.generation,
+        progress: SemanticProgress::Ranking,
+    });
     let Some(query_embedding) = embedder.embed_query(&request.query)? else {
         return Ok(SemanticSearchResponse {
             generation: request.generation,
             filtered: Vec::new(),
             metadata: HashMap::new(),
             error: None,
+            progress: SemanticProgress::EmptyCorpus,
         });
     };
 
@@ -196,12 +240,34 @@ fn rank_semantic_request(
         })
         .collect();
 
+    let progress = if filtered.is_empty() {
+        SemanticProgress::EmptyCorpus
+    } else {
+        SemanticProgress::Complete
+    };
+
     Ok(SemanticSearchResponse {
         generation: request.generation,
         filtered,
         metadata,
         error: None,
+        progress,
     })
+}
+
+fn cache_miss_count(
+    chunks: &[crate::semantic::types::SemanticChunk],
+    cache: &EmbeddingCache,
+) -> usize {
+    chunks
+        .iter()
+        .filter(|chunk| {
+            cache
+                .entries
+                .get(&chunk.key)
+                .is_none_or(|entry| !cache_entry_matches(entry, &chunk.text))
+        })
+        .count()
 }
 
 fn semantic_index_has_chunks(
@@ -343,6 +409,13 @@ mod tests {
         }
     }
 
+    fn progress_tx() -> (
+        mpsc::Sender<SemanticSearchMessage>,
+        mpsc::Receiver<SemanticSearchMessage>,
+    ) {
+        mpsc::channel()
+    }
+
     #[test]
     fn ranks_original_indices_and_records_metadata() {
         let conversations = vec![
@@ -366,6 +439,7 @@ mod tests {
             &mut cache,
             ChunkConfig::default(),
             &mut embedder,
+            &progress_tx().0,
         )
         .expect("rank succeeds");
 
@@ -397,6 +471,7 @@ mod tests {
             &mut cache,
             ChunkConfig::default(),
             &mut embedder,
+            &progress_tx().0,
         )
         .expect("first rank succeeds");
         request.query = "beta".to_string();
@@ -407,6 +482,7 @@ mod tests {
             &mut cache,
             ChunkConfig::default(),
             &mut embedder,
+            &progress_tx().0,
         )
         .expect("second rank succeeds");
 
@@ -437,6 +513,7 @@ mod tests {
             &mut cache,
             ChunkConfig::default(),
             &mut embedder,
+            &progress_tx().0,
         )
         .expect("rank succeeds");
 
@@ -446,6 +523,107 @@ mod tests {
         );
         assert_eq!(response.metadata[&0].snippet, "visible alpha");
         assert!(!response.metadata[&0].snippet.contains("sentinel"));
+    }
+
+    #[test]
+    fn ranking_reports_embedding_then_ranking_progress() {
+        let conversations = vec![conversation(
+            "/projects/project-a/session-a.jsonl",
+            vec!["visible alpha"],
+        )];
+        let request = request("alpha", conversations, vec![0]);
+        let mut signature = None;
+        let mut embedded_chunks = Vec::new();
+        let mut cache = empty_embedding_cache(ChunkConfig::default());
+        let mut embedder = FakeEmbedder {
+            passage_calls: 0,
+            query_calls: 0,
+            embedded_passages: Vec::new(),
+        };
+        let (tx, rx) = progress_tx();
+
+        let response = rank_semantic_request(
+            &request,
+            &mut signature,
+            &mut embedded_chunks,
+            &mut cache,
+            ChunkConfig::default(),
+            &mut embedder,
+            &tx,
+        )
+        .expect("rank succeeds");
+        let progress = rx.try_iter().collect::<Vec<_>>();
+
+        assert!(matches!(
+            progress.as_slice(),
+            [
+                SemanticSearchMessage::Progress {
+                    progress: SemanticProgress::EmbeddingChangedChunks { count: 1 },
+                    ..
+                },
+                SemanticSearchMessage::Progress {
+                    progress: SemanticProgress::Ranking,
+                    ..
+                }
+            ]
+        ));
+        assert_eq!(response.progress, SemanticProgress::Complete);
+    }
+
+    #[test]
+    fn cached_signature_reports_cache_ready_before_ranking() {
+        let conversations = vec![conversation(
+            "/projects/project-a/session-a.jsonl",
+            vec!["visible alpha"],
+        )];
+        let request = request("alpha", conversations, vec![0]);
+        let mut signature = None;
+        let mut embedded_chunks = Vec::new();
+        let mut cache = empty_embedding_cache(ChunkConfig::default());
+        let mut embedder = FakeEmbedder {
+            passage_calls: 0,
+            query_calls: 0,
+            embedded_passages: Vec::new(),
+        };
+        let (tx, _rx) = progress_tx();
+        rank_semantic_request(
+            &request,
+            &mut signature,
+            &mut embedded_chunks,
+            &mut cache,
+            ChunkConfig::default(),
+            &mut embedder,
+            &tx,
+        )
+        .expect("first rank succeeds");
+        let (tx, rx) = progress_tx();
+
+        rank_semantic_request(
+            &request,
+            &mut signature,
+            &mut embedded_chunks,
+            &mut cache,
+            ChunkConfig::default(),
+            &mut embedder,
+            &tx,
+        )
+        .expect("second rank succeeds");
+        let progress = rx.try_iter().collect::<Vec<_>>();
+
+        assert!(matches!(
+            progress.as_slice(),
+            [
+                SemanticSearchMessage::Progress {
+                    progress: SemanticProgress::CacheReady,
+                    ..
+                },
+                SemanticSearchMessage::Progress {
+                    progress: SemanticProgress::Ranking,
+                    ..
+                }
+            ]
+        ));
+        assert_eq!(embedder.passage_calls, 1);
     }
 
     #[test]
@@ -468,6 +646,7 @@ mod tests {
             &mut cache,
             ChunkConfig::default(),
             &mut embedder,
+            &progress_tx().0,
         )
         .expect("empty corpus succeeds");
 

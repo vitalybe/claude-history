@@ -1,5 +1,7 @@
 use crate::config::KeyBindings;
-use crate::tui::app::{App, AppMode, DialogMode, LoadingState, ViewSearchMode, ViewState};
+use crate::tui::app::{
+    App, AppMode, DialogMode, ListSearchMode, LoadingState, ViewSearchMode, ViewState,
+};
 use crate::tui::search::normalize_for_search;
 use crate::tui::theme::{self, Theme};
 use crate::tui::viewer::{LineStyle, RenderedLine};
@@ -156,9 +158,14 @@ fn render_list_mode(frame: &mut Frame, app: &App) {
     }
 
     match app.dialog_mode() {
-        DialogMode::Help { scroll } => {
-            render_help_overlay(frame, false, false, app.keys(), *scroll)
-        }
+        DialogMode::Help { scroll } => render_help_overlay(
+            frame,
+            false,
+            false,
+            app.semantic_toggle_available(),
+            app.keys(),
+            *scroll,
+        ),
         DialogMode::Rename { input, cursor } => render_rename_dialog(frame, input, *cursor),
         _ => {}
     }
@@ -215,6 +222,20 @@ fn render_list_status_bar(frame: &mut Frame, app: &App, area: Rect) {
             Span::styled("Tab", key_style),
             Span::styled("\u{b7}", label_style),
             Span::styled(scope_label, scope_val_style),
+            Span::raw("  "),
+        ]);
+    }
+
+    if app.semantic_toggle_available() {
+        let mode_style = if app.list_search_mode() == ListSearchMode::Semantic {
+            Style::default().fg(rgb(th().accent)).bold()
+        } else {
+            label_style
+        };
+        spans.extend([
+            Span::styled("Ctrl+T", key_style),
+            Span::styled(" semantic·", label_style),
+            Span::styled(app.list_search_mode().label(), mode_style),
             Span::raw("  "),
         ]);
     }
@@ -356,7 +377,14 @@ fn render_view_mode(frame: &mut Frame, app: &App, state: &ViewState) {
         DialogMode::ExportMenu { selected } => render_export_menu(frame, *selected, false),
         DialogMode::YankMenu { selected } => render_export_menu(frame, *selected, true),
         DialogMode::Help { scroll } => {
-            render_help_overlay(frame, true, app.is_single_file_mode(), app.keys(), *scroll);
+            render_help_overlay(
+                frame,
+                true,
+                app.is_single_file_mode(),
+                false,
+                app.keys(),
+                *scroll,
+            );
         }
         DialogMode::Rename { input, cursor } => render_rename_dialog(frame, input, *cursor),
         DialogMode::None => {}
@@ -910,21 +938,29 @@ fn styled_span(text: &str, style: &LineStyle) -> Span<'static> {
 }
 
 fn render_search_bar(frame: &mut Frame, app: &App, area: Rect) {
-    let status_text = match app.loading_state() {
-        LoadingState::Loading { loaded } => {
-            format!("Loading... {}", loaded)
-        }
+    let count_text = match app.loading_state() {
+        LoadingState::Loading { loaded } => format!("Loading... {}", loaded),
         LoadingState::Ready => match app.selected() {
             Some(selected) => format!("{}/{}", selected + 1, app.filtered().len()),
             None => format!("0/{}", app.filtered().len()),
         },
     };
+    let status_text = if app.semantic_search_available() {
+        app.semantic_status_text()
+            .map(|status| {
+                format!(
+                    "{} {} {}",
+                    app.list_search_mode().label(),
+                    count_text,
+                    status
+                )
+            })
+            .unwrap_or_else(|| format!("{} {}", app.list_search_mode().label(), count_text))
+    } else {
+        count_text
+    };
 
-    // Build search line with optional "Project" prefix when workspace filter is active
-    let query = app.query();
     let prompt_style = Style::default().fg(rgb(th().accent));
-
-    // " Project ❯ " when filtering, " ❯ " otherwise
     let (prompt_spans, prefix_width) = if app.workspace_filter() {
         (
             vec![
@@ -933,34 +969,36 @@ fn render_search_bar(frame: &mut Frame, app: &App, area: Rect) {
                 Span::raw(" "),
                 Span::styled("\u{276F} ", prompt_style),
             ],
-            11, // " Project ❯ " = 11 columns
+            11,
         )
     } else {
         (
             vec![Span::raw(" "), Span::styled("\u{276F} ", prompt_style)],
-            3, // " ❯ " = 3 columns
+            3,
         )
     };
-
-    let left_width = prefix_width
-        + query
-            .chars()
-            .map(|c| UnicodeWidthChar::width(c).unwrap_or(0))
-            .sum::<usize>();
-    let right_len = status_text.chars().count() + 1; // status + trailing space
-    let padding = (area.width as usize).saturating_sub(left_width + right_len + 1);
 
     let status_style = if app.is_loading() {
         Style::default().fg(rgb(th().accent))
     } else {
         Style::default().fg(rgb(th().text_muted))
     };
+    let available = area.width as usize;
+    let min_gap = usize::from(available > prefix_width);
+    let right_budget = available.saturating_sub(prefix_width + min_gap);
+    let rendered_status = simple_truncate(&status_text, right_budget);
+    let right_width =
+        UnicodeWidthStr::width(rendered_status.as_str()) + usize::from(!rendered_status.is_empty());
+    let query_budget = available.saturating_sub(prefix_width + right_width + min_gap);
+    let rendered_query = simple_truncate(app.query(), query_budget);
+    let query_width = UnicodeWidthStr::width(rendered_query.as_str());
+    let padding = available.saturating_sub(prefix_width + query_width + right_width);
 
     let mut spans = prompt_spans;
     spans.extend([
-        Span::raw(query.to_string()),
+        Span::raw(rendered_query),
         Span::raw(" ".repeat(padding)),
-        Span::styled(status_text, status_style),
+        Span::styled(rendered_status, status_style),
         Span::raw(" "),
     ]);
     let search_line = Line::from(spans);
@@ -973,7 +1011,6 @@ fn render_search_bar(frame: &mut Frame, app: &App, area: Rect) {
 
     frame.render_widget(input, area);
 
-    // Position cursor at cursor_pos (account for " ❯ " prefix = 3 columns)
     if area.width > prefix_width as u16 {
         let cursor_offset: u16 = app
             .query()
@@ -981,11 +1018,16 @@ fn render_search_bar(frame: &mut Frame, app: &App, area: Rect) {
             .take(app.cursor_pos())
             .map(|c| UnicodeWidthChar::width(c).unwrap_or(0))
             .sum::<usize>()
+            .min(query_budget)
             .min(u16::MAX as usize) as u16;
-        let max_x = area.x + area.width.saturating_sub(2);
+        let max_x = area
+            .x
+            .saturating_add(prefix_width as u16)
+            .saturating_add(query_budget.min(u16::MAX as usize) as u16);
         let cursor_x = (area.x + prefix_width as u16)
             .saturating_add(cursor_offset)
-            .min(max_x);
+            .min(max_x)
+            .min(area.x + area.width.saturating_sub(1));
         frame.set_cursor_position(Position::new(cursor_x, area.y));
     }
 }
@@ -1128,6 +1170,7 @@ fn render_help_overlay(
     frame: &mut Frame,
     is_view_mode: bool,
     is_single_file_mode: bool,
+    semantic_available: bool,
     keys: &KeyBindings,
     scroll: usize,
 ) {
@@ -1163,7 +1206,7 @@ fn render_help_overlay(
             ("q / Esc".into(), exit_text),
         ]
     } else {
-        vec![
+        let mut shortcuts = vec![
             ("↑ / ↓".into(), "Move selection"),
             ("← / →".into(), "Move cursor"),
             ("Ctrl+P / N".into(), "Move selection"),
@@ -1181,7 +1224,11 @@ fn render_help_overlay(
             (keys.rename.help_label(), "Rename"),
             (keys.delete.help_label(), "Delete"),
             ("Esc".into(), "Quit"),
-        ]
+        ];
+        if semantic_available {
+            shortcuts.insert(9, ("Ctrl+T".into(), "Toggle semantic search"));
+        }
+        shortcuts
     };
 
     let title = " Shortcuts ";
@@ -1287,10 +1334,11 @@ fn render_list(frame: &mut Frame, app: &App, area: Rect) {
     // Calculate visible range FIRST (before building any items)
     // When searching, items may have 4 lines (with context), so use 4 lines per item
     // to ensure the offset calculation matches the actual rendered heights
-    let lines_per_item = if query_normalized.is_empty() {
-        LINES_PER_ITEM // 3 lines: header, preview, separator
+    let semantic_mode = app.list_search_mode() == ListSearchMode::Semantic;
+    let lines_per_item = if query_normalized.is_empty() || semantic_mode {
+        LINES_PER_ITEM
     } else {
-        4 // 4 lines: header, preview, context (optional but reserve space), separator
+        4
     };
     let items_per_page = (area.height as usize) / lines_per_item;
     let offset = match (app.selected(), items_per_page) {
@@ -1504,10 +1552,16 @@ fn render_list(frame: &mut Frame, app: &App, area: Rect) {
 
             let header = Line::from(header_spans).style(selection_bg);
 
-            // Preview line: sanitized, with multi-segment match display when searching
-            let preview_text = sanitize_preview(&conv.preview);
+            let semantic_metadata = app.semantic_result_metadata(conv_idx);
+            let preview_text = if semantic_mode {
+                semantic_metadata
+                    .map(|metadata| sanitize_preview(&metadata.snippet))
+                    .unwrap_or_default()
+            } else {
+                sanitize_preview(&conv.preview)
+            };
             let max_preview_len = width.saturating_sub(4);
-            let truncated_preview = if query_normalized.is_empty() {
+            let truncated_preview = if query_normalized.is_empty() || semantic_mode {
                 simple_truncate(&preview_text, max_preview_len)
             } else {
                 build_match_segments(&preview_text, &query_normalized, max_preview_len)
@@ -1526,7 +1580,7 @@ fn render_list(frame: &mut Frame, app: &App, area: Rect) {
             let preview = Line::from(preview_spans).style(selection_bg);
 
             // Check for hidden matches and build context line if needed
-            let context_line = if !query_normalized.is_empty() {
+            let context_line = if !semantic_mode && !query_normalized.is_empty() {
                 let context_width = width.saturating_sub(4);
                 build_context_segments(
                     &conv.full_text,
@@ -1626,12 +1680,26 @@ fn format_timestamp(timestamp: DateTime<Local>, now: DateTime<Local>) -> (String
 
 /// Truncate text to max_width chars, adding "…" suffix if truncated.
 fn simple_truncate(text: &str, max_width: usize) -> String {
-    if text.chars().count() > max_width {
-        let truncated: String = text.chars().take(max_width.saturating_sub(1)).collect();
-        format!("{}…", truncated)
-    } else {
-        text.to_string()
+    if UnicodeWidthStr::width(text) <= max_width {
+        return text.to_string();
     }
+    if max_width == 0 {
+        return String::new();
+    }
+
+    let mut result = String::new();
+    let ellipsis_width = UnicodeWidthChar::width('…').unwrap_or(1);
+    let mut width = 0;
+    for ch in text.chars() {
+        let ch_width = UnicodeWidthChar::width(ch).unwrap_or(0);
+        if width + ch_width + ellipsis_width > max_width {
+            break;
+        }
+        result.push(ch);
+        width += ch_width;
+    }
+    result.push('…');
+    result
 }
 
 /// Build a display string showing context around each match, joined by "…".
@@ -2371,8 +2439,16 @@ fn highlight_text(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::history::Conversation;
+    use crate::tui::app::{SemanticProgress, SemanticResultMetadata, TuiSearchOptions};
+    use crate::tui::semantic_worker::{SemanticSearchMessage, SemanticSearchResponse};
+    use crate::tui::viewer::ToolDisplayMode;
+    use chrono::TimeZone;
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
+    use std::collections::HashMap;
+    use std::path::PathBuf;
+    use std::sync::mpsc;
 
     #[test]
     fn view_help_overlay_handles_tiny_terminal() {
@@ -2380,7 +2456,9 @@ mod tests {
             let backend = TestBackend::new(width, height);
             let mut terminal = Terminal::new(backend).unwrap();
             terminal
-                .draw(|frame| render_help_overlay(frame, true, false, &KeyBindings::default(), 0))
+                .draw(|frame| {
+                    render_help_overlay(frame, true, false, false, &KeyBindings::default(), 0)
+                })
                 .unwrap();
         }
     }
@@ -2391,7 +2469,9 @@ mod tests {
             let backend = TestBackend::new(width, height);
             let mut terminal = Terminal::new(backend).unwrap();
             terminal
-                .draw(|frame| render_help_overlay(frame, false, false, &KeyBindings::default(), 0))
+                .draw(|frame| {
+                    render_help_overlay(frame, false, false, false, &KeyBindings::default(), 0)
+                })
                 .unwrap();
         }
     }
@@ -2406,12 +2486,155 @@ mod tests {
             .collect()
     }
 
+    fn test_conversation() -> Conversation {
+        Conversation {
+            path: PathBuf::from("/tmp/session.jsonl"),
+            index: 0,
+            timestamp: Local.with_ymd_and_hms(2024, 1, 1, 0, 0, 0).unwrap(),
+            preview: "lexical preview sentinel".to_string(),
+            preview_first: "lexical preview sentinel".to_string(),
+            preview_last: "lexical preview sentinel".to_string(),
+            full_text: "tool output sentinel summary sentinel cwd sentinel".to_string(),
+            semantic_turns: vec!["semantic visible text".to_string()],
+            search_text_lower: "lexical preview sentinel".to_string(),
+            project_name: Some("project sentinel".to_string()),
+            project_path: None,
+            cwd: Some(PathBuf::from("/cwd/sentinel")),
+            message_count: 1,
+            parse_errors: Vec::new(),
+            summary: Some("summary sentinel".to_string()),
+            custom_title: Some("title sentinel".to_string()),
+            model: None,
+            total_tokens: 0,
+            duration_minutes: None,
+        }
+    }
+
+    fn semantic_app() -> App {
+        App::new_with_options(
+            vec![test_conversation()],
+            ToolDisplayMode::Truncated,
+            false,
+            KeyBindings::default(),
+            vec![],
+            TuiSearchOptions {
+                semantic_enabled: true,
+                ..Default::default()
+            },
+        )
+    }
+
+    #[test]
+    fn search_bar_separates_semantic_status_at_narrow_width() {
+        let mut app = semantic_app();
+        let (response_tx, response_rx) = mpsc::channel();
+        app.handle_key(
+            crossterm::event::KeyCode::Char('t'),
+            crossterm::event::KeyModifiers::CONTROL,
+            10,
+        );
+        app.set_query_for_test("你好世界widequery");
+        app.set_semantic_receiver_for_test(7, response_rx);
+        response_tx
+            .send(SemanticSearchMessage::Progress {
+                generation: 7,
+                progress: SemanticProgress::Ranking,
+            })
+            .unwrap();
+        app.receive_search_results();
+        let backend = TestBackend::new(24, 4);
+        let mut terminal = Terminal::new(backend).unwrap();
+
+        terminal
+            .draw(|frame| render_search_bar(frame, &app, frame.area()))
+            .unwrap();
+
+        let contents = terminal_contents(&terminal);
+        assert!(contents.contains("sem"), "{contents:?}");
+        assert!(contents.contains("1/1"), "{contents:?}");
+    }
+
+    #[test]
+    fn semantic_list_uses_semantic_snippet_without_full_text_context() {
+        let mut app = semantic_app();
+        let (response_tx, response_rx) = mpsc::channel();
+        app.handle_key(
+            crossterm::event::KeyCode::Char('t'),
+            crossterm::event::KeyModifiers::CONTROL,
+            10,
+        );
+        app.set_query_for_test("sentinel");
+        app.set_semantic_receiver_for_test(7, response_rx);
+        response_tx
+            .send(SemanticSearchMessage::Complete(SemanticSearchResponse {
+                generation: 7,
+                filtered: vec![0],
+                metadata: HashMap::from([(
+                    0,
+                    SemanticResultMetadata {
+                        score: 1.0,
+                        snippet: "semantic snippet only".to_string(),
+                    },
+                )]),
+                error: None,
+                progress: SemanticProgress::Complete,
+            }))
+            .unwrap();
+        app.receive_search_results();
+        let backend = TestBackend::new(80, 8);
+        let mut terminal = Terminal::new(backend).unwrap();
+
+        terminal
+            .draw(|frame| render_list(frame, &app, frame.area()))
+            .unwrap();
+
+        let contents = terminal_contents(&terminal);
+        assert!(contents.contains("semantic snippet only"), "{contents:?}");
+        assert!(
+            !contents.contains("lexical preview sentinel"),
+            "{contents:?}"
+        );
+        assert!(!contents.contains("tool output sentinel"), "{contents:?}");
+    }
+
+    #[test]
+    fn semantic_shortcut_appears_only_when_available() {
+        let backend = TestBackend::new(70, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|frame| {
+                render_help_overlay(frame, false, false, false, &KeyBindings::default(), 0)
+            })
+            .unwrap();
+        let unavailable = terminal_contents(&terminal);
+
+        let backend = TestBackend::new(70, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|frame| {
+                render_help_overlay(frame, false, false, true, &KeyBindings::default(), 0)
+            })
+            .unwrap();
+        let available = terminal_contents(&terminal);
+
+        assert!(
+            !unavailable.contains("Toggle semantic search"),
+            "{unavailable:?}"
+        );
+        assert!(
+            available.contains("Toggle semantic search"),
+            "{available:?}"
+        );
+    }
+
     #[test]
     fn help_overlay_indicates_hidden_rows() {
         let backend = TestBackend::new(60, 8);
         let mut terminal = Terminal::new(backend).unwrap();
         terminal
-            .draw(|frame| render_help_overlay(frame, true, false, &KeyBindings::default(), 0))
+            .draw(|frame| {
+                render_help_overlay(frame, true, false, false, &KeyBindings::default(), 0)
+            })
             .unwrap();
 
         let contents = terminal_contents(&terminal);
@@ -2424,7 +2647,9 @@ mod tests {
         let backend = TestBackend::new(60, 8);
         let mut terminal = Terminal::new(backend).unwrap();
         terminal
-            .draw(|frame| render_help_overlay(frame, true, false, &KeyBindings::default(), 10))
+            .draw(|frame| {
+                render_help_overlay(frame, true, false, false, &KeyBindings::default(), 10)
+            })
             .unwrap();
 
         let contents = terminal_contents(&terminal);

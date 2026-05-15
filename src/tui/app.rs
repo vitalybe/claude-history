@@ -6,7 +6,7 @@ use crate::history::{
 };
 use crate::tui::search::{self, SearchableConversation};
 use crate::tui::semantic_worker::{
-    SemanticSearchRequest, SemanticSearchResponse, spawn_semantic_worker,
+    SemanticSearchMessage, SemanticSearchRequest, spawn_semantic_worker,
 };
 use crate::tui::ui;
 use crate::tui::viewer::{
@@ -148,6 +148,30 @@ pub enum ListSearchMode {
     Semantic,
 }
 
+impl ListSearchMode {
+    pub fn label(self) -> &'static str {
+        match self {
+            ListSearchMode::Lexical => "lex",
+            ListSearchMode::Semantic => "sem",
+        }
+    }
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub enum SemanticProgress {
+    #[default]
+    Idle,
+    InitializingModel,
+    CacheReady,
+    EmbeddingChangedChunks {
+        count: usize,
+    },
+    Ranking,
+    Complete,
+    EmptyCorpus,
+    Failed,
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct SemanticResultMetadata {
     pub score: f32,
@@ -159,10 +183,12 @@ pub struct SemanticResultMetadata {
 struct SemanticSearchState {
     available: bool,
     pending_generation: Option<u64>,
+    pending_status: Option<SemanticProgress>,
+    last_status: SemanticProgress,
     error: Option<String>,
     results: HashMap<usize, SemanticResultMetadata>,
     worker_tx: Option<mpsc::Sender<SemanticSearchRequest>>,
-    worker_rx: Option<mpsc::Receiver<SemanticSearchResponse>>,
+    worker_rx: Option<mpsc::Receiver<SemanticSearchMessage>>,
 }
 
 /// Loading state for the TUI
@@ -618,6 +644,8 @@ impl App {
         self.search_generation += 1;
         self.search_in_flight = false;
         self.semantic_search.pending_generation = None;
+        self.semantic_search.pending_status = None;
+        self.semantic_search.last_status = SemanticProgress::Idle;
         self.semantic_search.error = None;
         self.semantic_search.results.clear();
     }
@@ -705,6 +733,8 @@ impl App {
             self.search_generation += 1;
             self.search_in_flight = false;
             self.semantic_search.pending_generation = Some(self.search_generation);
+            self.semantic_search.pending_status = Some(SemanticProgress::InitializingModel);
+            self.semantic_search.last_status = SemanticProgress::Idle;
             self.semantic_search.error = None;
             self.semantic_search.results.clear();
             let candidate_indices = self.semantic_candidate_indices();
@@ -747,16 +777,33 @@ impl App {
             }
         }
         if let Some(rx) = self.semantic_search.worker_rx.take() {
-            while let Ok(response) = rx.try_recv() {
-                if response.generation == self.search_generation
-                    && self.list_search_mode == ListSearchMode::Semantic
-                {
-                    self.semantic_search.pending_generation = None;
-                    self.semantic_search.error = response.error;
-                    self.semantic_search.results = response.metadata;
-                    let filtered = self.filter_indices(response.filtered);
-                    self.apply_filtered(filtered);
-                    applied = true;
+            while let Ok(message) = rx.try_recv() {
+                match message {
+                    SemanticSearchMessage::Progress {
+                        generation,
+                        progress,
+                    } => {
+                        if generation == self.search_generation
+                            && self.list_search_mode == ListSearchMode::Semantic
+                        {
+                            self.semantic_search.pending_status = Some(progress);
+                            applied = true;
+                        }
+                    }
+                    SemanticSearchMessage::Complete(response) => {
+                        if response.generation == self.search_generation
+                            && self.list_search_mode == ListSearchMode::Semantic
+                        {
+                            self.semantic_search.pending_generation = None;
+                            self.semantic_search.pending_status = None;
+                            self.semantic_search.last_status = response.progress;
+                            self.semantic_search.error = response.error;
+                            self.semantic_search.results = response.metadata;
+                            let filtered = self.filter_indices(response.filtered);
+                            self.apply_filtered(filtered);
+                            applied = true;
+                        }
+                    }
                 }
             }
             self.semantic_search.worker_rx = Some(rx);
@@ -958,12 +1005,10 @@ impl App {
         self.workspace_filter
     }
 
-    #[cfg(test)]
     pub fn list_search_mode(&self) -> ListSearchMode {
         self.list_search_mode
     }
 
-    #[cfg(test)]
     pub fn semantic_search_available(&self) -> bool {
         self.semantic_search.available
     }
@@ -976,6 +1021,54 @@ impl App {
     #[cfg(test)]
     fn semantic_search_error(&self) -> Option<&str> {
         self.semantic_search.error.as_deref()
+    }
+
+    #[cfg(test)]
+    pub fn set_query_for_test(&mut self, query: &str) {
+        self.query = query.to_string();
+        self.cursor_pos = self.query.chars().count();
+    }
+
+    #[cfg(test)]
+    pub fn set_semantic_receiver_for_test(
+        &mut self,
+        generation: u64,
+        worker_rx: mpsc::Receiver<SemanticSearchMessage>,
+    ) {
+        self.search_generation = generation;
+        self.semantic_search.pending_generation = Some(generation);
+        self.semantic_search.worker_rx = Some(worker_rx);
+    }
+
+    pub fn semantic_result_metadata(
+        &self,
+        conversation_index: usize,
+    ) -> Option<&SemanticResultMetadata> {
+        self.semantic_search.results.get(&conversation_index)
+    }
+
+    pub fn semantic_status_text(&self) -> Option<String> {
+        if self.list_search_mode != ListSearchMode::Semantic {
+            return None;
+        }
+        if self.semantic_search.error.is_some() {
+            return Some("sem failed".to_string());
+        }
+        let status = self
+            .semantic_search
+            .pending_status
+            .as_ref()
+            .unwrap_or(&self.semantic_search.last_status);
+        Some(match status {
+            SemanticProgress::Idle => "sem ready".to_string(),
+            SemanticProgress::InitializingModel => "sem model".to_string(),
+            SemanticProgress::CacheReady => "sem cache".to_string(),
+            SemanticProgress::EmbeddingChangedChunks { count } => format!("sem embed {count}"),
+            SemanticProgress::Ranking => "sem ranking".to_string(),
+            SemanticProgress::Complete => "sem done".to_string(),
+            SemanticProgress::EmptyCorpus => "sem no text".to_string(),
+            SemanticProgress::Failed => "sem failed".to_string(),
+        })
     }
 
     pub fn has_project_context(&self) -> bool {
@@ -996,7 +1089,6 @@ impl App {
         }
     }
 
-    #[cfg(test)]
     fn toggle_list_search_mode(&mut self) {
         if !self.semantic_search.available {
             return;
@@ -1007,6 +1099,26 @@ impl App {
         };
         self.invalidate_search_generation();
         self.dispatch_search();
+    }
+
+    pub fn semantic_toggle_available(&self) -> bool {
+        self.semantic_search.available
+            && !self
+                .keys
+                .rename
+                .matches(KeyCode::Char('t'), KeyModifiers::CONTROL)
+            && !self
+                .keys
+                .delete
+                .matches(KeyCode::Char('t'), KeyModifiers::CONTROL)
+            && !self
+                .keys
+                .resume
+                .matches(KeyCode::Char('t'), KeyModifiers::CONTROL)
+            && !self
+                .keys
+                .fork
+                .matches(KeyCode::Char('t'), KeyModifiers::CONTROL)
     }
 
     /// Move cursor left by one character
@@ -1866,6 +1978,12 @@ impl App {
                 KeyCode::Char('c') if modifiers.contains(KeyModifiers::CONTROL) => {
                     Some(Action::Quit)
                 }
+                KeyCode::Char('t') if modifiers.contains(KeyModifiers::CONTROL) => {
+                    if self.semantic_toggle_available() {
+                        self.toggle_list_search_mode();
+                    }
+                    None
+                }
                 // Ctrl+Left: move cursor one word left
                 KeyCode::Left if modifiers.contains(KeyModifiers::CONTROL) => {
                     self.cursor_word_left();
@@ -2075,6 +2193,12 @@ impl App {
                 None
             }
             KeyCode::Char('c') if modifiers.contains(KeyModifiers::CONTROL) => Some(Action::Quit),
+            KeyCode::Char('t') if modifiers.contains(KeyModifiers::CONTROL) => {
+                if self.semantic_toggle_available() {
+                    self.toggle_list_search_mode();
+                }
+                None
+            }
             // Ctrl+A: cursor to beginning of line
             KeyCode::Char('a') if modifiers.contains(KeyModifiers::CONTROL) => {
                 self.cursor_home();
@@ -3220,12 +3344,15 @@ mod tests {
         drop(request_rx);
 
         response_tx
-            .send(SemanticSearchResponse {
-                generation: 3,
-                filtered: vec![0],
-                metadata: HashMap::new(),
-                error: None,
-            })
+            .send(SemanticSearchMessage::Complete(
+                crate::tui::semantic_worker::SemanticSearchResponse {
+                    generation: 3,
+                    filtered: vec![0],
+                    metadata: HashMap::new(),
+                    error: None,
+                    progress: SemanticProgress::Complete,
+                },
+            ))
             .unwrap();
 
         assert!(!app.receive_search_results());
@@ -3261,18 +3388,21 @@ mod tests {
         drop(request_rx);
 
         response_tx
-            .send(SemanticSearchResponse {
-                generation: 2,
-                filtered: vec![0],
-                metadata: HashMap::from([(
-                    0,
-                    SemanticResultMetadata {
-                        score: 1.0,
-                        snippet: "stale".to_string(),
-                    },
-                )]),
-                error: None,
-            })
+            .send(SemanticSearchMessage::Complete(
+                crate::tui::semantic_worker::SemanticSearchResponse {
+                    generation: 2,
+                    filtered: vec![0],
+                    metadata: HashMap::from([(
+                        0,
+                        SemanticResultMetadata {
+                            score: 1.0,
+                            snippet: "stale".to_string(),
+                        },
+                    )]),
+                    error: None,
+                    progress: SemanticProgress::Complete,
+                },
+            ))
             .unwrap();
 
         assert!(!app.receive_search_results());
@@ -3395,12 +3525,15 @@ mod tests {
         )]);
 
         response_tx
-            .send(SemanticSearchResponse {
-                generation: 7,
-                filtered: vec![1],
-                metadata,
-                error: None,
-            })
+            .send(SemanticSearchMessage::Complete(
+                crate::tui::semantic_worker::SemanticSearchResponse {
+                    generation: 7,
+                    filtered: vec![1],
+                    metadata,
+                    error: None,
+                    progress: SemanticProgress::Complete,
+                },
+            ))
             .unwrap();
 
         assert!(app.receive_search_results());
@@ -3457,6 +3590,171 @@ mod tests {
         assert_eq!(app.semantic_search_error(), None);
         assert!(app.semantic_search.worker_tx.is_none());
         assert!(app.semantic_search.worker_rx.is_none());
+    }
+
+    #[test]
+    fn semantic_progress_messages_update_status_text() {
+        let mut app = app_with_options(
+            vec![conversation(
+                Some("Visible"),
+                "-tmp-visible",
+                "22222222-2222-4222-8222-222222222222",
+                "needle",
+            )],
+            vec![],
+            TuiSearchOptions {
+                semantic_enabled: true,
+                ..Default::default()
+            },
+        );
+        let (_request_tx, request_rx) = mpsc::channel();
+        let (response_tx, response_rx) = mpsc::channel();
+        app.semantic_search.worker_tx = Some(_request_tx);
+        app.semantic_search.worker_rx = Some(response_rx);
+        app.list_search_mode = ListSearchMode::Semantic;
+        app.search_generation = 7;
+        app.semantic_search.pending_generation = Some(7);
+        drop(request_rx);
+
+        response_tx
+            .send(SemanticSearchMessage::Progress {
+                generation: 7,
+                progress: SemanticProgress::EmbeddingChangedChunks { count: 2 },
+            })
+            .unwrap();
+
+        assert!(app.receive_search_results());
+        assert_eq!(app.semantic_status_text().as_deref(), Some("sem embed 2"));
+        assert_eq!(app.semantic_search.pending_generation, Some(7));
+    }
+
+    #[test]
+    fn semantic_empty_corpus_status_is_visible_after_completion() {
+        let mut app = app_with_options(
+            vec![conversation(
+                Some("Visible"),
+                "-tmp-visible",
+                "22222222-2222-4222-8222-222222222222",
+                "needle",
+            )],
+            vec![],
+            TuiSearchOptions {
+                semantic_enabled: true,
+                ..Default::default()
+            },
+        );
+        let (_request_tx, request_rx) = mpsc::channel();
+        let (response_tx, response_rx) = mpsc::channel();
+        app.semantic_search.worker_tx = Some(_request_tx);
+        app.semantic_search.worker_rx = Some(response_rx);
+        app.list_search_mode = ListSearchMode::Semantic;
+        app.search_generation = 7;
+        app.semantic_search.pending_generation = Some(7);
+        drop(request_rx);
+
+        response_tx
+            .send(SemanticSearchMessage::Complete(
+                crate::tui::semantic_worker::SemanticSearchResponse {
+                    generation: 7,
+                    filtered: Vec::new(),
+                    metadata: HashMap::new(),
+                    error: None,
+                    progress: SemanticProgress::EmptyCorpus,
+                },
+            ))
+            .unwrap();
+
+        assert!(app.receive_search_results());
+        assert_eq!(app.semantic_status_text().as_deref(), Some("sem no text"));
+        assert!(app.filtered().is_empty());
+        assert_eq!(app.selected(), None);
+    }
+
+    #[test]
+    fn lexical_toggle_clears_semantic_error_and_pending_status() {
+        let mut app = app_with_options(
+            vec![conversation(
+                Some("Visible"),
+                "-tmp-visible",
+                "22222222-2222-4222-8222-222222222222",
+                "needle",
+            )],
+            vec![],
+            TuiSearchOptions {
+                semantic_enabled: true,
+                ..Default::default()
+            },
+        );
+        app.list_search_mode = ListSearchMode::Semantic;
+        app.query = "needle".to_string();
+        app.semantic_search.pending_generation = Some(3);
+        app.semantic_search.pending_status = Some(SemanticProgress::Ranking);
+        app.semantic_search.error = Some("failed".to_string());
+
+        app.toggle_list_search_mode();
+
+        assert_eq!(app.list_search_mode(), ListSearchMode::Lexical);
+        assert_eq!(app.semantic_search.pending_generation, None);
+        assert_eq!(app.semantic_search.pending_status, None);
+        assert_eq!(app.semantic_search_error(), None);
+        assert_eq!(filtered_projects(&app), vec![Some("Visible")]);
+    }
+
+    #[test]
+    fn ctrl_t_toggles_semantic_mode_when_available() {
+        let mut app = app_with_options(
+            vec![],
+            vec![],
+            TuiSearchOptions {
+                semantic_enabled: true,
+                ..Default::default()
+            },
+        );
+
+        app.handle_key(KeyCode::Char('t'), KeyModifiers::CONTROL, 10);
+
+        assert_eq!(app.list_search_mode(), ListSearchMode::Semantic);
+    }
+
+    #[test]
+    fn ctrl_t_does_not_toggle_semantic_mode_when_unavailable() {
+        let mut app = app(vec![], vec![]);
+
+        app.handle_key(KeyCode::Char('t'), KeyModifiers::CONTROL, 10);
+
+        assert_eq!(app.list_search_mode(), ListSearchMode::Lexical);
+    }
+
+    #[test]
+    fn configured_ctrl_t_binding_takes_precedence_over_semantic_toggle() {
+        let keys = KeyBindings {
+            rename: crate::config::KeyBinding {
+                code: KeyCode::Char('t'),
+                modifiers: KeyModifiers::CONTROL,
+            },
+            ..Default::default()
+        };
+        let mut app = App::new_with_options(
+            vec![conversation(
+                Some("Visible"),
+                "-tmp-visible",
+                "22222222-2222-4222-8222-222222222222",
+                "needle",
+            )],
+            ToolDisplayMode::Truncated,
+            false,
+            keys,
+            vec![],
+            TuiSearchOptions {
+                semantic_enabled: true,
+                ..Default::default()
+            },
+        );
+
+        app.handle_key(KeyCode::Char('t'), KeyModifiers::CONTROL, 10);
+
+        assert_eq!(app.list_search_mode(), ListSearchMode::Lexical);
+        assert!(matches!(app.dialog_mode, DialogMode::Rename { .. }));
     }
 
     #[test]
