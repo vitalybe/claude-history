@@ -3018,6 +3018,7 @@ mod tests {
     use super::*;
     use crate::history::Conversation;
     use chrono::{Local, TimeZone};
+    use std::collections::HashMap;
     use std::path::PathBuf;
 
     fn conversation(
@@ -4033,6 +4034,16 @@ mod interaction_tests {
         std::fs::write(path, lines.join("\n") + "\n").unwrap();
     }
 
+    fn write_named_conversation(path: &std::path::Path, text: &str) {
+        let line = serde_json::json!({
+            "type": "user",
+            "timestamp": "2024-01-01T00:00:00Z",
+            "message": {"role": "user", "content": text}
+        })
+        .to_string();
+        std::fs::write(path, format!("{line}\n")).unwrap();
+    }
+
     fn write_tool_conversation(path: &std::path::Path) {
         let line = r#"{"type":"assistant","timestamp":"2024-01-01T00:00:00Z","message":{"role":"assistant","content":[{"type":"tool_use","id":"toolu_1","name":"Bash","input":{"command":"one\ntwo\nthree\nfour\nfive"}}]}}"#;
         std::fs::write(path, format!("{line}\n")).unwrap();
@@ -4084,6 +4095,71 @@ mod interaction_tests {
         } else {
             unreachable!()
         }
+    }
+
+    #[test]
+    fn semantic_ranked_selection_opens_selected_conversation_and_returns() {
+        let dir = tempfile::tempdir().unwrap();
+        let first = dir.path().join("first.jsonl");
+        let second = dir.path().join("second.jsonl");
+        write_named_conversation(&first, "first body");
+        write_named_conversation(&second, "second body");
+        let mut app = App::new_with_options(
+            vec![
+                test_conversation(first.clone(), None),
+                test_conversation(second.clone(), None),
+            ],
+            ToolDisplayMode::Hidden,
+            false,
+            KeyBindings::default(),
+            vec![],
+            TuiSearchOptions {
+                semantic_enabled: true,
+                ..Default::default()
+            },
+        );
+        let (_request_tx, request_rx) = mpsc::channel();
+        let (response_tx, response_rx) = mpsc::channel();
+        app.semantic_search.worker_tx = Some(_request_tx);
+        app.semantic_search.worker_rx = Some(response_rx);
+        app.list_search_mode = ListSearchMode::Semantic;
+        app.search_generation = 7;
+        app.semantic_search.pending_generation = Some(7);
+        drop(request_rx);
+
+        response_tx
+            .send(SemanticSearchMessage::Complete(
+                crate::tui::semantic_worker::SemanticSearchResponse {
+                    generation: 7,
+                    filtered: vec![1, 0],
+                    metadata: HashMap::from([(
+                        1,
+                        SemanticResultMetadata {
+                            score: 1.0,
+                            snippet: "second semantic snippet".to_string(),
+                        },
+                    )]),
+                    error: None,
+                    progress: SemanticProgress::Complete,
+                },
+            ))
+            .unwrap();
+
+        assert!(app.receive_search_results());
+        assert_eq!(app.filtered(), &[1, 0]);
+        assert_eq!(app.selected(), Some(0));
+        app.enter_view_mode(80);
+        assert!(matches!(app.app_mode(), AppMode::View(_)));
+        if let AppMode::View(state) = app.app_mode() {
+            assert_eq!(state.conversation_path, second);
+        }
+        assert!(view_text(&app).contains("second body"));
+
+        app.exit_view_mode();
+
+        assert!(matches!(app.app_mode(), AppMode::List));
+        assert_eq!(app.filtered(), &[1, 0]);
+        assert_eq!(app.selected(), Some(0));
     }
 
     #[test]

@@ -1279,6 +1279,94 @@ mod tests {
     }
 
     #[test]
+    fn semantic_turns_exclude_parser_metadata_while_lexical_text_keeps_search_payloads() {
+        let content = [
+            r#"{"type":"summary","summary":"summary lexical sentinel","leafUuid":"abc"}"#
+                .to_string(),
+            r#"{"type":"custom-title","customTitle":"title lexical sentinel","sessionId":"abc"}"#
+                .to_string(),
+            user_msg(
+                "visible user semantic sentinel",
+                Some("/cwd/private-sentinel"),
+            ),
+            serde_json::json!({
+                "type": "assistant",
+                "timestamp": "2024-01-01T00:00:00Z",
+                "message": {
+                    "role": "assistant",
+                    "content": [
+                        {"type": "text", "text": "visible mixed assistant semantic sentinel"},
+                        {
+                            "type": "tool_use",
+                            "id": "toolu_1",
+                            "name": "Bash",
+                            "input": {"command": "tool call private sentinel"}
+                        }
+                    ]
+                }
+            })
+            .to_string(),
+            user_msg_with_tool_result(
+                "after tool visible semantic",
+                "tool result lexical sentinel",
+            ),
+            user_msg("<command-name>ls</command-name>", None),
+            user_msg(
+                "<local-command-stdout>local stdout lexical sentinel</local-command-stdout>",
+                None,
+            ),
+            assistant_msg("visible assistant semantic sentinel"),
+        ]
+        .join("\n");
+
+        let conv = parse_jsonl(&content).unwrap().unwrap();
+        let semantic = conv.semantic_turns.join(" ");
+
+        assert_eq!(
+            conv.semantic_turns,
+            vec![
+                "visible user semantic sentinel",
+                "visible mixed assistant semantic sentinel",
+                "after tool visible semantic",
+                "visible assistant semantic sentinel"
+            ]
+        );
+        for excluded in [
+            "summary lexical sentinel",
+            "title lexical sentinel",
+            "tool call private sentinel",
+            "tool result lexical sentinel",
+            "local stdout lexical sentinel",
+            "/cwd/private-sentinel",
+        ] {
+            assert!(
+                !semantic.contains(excluded),
+                "{excluded} leaked into {semantic:?}"
+            );
+        }
+        for included in [
+            "summary lexical sentinel",
+            "title lexical sentinel",
+            "tool result lexical sentinel",
+            "local stdout lexical sentinel",
+        ] {
+            assert!(
+                conv.full_text.contains(included),
+                "{included} missing from {}",
+                conv.full_text
+            );
+            assert!(
+                conv.search_text_lower.contains(included),
+                "{included} missing from {}",
+                conv.search_text_lower
+            );
+        }
+        assert!(!conv.full_text.contains("/cwd/private-sentinel"));
+        assert_eq!(conv.project_name, None);
+        assert_eq!(conv.project_path, None);
+    }
+
+    #[test]
     fn local_command_stdout_remains_lexical_only() {
         let content = [
             user_msg("Real question", None),

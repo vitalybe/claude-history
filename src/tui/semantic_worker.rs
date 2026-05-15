@@ -1,8 +1,8 @@
 use crate::error::Result;
 use crate::history::Conversation;
-use crate::semantic::cache::{
-    cache_entry_matches, embed_chunks_quiet, read_embedding_cache, write_embedding_cache,
-};
+#[cfg(not(test))]
+use crate::semantic::cache::write_embedding_cache;
+use crate::semantic::cache::{cache_entry_matches, embed_chunks_quiet, read_embedding_cache};
 use crate::semantic::chunk::build_chunks_with_indices;
 use crate::semantic::embed::SemanticEmbedder;
 use crate::semantic::fastembed::FastembedEmbedder;
@@ -189,7 +189,7 @@ fn rank_semantic_request(
             progress,
         });
         *embedded_chunks = embed_chunks_quiet(embedder, chunks, cache)?;
-        write_embedding_cache(cache);
+        persist_embedding_cache(cache);
         *signature = Some(next_signature);
     } else {
         let _ = res_tx.send(SemanticSearchMessage::Progress {
@@ -269,6 +269,14 @@ fn cache_miss_count(
         })
         .count()
 }
+
+#[cfg(not(test))]
+fn persist_embedding_cache(cache: &EmbeddingCache) {
+    write_embedding_cache(cache);
+}
+
+#[cfg(test)]
+fn persist_embedding_cache(_cache: &EmbeddingCache) {}
 
 fn semantic_index_has_chunks(
     request: &SemanticSearchRequest,
@@ -488,6 +496,72 @@ mod tests {
 
         assert_eq!(embedder.passage_calls, 1);
         assert_eq!(embedder.query_calls, 2);
+    }
+
+    #[test]
+    fn unchanged_signature_reuses_embeddings_until_semantic_turns_change() {
+        let mut request = request(
+            "alpha",
+            vec![conversation(
+                "/projects/project-a/session-a.jsonl",
+                vec!["visible alpha"],
+            )],
+            vec![0],
+        );
+        let mut signature = None;
+        let mut embedded_chunks = Vec::new();
+        let mut cache = empty_embedding_cache(ChunkConfig::default());
+        let mut embedder = FakeEmbedder {
+            passage_calls: 0,
+            query_calls: 0,
+            embedded_passages: Vec::new(),
+        };
+
+        rank_semantic_request(
+            &request,
+            &mut signature,
+            &mut embedded_chunks,
+            &mut cache,
+            ChunkConfig::default(),
+            &mut embedder,
+            &progress_tx().0,
+        )
+        .expect("first rank succeeds");
+        request.query = "beta".to_string();
+        rank_semantic_request(
+            &request,
+            &mut signature,
+            &mut embedded_chunks,
+            &mut cache,
+            ChunkConfig::default(),
+            &mut embedder,
+            &progress_tx().0,
+        )
+        .expect("same signature rank succeeds");
+        request.conversations = Arc::new(vec![conversation(
+            "/projects/project-a/session-a.jsonl",
+            vec!["visible beta"],
+        )]);
+        rank_semantic_request(
+            &request,
+            &mut signature,
+            &mut embedded_chunks,
+            &mut cache,
+            ChunkConfig::default(),
+            &mut embedder,
+            &progress_tx().0,
+        )
+        .expect("changed signature rank succeeds");
+
+        assert_eq!(embedder.passage_calls, 2);
+        assert_eq!(embedder.query_calls, 3);
+        assert_eq!(
+            embedder.embedded_passages,
+            vec![
+                vec!["visible alpha".to_string()],
+                vec!["visible beta".to_string()]
+            ]
+        );
     }
 
     #[test]

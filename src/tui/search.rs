@@ -571,6 +571,34 @@ mod tests {
     }
 
     #[test]
+    fn project_name_is_lexical_search_metadata_only() {
+        let now = Local::now();
+        let convs = vec![make_conv_full(
+            "visible dialogue sentinel",
+            Some("project lexical sentinel"),
+            None,
+            None,
+            now,
+        )];
+
+        let searchable = precompute_search_text(&convs);
+
+        assert!(
+            searchable[0]
+                .text_lower
+                .contains("project lexical sentinel")
+        );
+        assert_eq!(searchable[0].project_lower, "project lexical sentinel");
+        assert!(search(&convs, &searchable, "project lexical", now).contains(&0));
+        assert!(
+            !convs[0]
+                .semantic_turns
+                .join(" ")
+                .contains("project lexical sentinel")
+        );
+    }
+
+    #[test]
     fn search_matches_hyphenated_words() {
         let now = Local::now();
         let convs = vec![make_conv("main-worktree-fix discussion", now)];

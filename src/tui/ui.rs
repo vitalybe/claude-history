@@ -2445,7 +2445,7 @@ mod tests {
     use crate::tui::viewer::ToolDisplayMode;
     use chrono::TimeZone;
     use ratatui::Terminal;
-    use ratatui::backend::TestBackend;
+    use ratatui::backend::{Backend, TestBackend};
     use std::collections::HashMap;
     use std::path::PathBuf;
     use std::sync::mpsc;
@@ -2486,6 +2486,19 @@ mod tests {
             .collect()
     }
 
+    fn row_text(terminal: &Terminal<TestBackend>, y: u16) -> String {
+        let buffer = terminal.backend().buffer();
+        (0..buffer.area.width)
+            .map(|x| buffer[(x, y)].symbol())
+            .collect()
+    }
+
+    fn assert_cursor_inside(terminal: &mut Terminal<TestBackend>, width: u16) {
+        let cursor = terminal.backend_mut().get_cursor_position().unwrap();
+        assert_eq!(cursor.y, 0);
+        assert!(cursor.x < width, "cursor {cursor:?} outside width {width}");
+    }
+
     fn test_conversation() -> Conversation {
         Conversation {
             path: PathBuf::from("/tmp/session.jsonl"),
@@ -2524,8 +2537,7 @@ mod tests {
         )
     }
 
-    #[test]
-    fn search_bar_separates_semantic_status_at_narrow_width() {
+    fn semantic_searching_app(query: &str, progress: SemanticProgress) -> App {
         let mut app = semantic_app();
         let (response_tx, response_rx) = mpsc::channel();
         app.handle_key(
@@ -2533,25 +2545,87 @@ mod tests {
             crossterm::event::KeyModifiers::CONTROL,
             10,
         );
-        app.set_query_for_test("你好世界widequery");
+        app.set_query_for_test(query);
         app.set_semantic_receiver_for_test(7, response_rx);
         response_tx
             .send(SemanticSearchMessage::Progress {
                 generation: 7,
-                progress: SemanticProgress::Ranking,
+                progress,
             })
             .unwrap();
         app.receive_search_results();
-        let backend = TestBackend::new(24, 4);
+        app
+    }
+
+    #[test]
+    fn search_bar_separates_semantic_status_at_narrow_width() {
+        let app = semantic_searching_app("你好世界widequery", SemanticProgress::Ranking);
+        let width = 24;
+        let backend = TestBackend::new(width, 4);
         let mut terminal = Terminal::new(backend).unwrap();
 
         terminal
             .draw(|frame| render_search_bar(frame, &app, frame.area()))
             .unwrap();
 
-        let contents = terminal_contents(&terminal);
-        assert!(contents.contains("sem"), "{contents:?}");
-        assert!(contents.contains("1/1"), "{contents:?}");
+        let line = row_text(&terminal, 0);
+        assert_eq!(line.chars().count(), width as usize);
+        assert!(line.contains("sem"), "{line:?}");
+        assert!(line.contains("1/1"), "{line:?}");
+        assert_cursor_inside(&mut terminal, width);
+    }
+
+    #[test]
+    fn lexical_search_bar_omits_semantic_status_at_normal_width() {
+        let mut app = App::new(
+            vec![test_conversation()],
+            ToolDisplayMode::Truncated,
+            false,
+            KeyBindings::default(),
+            vec![],
+        );
+        app.set_query_for_test("lexical query");
+        let width = 80;
+        let backend = TestBackend::new(width, 4);
+        let mut terminal = Terminal::new(backend).unwrap();
+
+        terminal
+            .draw(|frame| render_search_bar(frame, &app, frame.area()))
+            .unwrap();
+
+        let line = row_text(&terminal, 0);
+        assert_eq!(line.chars().count(), width as usize);
+        assert!(line.contains("lexical query"), "{line:?}");
+        assert!(line.contains("1/1"), "{line:?}");
+        assert!(!line.contains("semantic"), "{line:?}");
+        assert!(!line.contains("sem "), "{line:?}");
+        assert_cursor_inside(&mut terminal, width);
+    }
+
+    #[test]
+    fn semantic_search_bar_keeps_query_mode_count_status_and_cursor_at_normal_width() {
+        let app = semantic_searching_app(
+            "semantic query with enough words",
+            SemanticProgress::EmbeddingChangedChunks { count: 42 },
+        );
+        let width = 80;
+        let backend = TestBackend::new(width, 4);
+        let mut terminal = Terminal::new(backend).unwrap();
+
+        terminal
+            .draw(|frame| render_search_bar(frame, &app, frame.area()))
+            .unwrap();
+
+        let line = row_text(&terminal, 0);
+        assert_eq!(line.chars().count(), width as usize);
+        assert!(
+            line.contains("semantic query with enough words"),
+            "{line:?}"
+        );
+        assert!(line.contains("semantic"), "{line:?}");
+        assert!(line.contains("1/1"), "{line:?}");
+        assert!(line.contains("sem embed 42"), "{line:?}");
+        assert_cursor_inside(&mut terminal, width);
     }
 
     #[test]
