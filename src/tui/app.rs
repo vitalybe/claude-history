@@ -610,11 +610,7 @@ impl App {
         self.invalidate_search_generation();
 
         // Apply filter (handles query, exclusions, and workspace filter)
-        if self.list_search_mode == ListSearchMode::Semantic && !self.query.trim().is_empty() {
-            self.dispatch_search();
-        } else {
-            self.update_filter();
-        }
+        self.update_filter();
     }
 
     /// Consume the app and return its conversations
@@ -3873,44 +3869,6 @@ mod tests {
 
         app.receive_search_results();
         assert_eq!(filtered_projects(&app), vec![Some("Visible")]);
-    }
-
-    #[test]
-    fn finish_loading_dispatches_buffered_semantic_query() {
-        let mut app = App::new_loading_with_options(
-            ToolDisplayMode::Truncated,
-            false,
-            KeyBindings::default(),
-            false,
-            None,
-            vec![],
-            TuiSearchOptions {
-                semantic_enabled: true,
-                ..Default::default()
-            },
-        );
-        let (request_tx, request_rx) = mpsc::channel();
-        let (_response_tx, response_rx) = mpsc::channel();
-        app.semantic_search.worker_tx = Some(request_tx);
-        app.semantic_search.worker_rx = Some(response_rx);
-        app.query = "needle".to_string();
-
-        app.append_conversations(vec![conversation(
-            Some("Visible"),
-            "-tmp-visible",
-            "22222222-2222-8222-8222-222222222222",
-            "needle",
-        )]);
-        app.finish_loading();
-
-        let request = request_rx.try_recv().expect("semantic request");
-        assert_eq!(request.query, "needle");
-        assert_eq!(request.candidate_indices, vec![0]);
-        assert_eq!(
-            app.semantic_search.pending_generation,
-            Some(request.generation)
-        );
-        assert_eq!(app.semantic_status_text().as_deref(), Some("sem model"));
     }
 
     #[test]
