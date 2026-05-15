@@ -2605,7 +2605,7 @@ mod tests {
     #[test]
     fn semantic_search_bar_keeps_query_mode_count_status_and_cursor_at_normal_width() {
         let app = semantic_searching_app(
-            "semantic query with enough words",
+            "vector query with enough words",
             SemanticProgress::EmbeddingChangedChunks { count: 42 },
         );
         let width = 80;
@@ -2618,11 +2618,8 @@ mod tests {
 
         let line = row_text(&terminal, 0);
         assert_eq!(line.chars().count(), width as usize);
-        assert!(
-            line.contains("semantic query with enough words"),
-            "{line:?}"
-        );
-        assert!(line.contains("semantic"), "{line:?}");
+        assert!(line.contains("vector query with enough words"), "{line:?}");
+        assert!(line.contains("sem 1/1 sem embed 42"), "{line:?}");
         assert!(line.contains("1/1"), "{line:?}");
         assert!(line.contains("sem embed 42"), "{line:?}");
         assert_cursor_inside(&mut terminal, width);
