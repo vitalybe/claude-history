@@ -509,44 +509,6 @@ fn is_low_value_semantic_turn(turn: &str) -> bool {
         return true;
     }
 
-    let lower = trimmed.to_lowercase();
-    let starts_like_workflow_status = [
-        "i'll ",
-        "i’ll ",
-        "i will ",
-        "i found ",
-        "i ran ",
-        "i added ",
-        "i updated ",
-        "i changed ",
-        "i committed ",
-        "i merged ",
-        "running ",
-        "validation ",
-        "implemented and committed ",
-    ]
-    .iter()
-    .any(|prefix| lower.starts_with(prefix));
-
-    if starts_like_workflow_status {
-        let workflow_terms = [
-            "cargo test",
-            "just check",
-            "git status",
-            "git diff",
-            "worktree",
-            "sentinel",
-            "validation",
-            "committed",
-            "merged",
-            "phase",
-            "tests pass",
-        ];
-        if workflow_terms.iter().any(|term| lower.contains(term)) {
-            return true;
-        }
-    }
-
     false
 }
 
@@ -1505,7 +1467,7 @@ mod tests {
     }
 
     #[test]
-    fn workflow_status_narration_is_not_embedded_semantically() {
+    fn workflow_status_narration_remains_semantic_text() {
         let content = [
             user_msg("Implement semantic cache", None),
             assistant_msg("I’ll run cargo test and just check before committing."),
@@ -1522,6 +1484,8 @@ mod tests {
             conv.semantic_turns,
             vec![
                 "Implement semantic cache",
+                "I’ll run cargo test and just check before committing.",
+                "Validation passed and I committed the phase.",
                 "Semantic cache stores visible dialogue embeddings."
             ]
         );
