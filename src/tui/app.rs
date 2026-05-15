@@ -163,7 +163,7 @@ pub enum SemanticProgress {
     Idle,
     InitializingModel,
     CacheReady,
-    EmbeddingChangedChunks {
+    MissingCache {
         count: usize,
     },
     Ranking,
@@ -420,7 +420,11 @@ impl App {
             search_rx,
             search_generation: 0,
             search_in_flight: false,
-            list_search_mode: ListSearchMode::Lexical,
+            list_search_mode: if search_options.semantic_enabled {
+                ListSearchMode::Semantic
+            } else {
+                ListSearchMode::Lexical
+            },
             semantic_limit: search_options.semantic_limit,
             semantic_search: SemanticSearchState {
                 available: search_options.semantic_enabled,
@@ -466,7 +470,11 @@ impl App {
             search_rx,
             search_generation: 0,
             search_in_flight: false,
-            list_search_mode: ListSearchMode::Lexical,
+            list_search_mode: if search_options.semantic_enabled {
+                ListSearchMode::Semantic
+            } else {
+                ListSearchMode::Lexical
+            },
             semantic_limit: search_options.semantic_limit,
             semantic_search: SemanticSearchState {
                 available: search_options.semantic_enabled,
@@ -1063,7 +1071,7 @@ impl App {
             SemanticProgress::Idle => "sem ready".to_string(),
             SemanticProgress::InitializingModel => "sem model".to_string(),
             SemanticProgress::CacheReady => "sem cache".to_string(),
-            SemanticProgress::EmbeddingChangedChunks { count } => format!("sem embed {count}"),
+            SemanticProgress::MissingCache { count } => format!("sem cache missing {count}"),
             SemanticProgress::Ranking => "sem ranking".to_string(),
             SemanticProgress::Complete => "sem done".to_string(),
             SemanticProgress::EmptyCorpus => "sem no text".to_string(),
@@ -3096,7 +3104,7 @@ mod tests {
     }
 
     #[test]
-    fn semantic_tui_opt_in_keeps_lexical_default() {
+    fn semantic_launch_uses_semantic_mode() {
         let app = app_with_options(
             vec![],
             vec![],
@@ -3106,7 +3114,7 @@ mod tests {
             },
         );
 
-        assert_eq!(app.list_search_mode(), ListSearchMode::Lexical);
+        assert_eq!(app.list_search_mode(), ListSearchMode::Semantic);
         assert!(app.semantic_search_available());
         assert_eq!(app.semantic_search.pending_generation, None);
         assert_eq!(app.semantic_search_error(), None);
@@ -3124,7 +3132,7 @@ mod tests {
     }
 
     #[test]
-    fn semantic_mode_toggle_increments_generation_when_enabled() {
+    fn semantic_mode_toggle_returns_to_lexical_when_enabled() {
         let mut app = app_with_options(
             vec![],
             vec![],
@@ -3137,7 +3145,7 @@ mod tests {
 
         app.toggle_list_search_mode();
 
-        assert_eq!(app.list_search_mode(), ListSearchMode::Semantic);
+        assert_eq!(app.list_search_mode(), ListSearchMode::Lexical);
         assert!(app.search_generation() > generation);
     }
 
@@ -3322,7 +3330,6 @@ mod tests {
             },
         );
 
-        app.toggle_list_search_mode();
         app.query.clear();
         app.dispatch_search();
 
@@ -3433,7 +3440,6 @@ mod tests {
         app.semantic_search.worker_tx = Some(request_tx);
         app.semantic_search.worker_rx = Some(response_rx);
 
-        app.toggle_list_search_mode();
         app.query = "needle".to_string();
         app.dispatch_search();
 
@@ -3620,12 +3626,15 @@ mod tests {
         response_tx
             .send(SemanticSearchMessage::Progress {
                 generation: 7,
-                progress: SemanticProgress::EmbeddingChangedChunks { count: 2 },
+                progress: SemanticProgress::MissingCache { count: 2 },
             })
             .unwrap();
 
         assert!(app.receive_search_results());
-        assert_eq!(app.semantic_status_text().as_deref(), Some("sem embed 2"));
+        assert_eq!(
+            app.semantic_status_text().as_deref(),
+            Some("sem cache missing 2")
+        );
         assert_eq!(app.semantic_search.pending_generation, Some(7));
     }
 
@@ -3702,7 +3711,7 @@ mod tests {
     }
 
     #[test]
-    fn ctrl_t_toggles_semantic_mode_when_available() {
+    fn ctrl_t_toggles_to_lexical_mode_when_semantic_session_active() {
         let mut app = app_with_options(
             vec![],
             vec![],
@@ -3714,7 +3723,7 @@ mod tests {
 
         app.handle_key(KeyCode::Char('t'), KeyModifiers::CONTROL, 10);
 
-        assert_eq!(app.list_search_mode(), ListSearchMode::Semantic);
+        assert_eq!(app.list_search_mode(), ListSearchMode::Lexical);
     }
 
     #[test]
@@ -3754,7 +3763,7 @@ mod tests {
 
         app.handle_key(KeyCode::Char('t'), KeyModifiers::CONTROL, 10);
 
-        assert_eq!(app.list_search_mode(), ListSearchMode::Lexical);
+        assert_eq!(app.list_search_mode(), ListSearchMode::Semantic);
         assert!(matches!(app.dialog_mode, DialogMode::Rename { .. }));
     }
 
@@ -3778,7 +3787,6 @@ mod tests {
         app.semantic_search.worker_tx = Some(request_tx);
         app.semantic_search.worker_rx = Some(response_rx);
         app.current_project_dir_name = Some("-tmp-visible".to_string());
-        app.toggle_list_search_mode();
         app.query = "needle".to_string();
 
         app.toggle_workspace_filter();

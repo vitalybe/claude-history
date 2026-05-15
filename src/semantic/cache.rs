@@ -16,14 +16,6 @@ pub fn embed_chunks(
     embed_chunks_inner(embedder, chunks, cache, true)
 }
 
-pub fn embed_chunks_quiet(
-    embedder: &mut dyn SemanticEmbedder,
-    chunks: Vec<SemanticChunk>,
-    cache: &mut EmbeddingCache,
-) -> Result<Vec<EmbeddedChunk>> {
-    embed_chunks_inner(embedder, chunks, cache, false)
-}
-
 fn embed_chunks_inner(
     embedder: &mut dyn SemanticEmbedder,
     chunks: Vec<SemanticChunk>,
@@ -90,6 +82,35 @@ fn embed_chunks_inner(
     }
 
     Ok(embedded)
+}
+
+pub fn cached_chunks(
+    chunks: Vec<SemanticChunk>,
+    cache: &EmbeddingCache,
+) -> (Vec<EmbeddedChunk>, usize) {
+    let mut embedded = Vec::with_capacity(chunks.len());
+    let mut misses = 0;
+
+    for chunk in chunks {
+        let cached = cache
+            .entries
+            .get(&chunk.key)
+            .filter(|entry| cache_entry_matches(entry, &chunk.text));
+
+        if let Some(entry) = cached {
+            embedded.push(EmbeddedChunk {
+                conversation_index: chunk.conversation_index,
+                session: chunk.session,
+                chunk_index: chunk.chunk_index,
+                text: entry.text.clone(),
+                embedding: entry.embedding.clone(),
+            });
+        } else {
+            misses += 1;
+        }
+    }
+
+    (embedded, misses)
 }
 
 pub fn cache_entry_matches(entry: &CachedChunk, text: &str) -> bool {
@@ -283,24 +304,6 @@ mod tests {
         assert_eq!(embedder.calls, 1);
         assert_eq!(embedded[0].embedding, vec![8.0, 1.0]);
         assert_eq!(embedded[0].chunk_index, 0);
-        assert!(cache.entries.contains_key("session:0"));
-    }
-
-    #[test]
-    fn embed_chunks_quiet_embeds_cache_misses() {
-        let config = ChunkConfig::default();
-        let mut cache = empty_embedding_cache(config);
-        let mut embedder = FakeEmbedder { calls: 0 };
-
-        let embedded = embed_chunks_quiet(
-            &mut embedder,
-            vec![chunk("session:0", "new text")],
-            &mut cache,
-        )
-        .expect("embedding succeeds");
-
-        assert_eq!(embedder.calls, 1);
-        assert_eq!(embedded[0].embedding, vec![8.0, 1.0]);
         assert!(cache.entries.contains_key("session:0"));
     }
 

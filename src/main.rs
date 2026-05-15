@@ -243,6 +243,12 @@ fn run() -> Result<()> {
         return Ok(());
     }
 
+    if args.generate_semantic_cache {
+        let mut conversations = history::load_all_conversations(show_last, args.debug)?;
+        conversations.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
+        return semantic_poc::generate_cache(&conversations, args.semantic_limit, args.local);
+    }
+
     // Handle --semantic-search flag
     if let Some(ref query) = args.semantic_search {
         let mut conversations = history::load_all_conversations(show_last, args.debug)?;
@@ -323,7 +329,7 @@ fn run() -> Result<()> {
         current_project_dir_name,
         exclude_projects,
         tui::TuiSearchOptions {
-            semantic_enabled: args.semantic_tui,
+            semantic_enabled: args.semantic,
             semantic_limit: args.semantic_limit,
         },
     )? {

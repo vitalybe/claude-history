@@ -197,14 +197,21 @@ pub struct Args {
         long = "semantic-limit",
         default_value_t = 200,
         value_parser = non_zero_usize,
-        hide = true,
-        requires = "semantic_search"
+        hide = true
     )]
     pub semantic_limit: usize,
 
-    /// Enable semantic search mode inside the TUI
-    #[arg(long = "semantic-tui", hide = true)]
-    pub semantic_tui: bool,
+    /// Use semantic search mode inside the TUI
+    #[arg(long = "semantic", hide = true)]
+    pub semantic: bool,
+
+    /// Generate the semantic embedding cache and exit
+    #[arg(
+        long = "generate-semantic-cache",
+        hide = true,
+        conflicts_with_all = ["show_dir", "resume", "show_path", "show_id", "plain", "render", "delete", "input_file", "debug_search", "semantic_search", "semantic"]
+    )]
+    pub generate_semantic_cache: bool,
 
     /// Input JSONL file to view directly (skips conversation selection)
     #[arg(
@@ -291,13 +298,21 @@ mod tests {
         assert!(!help.contains("--semantic-search"));
         assert!(!help.contains("--semantic-top"));
         assert!(!help.contains("--semantic-limit"));
-        assert!(!help.contains("--semantic-tui"));
+        assert!(!help.contains("--semantic"));
+        assert!(!help.contains("--generate-semantic-cache"));
     }
 
     #[test]
-    fn semantic_tui_flag_is_parseable() {
-        let args = Args::try_parse_from(["claude-history", "--semantic-tui"]).unwrap();
+    fn semantic_flag_is_parseable() {
+        let args = Args::try_parse_from(["claude-history", "--semantic"]).unwrap();
 
-        assert!(args.semantic_tui);
+        assert!(args.semantic);
+    }
+
+    #[test]
+    fn generate_semantic_cache_flag_is_parseable() {
+        let args = Args::try_parse_from(["claude-history", "--generate-semantic-cache"]).unwrap();
+
+        assert!(args.generate_semantic_cache);
     }
 }

@@ -57,6 +57,40 @@ pub fn run(
     Ok(())
 }
 
+pub fn generate_cache(conversations: &[Conversation], limit: usize, local: bool) -> Result<()> {
+    use crate::semantic::cache::{embed_chunks, read_embedding_cache, write_embedding_cache};
+    use crate::semantic::chunk::build_chunks;
+    use crate::semantic::fastembed::FastembedEmbedder;
+    use crate::semantic::types::ChunkConfig;
+
+    let selected = select_conversations(conversations, limit, local)?;
+    if selected.is_empty() {
+        eprintln!("{}", no_conversations_message(local));
+        return Ok(());
+    }
+
+    let chunk_config = ChunkConfig::default();
+    let chunks = build_chunks(&selected, chunk_config);
+    if chunks.is_empty() {
+        eprintln!("No visible dialogue text available for semantic cache generation.");
+        return Ok(());
+    }
+
+    let chunk_count = chunks.len();
+    let mut embedder = FastembedEmbedder::new(model_cache_dir())?;
+    let mut cache = read_embedding_cache(chunk_config);
+    let embedded_chunks = embed_chunks(&mut embedder, chunks, &mut cache)?;
+    write_embedding_cache(&cache);
+
+    eprintln!(
+        "Semantic cache: cached {} chunk(s) from {} recent conversation(s).",
+        embedded_chunks.len().min(chunk_count),
+        selected.len()
+    );
+
+    Ok(())
+}
+
 fn select_conversations(
     conversations: &[Conversation],
     limit: usize,

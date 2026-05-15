@@ -2540,11 +2540,6 @@ mod tests {
     fn semantic_searching_app(query: &str, progress: SemanticProgress) -> App {
         let mut app = semantic_app();
         let (response_tx, response_rx) = mpsc::channel();
-        app.handle_key(
-            crossterm::event::KeyCode::Char('t'),
-            crossterm::event::KeyModifiers::CONTROL,
-            10,
-        );
         app.set_query_for_test(query);
         app.set_semantic_receiver_for_test(7, response_rx);
         response_tx
@@ -2606,7 +2601,7 @@ mod tests {
     fn semantic_search_bar_keeps_query_mode_count_status_and_cursor_at_normal_width() {
         let app = semantic_searching_app(
             "vector query with enough words",
-            SemanticProgress::EmbeddingChangedChunks { count: 42 },
+            SemanticProgress::MissingCache { count: 42 },
         );
         let width = 80;
         let backend = TestBackend::new(width, 4);
@@ -2619,9 +2614,9 @@ mod tests {
         let line = row_text(&terminal, 0);
         assert_eq!(line.chars().count(), width as usize);
         assert!(line.contains("vector query with enough words"), "{line:?}");
-        assert!(line.contains("sem 1/1 sem embed 42"), "{line:?}");
+        assert!(line.contains("sem 1/1 sem cache missing 42"), "{line:?}");
         assert!(line.contains("1/1"), "{line:?}");
-        assert!(line.contains("sem embed 42"), "{line:?}");
+        assert!(line.contains("sem cache missing 42"), "{line:?}");
         assert_cursor_inside(&mut terminal, width);
     }
 
@@ -2629,11 +2624,6 @@ mod tests {
     fn semantic_list_uses_semantic_snippet_without_full_text_context() {
         let mut app = semantic_app();
         let (response_tx, response_rx) = mpsc::channel();
-        app.handle_key(
-            crossterm::event::KeyCode::Char('t'),
-            crossterm::event::KeyModifiers::CONTROL,
-            10,
-        );
         app.set_query_for_test("sentinel");
         app.set_semantic_receiver_for_test(7, response_rx);
         response_tx
