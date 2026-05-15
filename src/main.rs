@@ -8,6 +8,8 @@ mod error;
 mod history;
 mod markdown;
 mod pager;
+#[cfg(any(test, feature = "semantic-poc"))]
+mod semantic;
 mod semantic_poc;
 mod syntax;
 mod tool_format;
