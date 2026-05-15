@@ -1555,7 +1555,7 @@ fn render_list(frame: &mut Frame, app: &App, area: Rect) {
             let semantic_metadata = app.semantic_result_metadata(conv_idx);
             let preview_text = if semantic_mode {
                 semantic_metadata
-                    .map(|metadata| sanitize_preview(&metadata.snippet))
+                    .map(|metadata| sanitize_preview(&metadata.explanation.evidence_preview))
                     .unwrap_or_default()
             } else {
                 sanitize_preview(&conv.preview)
@@ -2440,6 +2440,10 @@ fn highlight_text(
 mod tests {
     use super::*;
     use crate::history::Conversation;
+    use crate::semantic::types::{
+        SemanticChunkIdentity, SemanticExplanation, SemanticQuality, SemanticRationaleKind,
+        SemanticScoreBreakdown,
+    };
     use crate::tui::app::{SemanticProgress, SemanticResultMetadata, TuiSearchOptions};
     use crate::tui::semantic_worker::{SemanticSearchMessage, SemanticSearchResponse};
     use crate::tui::viewer::ToolDisplayMode;
@@ -2552,6 +2556,28 @@ mod tests {
         app
     }
 
+    fn test_semantic_metadata(evidence_preview: &str) -> SemanticResultMetadata {
+        SemanticResultMetadata {
+            score_breakdown: SemanticScoreBreakdown {
+                hybrid: 1.0,
+                semantic: 1.0,
+                lexical: 0.0,
+            },
+            explanation: SemanticExplanation {
+                quality: SemanticQuality::Strong,
+                quality_label: "strong",
+                matched_terms: Vec::new(),
+                evidence_preview: evidence_preview.to_string(),
+                rationale_kind: SemanticRationaleKind::SemanticOnly,
+                chunk: SemanticChunkIdentity {
+                    conversation_index: 0,
+                    session: "test-session".to_string(),
+                    chunk_index: 0,
+                },
+            },
+        }
+    }
+
     #[test]
     fn search_bar_separates_semantic_status_at_narrow_width() {
         let app = semantic_searching_app("你好世界widequery", SemanticProgress::Ranking);
@@ -2621,7 +2647,7 @@ mod tests {
     }
 
     #[test]
-    fn semantic_list_uses_semantic_snippet_without_full_text_context() {
+    fn semantic_list_uses_semantic_evidence_preview_without_full_text_context() {
         let mut app = semantic_app();
         let (response_tx, response_rx) = mpsc::channel();
         app.set_query_for_test("sentinel");
@@ -2630,13 +2656,7 @@ mod tests {
             .send(SemanticSearchMessage::Complete(SemanticSearchResponse {
                 generation: 7,
                 filtered: vec![0],
-                metadata: HashMap::from([(
-                    0,
-                    SemanticResultMetadata {
-                        score: 1.0,
-                        snippet: "semantic snippet only".to_string(),
-                    },
-                )]),
+                metadata: HashMap::from([(0, test_semantic_metadata("semantic evidence only"))]),
                 error: None,
                 progress: SemanticProgress::Complete,
             }))
@@ -2650,7 +2670,7 @@ mod tests {
             .unwrap();
 
         let contents = terminal_contents(&terminal);
-        assert!(contents.contains("semantic snippet only"), "{contents:?}");
+        assert!(contents.contains("semantic evidence only"), "{contents:?}");
         assert!(
             !contents.contains("lexical preview sentinel"),
             "{contents:?}"

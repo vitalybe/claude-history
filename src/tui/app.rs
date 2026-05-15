@@ -4,6 +4,7 @@ use crate::error::{AppError, Result};
 use crate::history::{
     Conversation, LoaderMessage, format_short_name_from_path, process_conversation_file,
 };
+use crate::semantic::types::{SemanticExplanation, SemanticScoreBreakdown};
 use crate::tui::search::{self, SearchableConversation};
 use crate::tui::semantic_worker::{
     SemanticSearchCandidate, SemanticSearchMessage, SemanticSearchRequest, spawn_semantic_worker,
@@ -174,8 +175,8 @@ pub enum SemanticProgress {
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct SemanticResultMetadata {
-    pub score: f32,
-    pub snippet: String,
+    pub score_breakdown: SemanticScoreBreakdown,
+    pub explanation: SemanticExplanation,
 }
 
 #[allow(dead_code)]
@@ -3030,6 +3031,7 @@ fn find_message_idx_or_prev(ranges: &[MessageRange], entry_index: usize) -> Opti
 mod tests {
     use super::*;
     use crate::history::Conversation;
+    use crate::semantic::types::{SemanticChunkIdentity, SemanticQuality, SemanticRationaleKind};
     use chrono::{Local, TimeZone};
     use std::collections::HashMap;
     use std::path::PathBuf;
@@ -3093,6 +3095,31 @@ mod tests {
             .iter()
             .map(|&idx| app.conversations()[idx].project_name.as_deref())
             .collect()
+    }
+
+    fn test_semantic_metadata(
+        conversation_index: usize,
+        evidence_preview: &str,
+    ) -> SemanticResultMetadata {
+        SemanticResultMetadata {
+            score_breakdown: SemanticScoreBreakdown {
+                hybrid: 1.0,
+                semantic: 1.0,
+                lexical: 0.0,
+            },
+            explanation: SemanticExplanation {
+                quality: SemanticQuality::Strong,
+                quality_label: "strong",
+                matched_terms: Vec::new(),
+                evidence_preview: evidence_preview.to_string(),
+                rationale_kind: SemanticRationaleKind::SemanticOnly,
+                chunk: SemanticChunkIdentity {
+                    conversation_index,
+                    session: "test-session".to_string(),
+                    chunk_index: 0,
+                },
+            },
+        }
     }
 
     #[test]
@@ -3405,13 +3432,7 @@ mod tests {
                 crate::tui::semantic_worker::SemanticSearchResponse {
                     generation: 2,
                     filtered: vec![0],
-                    metadata: HashMap::from([(
-                        0,
-                        SemanticResultMetadata {
-                            score: 1.0,
-                            snippet: "stale".to_string(),
-                        },
-                    )]),
+                    metadata: HashMap::from([(0, test_semantic_metadata(0, "stale"))]),
                     error: None,
                     progress: SemanticProgress::Complete,
                 },
@@ -3569,13 +3590,7 @@ mod tests {
         app.filtered.clear();
         app.selected = None;
         drop(request_rx);
-        let metadata = HashMap::from([(
-            1,
-            SemanticResultMetadata {
-                score: 1.2,
-                snippet: "visible snippet".to_string(),
-            },
-        )]);
+        let metadata = HashMap::from([(1, test_semantic_metadata(1, "visible preview"))]);
 
         response_tx
             .send(SemanticSearchMessage::Complete(
@@ -3593,7 +3608,11 @@ mod tests {
         assert_eq!(app.filtered(), &[1]);
         assert_eq!(app.selected(), Some(0));
         assert_eq!(app.semantic_search.pending_generation, None);
-        assert_eq!(app.semantic_search.results[&1].snippet, "visible snippet");
+        assert_eq!(
+            app.semantic_search.results[&1].explanation.evidence_preview,
+            "visible preview"
+        );
+        assert_eq!(app.semantic_search.results[&1].score_breakdown.hybrid, 1.0);
     }
 
     #[test]
@@ -4042,6 +4061,7 @@ pub fn line_matches_query(line: &RenderedLine, query_lower: &str) -> bool {
 mod interaction_tests {
     use super::*;
     use crate::config::KeyBinding;
+    use crate::semantic::types::{SemanticChunkIdentity, SemanticQuality, SemanticRationaleKind};
     use chrono::TimeZone;
 
     fn test_conversation(path: PathBuf, custom_title: Option<String>) -> Conversation {
@@ -4156,6 +4176,31 @@ mod interaction_tests {
         }
     }
 
+    fn test_semantic_metadata(
+        conversation_index: usize,
+        evidence_preview: &str,
+    ) -> SemanticResultMetadata {
+        SemanticResultMetadata {
+            score_breakdown: SemanticScoreBreakdown {
+                hybrid: 1.0,
+                semantic: 1.0,
+                lexical: 0.0,
+            },
+            explanation: SemanticExplanation {
+                quality: SemanticQuality::Strong,
+                quality_label: "strong",
+                matched_terms: Vec::new(),
+                evidence_preview: evidence_preview.to_string(),
+                rationale_kind: SemanticRationaleKind::SemanticOnly,
+                chunk: SemanticChunkIdentity {
+                    conversation_index,
+                    session: "test-session".to_string(),
+                    chunk_index: 0,
+                },
+            },
+        }
+    }
+
     #[test]
     fn semantic_ranked_selection_opens_selected_conversation_and_returns() {
         let dir = tempfile::tempdir().unwrap();
@@ -4193,10 +4238,7 @@ mod interaction_tests {
                     filtered: vec![1, 0],
                     metadata: HashMap::from([(
                         1,
-                        SemanticResultMetadata {
-                            score: 1.0,
-                            snippet: "second semantic snippet".to_string(),
-                        },
+                        test_semantic_metadata(1, "second semantic preview"),
                     )]),
                     error: None,
                     progress: SemanticProgress::Complete,

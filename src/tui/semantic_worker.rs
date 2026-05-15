@@ -247,8 +247,8 @@ fn rank_semantic_request(
             (
                 hit.conversation_index,
                 SemanticResultMetadata {
-                    score: hit.hybrid_score,
-                    snippet: hit.snippet,
+                    score_breakdown: hit.score_breakdown,
+                    explanation: hit.explanation,
                 },
             )
         })
@@ -328,7 +328,7 @@ fn model_cache_dir() -> PathBuf {
 mod tests {
     use super::*;
     use crate::semantic::cache::empty_embedding_cache;
-    use crate::semantic::types::CachedChunk;
+    use crate::semantic::types::{CachedChunk, SemanticQuality, SemanticRationaleKind};
     use crate::tui::search::normalize_for_search;
     use chrono::Local;
     use std::path::PathBuf;
@@ -470,8 +470,21 @@ mod tests {
         .expect("rank succeeds");
 
         assert_eq!(response.filtered, vec![1, 0]);
-        assert_eq!(response.metadata[&1].snippet, "visible beta");
-        assert_eq!(response.metadata[&1].score, 1.2);
+        let metadata = &response.metadata[&1];
+        assert_eq!(metadata.score_breakdown.hybrid, 1.2);
+        assert_eq!(metadata.score_breakdown.semantic, 1.0);
+        assert_eq!(metadata.score_breakdown.lexical, 0.2);
+        assert_eq!(metadata.explanation.quality, SemanticQuality::Strong);
+        assert_eq!(metadata.explanation.quality_label, "strong");
+        assert_eq!(
+            metadata.explanation.rationale_kind,
+            SemanticRationaleKind::LexicalBoosted
+        );
+        assert_eq!(metadata.explanation.evidence_preview, "visible beta");
+        assert_eq!(metadata.explanation.matched_terms, vec!["beta"]);
+        assert_eq!(metadata.explanation.chunk.conversation_index, 1);
+        assert_eq!(metadata.explanation.chunk.session, "session-b");
+        assert_eq!(metadata.explanation.chunk.chunk_index, 0);
     }
 
     #[test]
@@ -608,8 +621,16 @@ mod tests {
         .expect("rank succeeds");
 
         assert!(embedder.embedded_passages.is_empty());
-        assert_eq!(response.metadata[&0].snippet, "visible alpha");
-        assert!(!response.metadata[&0].snippet.contains("sentinel"));
+        assert_eq!(
+            response.metadata[&0].explanation.evidence_preview,
+            "visible alpha"
+        );
+        assert!(
+            !response.metadata[&0]
+                .explanation
+                .evidence_preview
+                .contains("sentinel")
+        );
     }
 
     #[test]
