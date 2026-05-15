@@ -8,30 +8,6 @@ pub fn run(
     limit: usize,
     local: bool,
 ) -> Result<()> {
-    run_impl(query, conversations, top, limit, local)
-}
-
-#[cfg(not(feature = "semantic-poc"))]
-fn run_impl(
-    _query: &str,
-    _conversations: &[Conversation],
-    _top: usize,
-    _limit: usize,
-    _local: bool,
-) -> Result<()> {
-    Err(AppError::ConfigError(
-        "semantic search requires building with `--features semantic-poc`".to_string(),
-    ))
-}
-
-#[cfg(feature = "semantic-poc")]
-fn run_impl(
-    query: &str,
-    conversations: &[Conversation],
-    top: usize,
-    limit: usize,
-    local: bool,
-) -> Result<()> {
     use crate::semantic::cache::{embed_chunks, read_embedding_cache, write_embedding_cache};
     use crate::semantic::chunk::build_chunks;
     use crate::semantic::embed::SemanticEmbedder;
@@ -81,7 +57,6 @@ fn run_impl(
     Ok(())
 }
 
-#[cfg(feature = "semantic-poc")]
 fn select_conversations(
     conversations: &[Conversation],
     limit: usize,
@@ -117,7 +92,6 @@ fn select_conversations(
     Ok(selected)
 }
 
-#[cfg(feature = "semantic-poc")]
 fn no_conversations_message(local: bool) -> &'static str {
     if local {
         "No conversations available for semantic search in the current workspace."
@@ -126,7 +100,6 @@ fn no_conversations_message(local: bool) -> &'static str {
     }
 }
 
-#[cfg(feature = "semantic-poc")]
 fn model_cache_dir() -> std::path::PathBuf {
     home::home_dir()
         .unwrap_or_else(|| std::path::PathBuf::from("."))
@@ -136,22 +109,7 @@ fn model_cache_dir() -> std::path::PathBuf {
         .join("fastembed")
 }
 
-#[cfg(all(test, not(feature = "semantic-poc")))]
-mod default_build_tests {
-    use super::*;
-
-    #[test]
-    fn default_build_rejects_semantic_search_without_fastembed() {
-        let err = run("cache", &[], 1, 1, false).expect_err("semantic feature should be disabled");
-
-        assert!(
-            err.to_string()
-                .contains("semantic search requires building with `--features semantic-poc`")
-        );
-    }
-}
-
-#[cfg(all(test, feature = "semantic-poc"))]
+#[cfg(test)]
 mod tests {
     use super::*;
     use chrono::Local;
@@ -242,5 +200,10 @@ mod tests {
             no_conversations_message(false),
             "No conversations available for semantic search."
         );
+    }
+
+    #[test]
+    fn empty_corpus_returns_before_model_initialization() {
+        run("cache", &[], 1, 1, false).expect("empty corpus returns");
     }
 }

@@ -177,9 +177,9 @@ pub struct Args {
         value_name = "QUERY",
         help = "Run a local semantic search over conversations",
         value_parser = non_empty_string,
+        hide = true,
         conflicts_with_all = ["show_dir", "resume", "show_path", "show_id", "plain", "render", "delete", "input_file", "debug_search"]
     )]
-    #[cfg_attr(not(feature = "semantic-poc"), arg(hide = true))]
     pub semantic_search: Option<String>,
 
     /// Number of semantic search results to show
@@ -187,9 +187,9 @@ pub struct Args {
         long = "semantic-top",
         default_value_t = 20,
         value_parser = non_zero_usize,
+        hide = true,
         requires = "semantic_search"
     )]
-    #[cfg_attr(not(feature = "semantic-poc"), arg(hide = true))]
     pub semantic_top: usize,
 
     /// Number of recent conversations to include in semantic search
@@ -197,9 +197,9 @@ pub struct Args {
         long = "semantic-limit",
         default_value_t = 200,
         value_parser = non_zero_usize,
+        hide = true,
         requires = "semantic_search"
     )]
-    #[cfg_attr(not(feature = "semantic-poc"), arg(hide = true))]
     pub semantic_limit: usize,
 
     /// Input JSONL file to view directly (skips conversation selection)
@@ -280,7 +280,6 @@ mod tests {
         assert!(!help.contains("POC"));
     }
 
-    #[cfg(not(feature = "semantic-poc"))]
     #[test]
     fn default_help_hides_semantic_flags() {
         let help = Args::command().render_long_help().to_string();
@@ -288,14 +287,5 @@ mod tests {
         assert!(!help.contains("--semantic-search"));
         assert!(!help.contains("--semantic-top"));
         assert!(!help.contains("--semantic-limit"));
-    }
-
-    #[cfg(feature = "semantic-poc")]
-    #[test]
-    fn semantic_help_shows_semantic_flags() {
-        let help = Args::command().render_long_help().to_string();
-
-        assert!(help.contains("--semantic-search"));
-        assert!(help.contains("Run a local semantic search over conversations"));
     }
 }
