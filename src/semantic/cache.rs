@@ -13,6 +13,23 @@ pub fn embed_chunks(
     chunks: Vec<SemanticChunk>,
     cache: &mut EmbeddingCache,
 ) -> Result<Vec<EmbeddedChunk>> {
+    embed_chunks_inner(embedder, chunks, cache, true)
+}
+
+pub fn embed_chunks_quiet(
+    embedder: &mut dyn SemanticEmbedder,
+    chunks: Vec<SemanticChunk>,
+    cache: &mut EmbeddingCache,
+) -> Result<Vec<EmbeddedChunk>> {
+    embed_chunks_inner(embedder, chunks, cache, false)
+}
+
+fn embed_chunks_inner(
+    embedder: &mut dyn SemanticEmbedder,
+    chunks: Vec<SemanticChunk>,
+    cache: &mut EmbeddingCache,
+    report_misses: bool,
+) -> Result<Vec<EmbeddedChunk>> {
     prune_stale_entries(cache, &chunks);
 
     let mut embedded = Vec::with_capacity(chunks.len());
@@ -38,10 +55,12 @@ pub fn embed_chunks(
     }
 
     if !misses.is_empty() {
-        eprintln!(
-            "Semantic search: embedding {} changed chunk(s)",
-            misses.len()
-        );
+        if report_misses {
+            eprintln!(
+                "Semantic search: embedding {} changed chunk(s)",
+                misses.len()
+            );
+        }
         let texts = misses
             .iter()
             .map(|chunk| chunk.text.clone())
@@ -264,6 +283,24 @@ mod tests {
         assert_eq!(embedder.calls, 1);
         assert_eq!(embedded[0].embedding, vec![8.0, 1.0]);
         assert_eq!(embedded[0].chunk_index, 0);
+        assert!(cache.entries.contains_key("session:0"));
+    }
+
+    #[test]
+    fn embed_chunks_quiet_embeds_cache_misses() {
+        let config = ChunkConfig::default();
+        let mut cache = empty_embedding_cache(config);
+        let mut embedder = FakeEmbedder { calls: 0 };
+
+        let embedded = embed_chunks_quiet(
+            &mut embedder,
+            vec![chunk("session:0", "new text")],
+            &mut cache,
+        )
+        .expect("embedding succeeds");
+
+        assert_eq!(embedder.calls, 1);
+        assert_eq!(embedded[0].embedding, vec![8.0, 1.0]);
         assert!(cache.entries.contains_key("session:0"));
     }
 

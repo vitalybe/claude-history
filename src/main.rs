@@ -324,6 +324,7 @@ fn run() -> Result<()> {
         exclude_projects,
         tui::TuiSearchOptions {
             semantic_enabled: args.semantic_tui,
+            semantic_limit: args.semantic_limit,
         },
     )? {
         (tui::Action::Select(path), convs) => (convs, path),

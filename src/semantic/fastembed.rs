@@ -10,10 +10,21 @@ pub struct FastembedEmbedder {
 
 impl FastembedEmbedder {
     pub fn new(cache_dir: PathBuf) -> Result<Self> {
+        Self::new_with_download_progress(cache_dir, true)
+    }
+
+    pub fn new_quiet(cache_dir: PathBuf) -> Result<Self> {
+        Self::new_with_download_progress(cache_dir, false)
+    }
+
+    fn new_with_download_progress(
+        cache_dir: PathBuf,
+        show_download_progress: bool,
+    ) -> Result<Self> {
         let model = TextEmbedding::try_new(
             TextInitOptions::new(EmbeddingModel::BGESmallENV15)
                 .with_cache_dir(cache_dir)
-                .with_show_download_progress(true),
+                .with_show_download_progress(show_download_progress),
         )
         .map_err(to_config_error)?;
         Ok(Self { model })

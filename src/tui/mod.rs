@@ -1,6 +1,7 @@
 mod app;
 mod export;
 pub mod search;
+mod semantic_worker;
 pub mod theme;
 mod ui;
 pub mod viewer;

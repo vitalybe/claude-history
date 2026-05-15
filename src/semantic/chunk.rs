@@ -4,8 +4,15 @@ use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 pub fn build_chunks(conversations: &[&Conversation], config: ChunkConfig) -> Vec<SemanticChunk> {
+    build_chunks_with_indices(conversations.iter().copied().enumerate(), config)
+}
+
+pub fn build_chunks_with_indices<'a, I>(conversations: I, config: ChunkConfig) -> Vec<SemanticChunk>
+where
+    I: IntoIterator<Item = (usize, &'a Conversation)>,
+{
     let mut chunks = Vec::new();
-    for (conversation_index, conversation) in conversations.iter().enumerate() {
+    for (conversation_index, conversation) in conversations {
         let semantic_turns = conversation
             .semantic_turns
             .iter()
@@ -305,6 +312,26 @@ mod tests {
         assert_eq!(chunks[1].session, "session-2");
         assert_ne!(chunks[1].key, "session-2:0");
         assert_ne!(chunks[0].key, chunks[1].key);
+    }
+
+    #[test]
+    fn indexed_chunks_preserve_original_conversation_index() {
+        let first = test_conversation(
+            "/projects/project-a/session-1.jsonl",
+            vec!["first".to_string()],
+        );
+        let second = test_conversation(
+            "/projects/project-a/session-2.jsonl",
+            vec!["second".to_string()],
+        );
+
+        let chunks =
+            build_chunks_with_indices([(7, &first), (11, &second)], ChunkConfig::default());
+
+        assert_eq!(chunks[0].conversation_index, 7);
+        assert_eq!(chunks[0].session, "session-1");
+        assert_eq!(chunks[1].conversation_index, 11);
+        assert_eq!(chunks[1].session, "session-2");
     }
 
     #[test]
