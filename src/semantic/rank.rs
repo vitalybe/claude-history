@@ -188,6 +188,27 @@ mod tests {
     }
 
     #[test]
+    fn semantic_only_match_records_no_lexical_terms() {
+        let chunks = vec![embedded(
+            "session-a",
+            0,
+            0,
+            "vector-only evidence",
+            vec![1.0, 0.0],
+        )];
+
+        let hits = rank_chunks("unrelated", &[1.0, 0.0], &chunks);
+        let explanation = &hits[0].explanation;
+
+        assert_eq!(hits[0].lexical_score, 0.0);
+        assert_eq!(
+            explanation.rationale_kind,
+            SemanticRationaleKind::SemanticOnly
+        );
+        assert!(explanation.matched_terms.is_empty());
+    }
+
+    #[test]
     fn lexical_overlap_contributes_to_hybrid_ranking() {
         let chunks = vec![
             embedded("session-a", 0, 0, "unrelated", vec![1.0, 0.0]),
@@ -199,6 +220,10 @@ mod tests {
         assert_eq!(hits[0].session, "session-b");
         assert!(hits[0].lexical_score > hits[1].lexical_score);
         assert!(hits[0].hybrid_score > hits[1].hybrid_score);
+        assert_eq!(
+            hits[0].explanation.rationale_kind,
+            SemanticRationaleKind::LexicalBoosted
+        );
     }
 
     #[test]
@@ -262,6 +287,24 @@ mod tests {
                 "audio".to_string(),
                 "generation".to_string()
             ]
+        );
+    }
+
+    #[test]
+    fn explanation_records_cjk_matched_terms_in_query_order() {
+        let chunks = vec![embedded(
+            "session-a",
+            0,
+            0,
+            "日本語の検索と意味検索について",
+            vec![1.0, 0.0],
+        )];
+
+        let hits = rank_chunks("検索 日本語", &[1.0, 0.0], &chunks);
+
+        assert_eq!(
+            hits[0].explanation.matched_terms,
+            vec!["検索".to_string(), "日本語".to_string()]
         );
     }
 

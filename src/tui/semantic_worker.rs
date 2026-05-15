@@ -480,6 +480,7 @@ mod tests {
             metadata.explanation.rationale_kind,
             SemanticRationaleKind::LexicalBoosted
         );
+        assert_eq!(metadata.explanation.quality_label, "strong");
         assert_eq!(metadata.explanation.evidence_preview, "visible beta");
         assert_eq!(metadata.explanation.matched_terms, vec!["beta"]);
         assert_eq!(metadata.explanation.chunk.conversation_index, 1);

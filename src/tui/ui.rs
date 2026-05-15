@@ -2857,6 +2857,39 @@ mod tests {
     }
 
     #[test]
+    fn semantic_status_bar_renders_exact_rationale_labels() {
+        for (rationale, label) in [
+            (SemanticRationaleKind::SemanticOnly, "semantic"),
+            (SemanticRationaleKind::LexicalBoosted, "lex boost"),
+            (SemanticRationaleKind::WeakMatch, "weak"),
+        ] {
+            let mut app = semantic_app();
+            app.set_query_for_test("sentinel");
+            complete_semantic_search(
+                &mut app,
+                test_semantic_metadata_with_scores(
+                    "semantic evidence only",
+                    SemanticScoreBreakdown {
+                        hybrid: 1.0,
+                        semantic: 0.9,
+                        lexical: 0.1,
+                    },
+                    rationale,
+                ),
+            );
+            let backend = TestBackend::new(80, 2);
+            let mut terminal = Terminal::new(backend).unwrap();
+
+            terminal
+                .draw(|frame| render_list_status_bar(frame, &app, frame.area()))
+                .unwrap();
+
+            let line = row_text(&terminal, 0);
+            assert!(line.contains(label), "{label:?} not in {line:?}");
+        }
+    }
+
+    #[test]
     fn semantic_evidence_preview_highlights_query_terms() {
         let metadata = test_semantic_metadata(
             "prefix text before the important semantic needle appears near the end",
@@ -2893,13 +2926,16 @@ mod tests {
             ),
         );
         let width = 28;
-        let backend = TestBackend::new(width, 6);
+        let height = 8;
+        let backend = TestBackend::new(width, height);
         let mut terminal = Terminal::new(backend).unwrap();
 
         terminal
             .draw(|frame| render_list_mode(frame, &app))
             .unwrap();
 
+        let contents = terminal_contents(&terminal);
+        assert!(contents.contains("needle"), "{contents:?}");
         let truncated = build_match_segments(
             &evidence_preview,
             "needle",
@@ -2910,13 +2946,9 @@ mod tests {
             UnicodeWidthStr::width(truncated.as_str()) <= width.saturating_sub(4) as usize,
             "{truncated:?}"
         );
-        for y in 0..6 {
+        for y in 0..height {
             let line = row_text(&terminal, y);
-            assert_eq!(
-                UnicodeWidthStr::width(line.as_str()),
-                width as usize,
-                "{line:?}"
-            );
+            assert_eq!(line.chars().count(), width as usize, "{line:?}");
         }
     }
 

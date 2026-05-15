@@ -143,4 +143,16 @@ mod tests {
         assert_eq!(truncated.chars().count(), 10);
         assert!(truncated.ends_with('…'));
     }
+
+    #[test]
+    fn formatted_hit_truncates_long_evidence_preview() {
+        let conversation = conversation();
+        let snippet = format!("{}tail sentinel", "a".repeat(300));
+        let hit = hit("session-1", &snippet);
+
+        let formatted = format_hit(1, &hit, &[&conversation]);
+
+        assert!(formatted.contains('…'));
+        assert!(!formatted.contains("tail sentinel"));
+    }
 }
