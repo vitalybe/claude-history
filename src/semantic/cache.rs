@@ -4,7 +4,7 @@ use crate::semantic::types::{
     CACHE_SCHEMA_VERSION, CachedChunk, ChunkConfig, EmbeddedChunk, EmbeddingCache, MODEL_NAME,
     SemanticChunk,
 };
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
@@ -13,6 +13,8 @@ pub fn embed_chunks(
     chunks: Vec<SemanticChunk>,
     cache: &mut EmbeddingCache,
 ) -> Result<Vec<EmbeddedChunk>> {
+    prune_stale_entries(cache, &chunks);
+
     let mut embedded = Vec::with_capacity(chunks.len());
     let mut misses = Vec::new();
 
@@ -43,18 +45,17 @@ pub fn embed_chunks(
         let embeddings = embedder.embed_passages(&texts)?;
 
         for (chunk, embedding) in misses.into_iter().zip(embeddings) {
-            if let Some(metadata) = &chunk.metadata {
-                cache.entries.insert(
-                    chunk.key,
-                    CachedChunk {
-                        file_size: metadata.file_size,
-                        mtime_secs: metadata.mtime_secs,
-                        mtime_nsecs: metadata.mtime_nsecs,
-                        text: chunk.text.clone(),
-                        embedding: embedding.clone(),
-                    },
-                );
-            }
+            let metadata = chunk.metadata.unwrap_or_default();
+            cache.entries.insert(
+                chunk.key,
+                CachedChunk {
+                    file_size: metadata.file_size,
+                    mtime_secs: metadata.mtime_secs,
+                    mtime_nsecs: metadata.mtime_nsecs,
+                    text: chunk.text.clone(),
+                    embedding: embedding.clone(),
+                },
+            );
             embedded.push(EmbeddedChunk {
                 conversation_index: chunk.conversation_index,
                 session: chunk.session,
@@ -69,6 +70,25 @@ pub fn embed_chunks(
 
 pub fn cache_entry_matches(entry: &CachedChunk, text: &str) -> bool {
     entry.text == text
+}
+
+fn prune_stale_entries(cache: &mut EmbeddingCache, chunks: &[SemanticChunk]) {
+    let current_keys = chunks
+        .iter()
+        .map(|chunk| chunk.key.clone())
+        .collect::<HashSet<_>>();
+    let selected_prefixes = chunks
+        .iter()
+        .map(|chunk| cache_key_prefix(&chunk.key).to_owned())
+        .collect::<HashSet<_>>();
+
+    cache.entries.retain(|key, _| {
+        !selected_prefixes.contains(cache_key_prefix(key)) || current_keys.contains(key)
+    });
+}
+
+fn cache_key_prefix(key: &str) -> &str {
+    key.rsplit_once(':').map_or(key, |(prefix, _)| prefix)
 }
 
 pub fn read_embedding_cache(config: ChunkConfig) -> EmbeddingCache {
@@ -188,20 +208,23 @@ mod tests {
         }
     }
 
+    fn cached(text: &str) -> CachedChunk {
+        CachedChunk {
+            file_size: 10,
+            mtime_secs: 20,
+            mtime_nsecs: 30,
+            text: text.to_string(),
+            embedding: vec![0.5, 0.5],
+        }
+    }
+
     #[test]
     fn embed_chunks_reuses_matching_cache_entry() {
         let config = ChunkConfig::default();
         let mut cache = empty_embedding_cache(config);
-        cache.entries.insert(
-            "session:0".to_string(),
-            CachedChunk {
-                file_size: 10,
-                mtime_secs: 20,
-                mtime_nsecs: 30,
-                text: "cached text".to_string(),
-                embedding: vec![0.5, 0.5],
-            },
-        );
+        cache
+            .entries
+            .insert("session:0".to_string(), cached("cached text"));
         let mut embedder = FakeEmbedder { calls: 0 };
 
         let embedded = embed_chunks(
@@ -234,6 +257,75 @@ mod tests {
     }
 
     #[test]
+    fn embed_chunks_replaces_changed_cache_entry() {
+        let config = ChunkConfig::default();
+        let mut cache = empty_embedding_cache(config);
+        cache
+            .entries
+            .insert("session:0".to_string(), cached("old text"));
+        let mut embedder = FakeEmbedder { calls: 0 };
+
+        let embedded = embed_chunks(
+            &mut embedder,
+            vec![chunk("session:0", "new text")],
+            &mut cache,
+        )
+        .expect("embedding succeeds");
+
+        let restored = cache.entries.get("session:0").expect("cache entry");
+        assert_eq!(embedder.calls, 1);
+        assert_eq!(embedded[0].embedding, vec![8.0, 1.0]);
+        assert_eq!(restored.text, "new text");
+        assert_eq!(restored.embedding, vec![8.0, 1.0]);
+    }
+
+    #[test]
+    fn embed_chunks_replaces_changed_cache_entry_without_metadata() {
+        let config = ChunkConfig::default();
+        let mut cache = empty_embedding_cache(config);
+        cache
+            .entries
+            .insert("session:0".to_string(), cached("old text"));
+        let mut current = chunk("session:0", "new text");
+        current.metadata = None;
+        let mut embedder = FakeEmbedder { calls: 0 };
+
+        embed_chunks(&mut embedder, vec![current], &mut cache).expect("embedding succeeds");
+
+        let restored = cache.entries.get("session:0").expect("cache entry");
+        assert_eq!(embedder.calls, 1);
+        assert_eq!(restored.text, "new text");
+        assert_eq!(restored.embedding, vec![8.0, 1.0]);
+    }
+
+    #[test]
+    fn embed_chunks_prunes_selected_stale_entries() {
+        let config = ChunkConfig::default();
+        let mut cache = empty_embedding_cache(config);
+        cache
+            .entries
+            .insert("session:0".to_string(), cached("current"));
+        cache
+            .entries
+            .insert("session:1".to_string(), cached("stale"));
+        cache
+            .entries
+            .insert("other-session:0".to_string(), cached("unselected"));
+        let mut embedder = FakeEmbedder { calls: 0 };
+
+        embed_chunks(
+            &mut embedder,
+            vec![chunk("session:0", "current")],
+            &mut cache,
+        )
+        .expect("embedding succeeds");
+
+        assert!(cache.entries.contains_key("session:0"));
+        assert!(!cache.entries.contains_key("session:1"));
+        assert!(cache.entries.contains_key("other-session:0"));
+    }
+
+    #[test]
     fn cache_config_mismatch_invalidates_cache() {
         let config = ChunkConfig::default();
         let mut cache = empty_embedding_cache(config);
@@ -243,21 +335,45 @@ mod tests {
     }
 
     #[test]
+    fn wrong_schema_cache_is_ignored() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("cache.bin");
+        let config = ChunkConfig::default();
+        let mut cache = empty_embedding_cache(config);
+        cache.schema_version = CACHE_SCHEMA_VERSION - 1;
+        cache
+            .entries
+            .insert("session:0".to_string(), cached("stale"));
+        write_embedding_cache_to_path(&cache, &path);
+
+        let restored = read_embedding_cache_from_path(&path, config);
+
+        assert_eq!(restored.schema_version, CACHE_SCHEMA_VERSION);
+        assert!(restored.entries.is_empty());
+    }
+
+    #[test]
+    fn corrupt_cache_is_ignored() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("cache.bin");
+        let config = ChunkConfig::default();
+        std::fs::write(&path, b"not bincode").expect("write corrupt cache");
+
+        let restored = read_embedding_cache_from_path(&path, config);
+
+        assert_eq!(restored.schema_version, CACHE_SCHEMA_VERSION);
+        assert!(restored.entries.is_empty());
+    }
+
+    #[test]
     fn cache_round_trips_when_config_matches() {
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join("cache.bin");
         let config = ChunkConfig::default();
         let mut cache = empty_embedding_cache(config);
-        cache.entries.insert(
-            "session:0".to_string(),
-            CachedChunk {
-                file_size: 10,
-                mtime_secs: 20,
-                mtime_nsecs: 30,
-                text: "cached text".to_string(),
-                embedding: vec![0.5, 0.5],
-            },
-        );
+        cache
+            .entries
+            .insert("session:0".to_string(), cached("cached text"));
 
         write_embedding_cache_to_path(&cache, &path);
         let restored = read_embedding_cache_from_path(&path, config);

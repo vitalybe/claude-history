@@ -1,5 +1,6 @@
 use crate::history::Conversation;
 use crate::semantic::types::{ChunkConfig, FileMetadata, SemanticChunk};
+use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 pub fn build_chunks(conversations: &[&Conversation], config: ChunkConfig) -> Vec<SemanticChunk> {
@@ -99,7 +100,7 @@ fn push_chunk(
             .and_then(|s| s.to_str())
             .unwrap_or("?")
             .to_owned();
-        let key = format!("{session}:{chunk_index}");
+        let key = chunk_key(conversation, chunk_index);
         chunks.push(SemanticChunk {
             conversation_index,
             session,
@@ -108,6 +109,24 @@ fn push_chunk(
             text,
             metadata: file_metadata(conversation),
         });
+    }
+}
+
+fn chunk_key(conversation: &Conversation, chunk_index: usize) -> String {
+    let path = normalized_cache_path(&conversation.path);
+    format!("{}:{chunk_index}", path.display())
+}
+
+fn normalized_cache_path(path: &Path) -> PathBuf {
+    if let Ok(path) = path.canonicalize() {
+        return path;
+    }
+    if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        std::env::current_dir()
+            .map(|cwd| cwd.join(path))
+            .unwrap_or_else(|_| path.to_path_buf())
     }
 }
 
@@ -150,7 +169,6 @@ fn file_metadata(conversation: &Conversation) -> Option<FileMetadata> {
 mod tests {
     use super::*;
     use chrono::Local;
-    use std::path::PathBuf;
 
     fn test_conversation(path: &str, semantic_turns: Vec<String>) -> Conversation {
         Conversation {
@@ -220,10 +238,44 @@ mod tests {
 
         assert_eq!(chunks[0].conversation_index, 0);
         assert_eq!(chunks[0].session, "session-1");
-        assert_eq!(chunks[0].key, "session-1:0");
+        assert_ne!(chunks[0].key, "session-1:0");
         assert_eq!(chunks[1].conversation_index, 1);
         assert_eq!(chunks[1].session, "session-2");
-        assert_eq!(chunks[1].key, "session-2:0");
+        assert_ne!(chunks[1].key, "session-2:0");
+        assert_ne!(chunks[0].key, chunks[1].key);
+    }
+
+    #[test]
+    fn chunk_identity_distinguishes_copied_sessions() {
+        let first = test_conversation(
+            "/projects/project-a/session.jsonl",
+            vec!["first".to_string()],
+        );
+        let second = test_conversation(
+            "/projects/project-b/session.jsonl",
+            vec!["second".to_string()],
+        );
+
+        let chunks = build_chunks(&[&first, &second], ChunkConfig::default());
+
+        assert_eq!(chunks[0].session, "session");
+        assert_eq!(chunks[1].session, "session");
+        assert_ne!(chunks[0].key, chunks[1].key);
+    }
+
+    #[test]
+    fn chunk_identity_normalizes_existing_relative_paths() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("session.jsonl");
+        std::fs::write(&path, "").expect("write session");
+        let cwd = std::env::current_dir().expect("cwd");
+        std::env::set_current_dir(dir.path()).expect("set cwd");
+        let relative = test_conversation("session.jsonl", vec!["relative".to_string()]);
+        let absolute = test_conversation(&path.to_string_lossy(), vec!["absolute".to_string()]);
+        let chunks = build_chunks(&[&relative, &absolute], ChunkConfig::default());
+        std::env::set_current_dir(cwd).expect("restore cwd");
+
+        assert_eq!(chunks[0].key, chunks[1].key);
     }
 
     #[test]

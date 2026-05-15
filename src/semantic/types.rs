@@ -5,7 +5,7 @@ pub const DEFAULT_CHUNK_TARGET_CHARS: usize = 2_400;
 pub const DEFAULT_CHUNK_OVERLAP_CHARS: usize = 300;
 pub const DEFAULT_CHUNK_CONTEXT_TURNS: usize = 1;
 pub const DEFAULT_EMBEDDING_BATCH_SIZE: usize = 32;
-pub const CACHE_SCHEMA_VERSION: u32 = 1;
+pub const CACHE_SCHEMA_VERSION: u32 = 2;
 pub const MODEL_NAME: &str = "BGESmallENV15";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -53,7 +53,7 @@ pub struct SemanticHit {
     pub snippet: String,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct FileMetadata {
     pub file_size: u64,
     pub mtime_secs: u64,
