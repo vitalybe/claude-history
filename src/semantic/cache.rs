@@ -377,6 +377,24 @@ mod tests {
     }
 
     #[test]
+    fn mismatched_config_cache_is_ignored_when_read() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("cache.bin");
+        let config = ChunkConfig::default();
+        let mut cache = empty_embedding_cache(config);
+        cache.chunk_overlap_chars += 1;
+        cache
+            .entries
+            .insert("session:0".to_string(), cached("stale"));
+        write_embedding_cache_to_path(&cache, &path);
+
+        let restored = read_embedding_cache_from_path(&path, config);
+
+        assert_eq!(restored.chunk_overlap_chars, config.overlap_chars);
+        assert!(restored.entries.is_empty());
+    }
+
+    #[test]
     fn cache_round_trips_when_config_matches() {
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join("cache.bin");

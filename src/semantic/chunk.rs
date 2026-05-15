@@ -224,6 +224,68 @@ mod tests {
     }
 
     #[test]
+    fn empty_semantic_turns_do_not_emit_chunks() {
+        let conversation = test_conversation(
+            "/projects/project-a/session-1.jsonl",
+            vec!["".to_string(), "   ".to_string(), "\n\t".to_string()],
+        );
+
+        assert!(build_chunks(&[&conversation], ChunkConfig::default()).is_empty());
+    }
+
+    #[test]
+    fn unicode_semantic_turns_are_preserved() {
+        let conversation = test_conversation(
+            "/projects/project-a/session-1.jsonl",
+            vec!["你好，缓存 résumé".to_string()],
+        );
+
+        let chunks = build_chunks(&[&conversation], ChunkConfig::default());
+
+        assert_eq!(chunks.len(), 1);
+        assert_eq!(chunks[0].text, "你好，缓存 résumé");
+    }
+
+    #[test]
+    fn long_turns_split_into_bounded_overlapping_chunks() {
+        let text = "abcdef".repeat(4);
+        let conversation = test_conversation("/projects/project-a/session-1.jsonl", vec![text]);
+        let config = ChunkConfig {
+            target_chars: 10,
+            overlap_chars: 3,
+            context_turns: 0,
+        };
+
+        let chunks = build_chunks(&[&conversation], config);
+
+        assert!(chunks.len() > 1);
+        assert!(
+            chunks
+                .iter()
+                .all(|chunk| chunk.text.len() <= config.target_chars)
+        );
+        assert_eq!(chunks[0].text, "abcdefabcd");
+        assert!(chunks[1].text.starts_with("bcd"));
+    }
+
+    #[test]
+    fn long_unicode_turns_floor_to_char_boundaries() {
+        let text = "éaébé".to_string();
+        let conversation = test_conversation("/projects/project-a/session-1.jsonl", vec![text]);
+        let config = ChunkConfig {
+            target_chars: 5,
+            overlap_chars: 2,
+            context_turns: 0,
+        };
+
+        let chunks = build_chunks(&[&conversation], config);
+
+        assert_eq!(chunks[0].text, "éaé");
+        assert_eq!(chunks[1].text, "ébé");
+        assert!(chunks[1].text.starts_with("é"));
+    }
+
+    #[test]
     fn chunk_identity_uses_selected_slice_index_and_session_key() {
         let first = test_conversation(
             "/projects/project-a/session-1.jsonl",

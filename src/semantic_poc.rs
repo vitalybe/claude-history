@@ -136,6 +136,21 @@ fn model_cache_dir() -> std::path::PathBuf {
         .join("fastembed")
 }
 
+#[cfg(all(test, not(feature = "semantic-poc")))]
+mod default_build_tests {
+    use super::*;
+
+    #[test]
+    fn default_build_rejects_semantic_search_without_fastembed() {
+        let err = run("cache", &[], 1, 1, false).expect_err("semantic feature should be disabled");
+
+        assert!(
+            err.to_string()
+                .contains("semantic search requires building with `--features semantic-poc`")
+        );
+    }
+}
+
 #[cfg(all(test, feature = "semantic-poc"))]
 mod tests {
     use super::*;

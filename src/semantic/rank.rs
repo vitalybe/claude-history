@@ -131,6 +131,33 @@ mod tests {
     }
 
     #[test]
+    fn empty_query_has_no_lexical_boost() {
+        let chunks = vec![
+            embedded("session-a", 0, 0, "same words", vec![0.0, 1.0]),
+            embedded("session-b", 1, 0, "same words", vec![1.0, 0.0]),
+        ];
+
+        let hits = rank_chunks("   ", &[0.0, 1.0], &chunks);
+
+        assert_eq!(hits[0].session, "session-a");
+        assert!(hits.iter().all(|hit| hit.lexical_score == 0.0));
+    }
+
+    #[test]
+    fn lexical_overlap_contributes_to_hybrid_ranking() {
+        let chunks = vec![
+            embedded("session-a", 0, 0, "unrelated", vec![1.0, 0.0]),
+            embedded("session-b", 1, 0, "rust cache", vec![1.0, 0.0]),
+        ];
+
+        let hits = rank_chunks("rust cache", &[1.0, 0.0], &chunks);
+
+        assert_eq!(hits[0].session, "session-b");
+        assert!(hits[0].lexical_score > hits[1].lexical_score);
+        assert!(hits[0].hybrid_score > hits[1].hybrid_score);
+    }
+
+    #[test]
     fn ranking_keeps_copied_sessions_separate() {
         let chunks = vec![
             embedded("session", 0, 0, "same words", vec![1.0, 0.0]),

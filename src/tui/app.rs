@@ -3241,10 +3241,12 @@ mod interaction_tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("abc123.jsonl");
         write_conversation(&path, None);
-        let mut keys = KeyBindings::default();
-        keys.rename = KeyBinding {
-            code: KeyCode::Char('t'),
-            modifiers: KeyModifiers::CONTROL,
+        let keys = KeyBindings {
+            rename: KeyBinding {
+                code: KeyCode::Char('t'),
+                modifiers: KeyModifiers::CONTROL,
+            },
+            ..Default::default()
         };
         let mut app = App::new(
             vec![test_conversation(path, None)],
