@@ -13,14 +13,14 @@ pub fn embed_chunks(
     chunks: Vec<SemanticChunk>,
     cache: &mut EmbeddingCache,
 ) -> Result<Vec<EmbeddedChunk>> {
-    embed_chunks_inner(embedder, chunks, cache, true)
+    embed_chunks_with_progress(embedder, chunks, cache, |_, _| {})
 }
 
-fn embed_chunks_inner(
+pub fn embed_chunks_with_progress(
     embedder: &mut dyn SemanticEmbedder,
     chunks: Vec<SemanticChunk>,
     cache: &mut EmbeddingCache,
-    report_misses: bool,
+    mut progress: impl FnMut(usize, usize),
 ) -> Result<Vec<EmbeddedChunk>> {
     prune_stale_entries(cache, &chunks);
 
@@ -46,20 +46,16 @@ fn embed_chunks_inner(
         }
     }
 
-    if !misses.is_empty() {
-        if report_misses {
-            eprintln!(
-                "Semantic search: embedding {} changed chunk(s)",
-                misses.len()
-            );
-        }
-        let texts = misses
+    let total_misses = misses.len();
+    let mut completed = 0;
+    for batch in misses.chunks(32) {
+        let texts = batch
             .iter()
             .map(|chunk| chunk.text.clone())
             .collect::<Vec<_>>();
         let embeddings = embedder.embed_passages(&texts)?;
 
-        for (chunk, embedding) in misses.into_iter().zip(embeddings) {
+        for (chunk, embedding) in batch.iter().cloned().zip(embeddings) {
             let metadata = chunk.metadata.unwrap_or_default();
             cache.entries.insert(
                 chunk.key,
@@ -79,6 +75,8 @@ fn embed_chunks_inner(
                 embedding,
             });
         }
+        completed += batch.len();
+        progress(completed, total_misses);
     }
 
     Ok(embedded)
