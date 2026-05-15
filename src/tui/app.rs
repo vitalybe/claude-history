@@ -16,7 +16,7 @@ use crossterm::event::{
 };
 use crossterm::terminal::{self, EnterAlternateScreen, LeaveAlternateScreen};
 use ratatui::prelude::*;
-use std::collections::{BTreeSet, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::io::{self, Stdout};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -119,6 +119,39 @@ pub enum ViewSearchMode {
     Active,
 }
 
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct TuiSearchOptions {
+    pub semantic_enabled: bool,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum ListSearchMode {
+    #[default]
+    Lexical,
+    Semantic,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct SemanticResultMetadata {
+    pub score: f32,
+    pub snippet: String,
+}
+
+enum SemanticSearchCommand {}
+
+struct SemanticSearchResponse {}
+
+#[allow(dead_code)]
+#[derive(Default)]
+struct SemanticSearchState {
+    available: bool,
+    pending_generation: Option<u64>,
+    error: Option<String>,
+    results: HashMap<PathBuf, SemanticResultMetadata>,
+    worker_tx: Option<mpsc::Sender<SemanticSearchCommand>>,
+    worker_rx: Option<mpsc::Receiver<SemanticSearchResponse>>,
+}
+
 /// Loading state for the TUI
 #[derive(Clone, Debug)]
 pub enum LoadingState {
@@ -136,13 +169,18 @@ enum SearchCommand {
         searchable: Arc<Vec<SearchableConversation>>,
     },
     /// Run a search query
-    Search { query: String, generation: u64 },
+    Search {
+        query: String,
+        generation: u64,
+        mode: ListSearchMode,
+    },
 }
 
 /// Result returned from the background search worker
 struct SearchResponse {
     filtered: Vec<usize>,
     generation: u64,
+    mode: ListSearchMode,
 }
 
 /// Spawn the background search worker thread.
@@ -169,6 +207,7 @@ fn spawn_search_worker() -> (mpsc::Sender<SearchCommand>, mpsc::Receiver<SearchR
                     SearchCommand::Search {
                         mut query,
                         mut generation,
+                        mut mode,
                     } => {
                         // Drain pending commands: apply all data updates,
                         // keep only the latest search request
@@ -184,19 +223,27 @@ fn spawn_search_worker() -> (mpsc::Sender<SearchCommand>, mpsc::Receiver<SearchR
                                 SearchCommand::Search {
                                     query: q,
                                     generation: g,
+                                    mode: m,
                                 } => {
                                     query = q;
                                     generation = g;
+                                    mode = m;
                                 }
                             }
                         }
 
                         let now = chrono::Local::now();
-                        let filtered = search::search(&conversations, &searchable, &query, now);
+                        let filtered = match mode {
+                            ListSearchMode::Lexical => {
+                                search::search(&conversations, &searchable, &query, now)
+                            }
+                            ListSearchMode::Semantic => Vec::new(),
+                        };
 
                         let _ = res_tx.send(SearchResponse {
                             filtered,
                             generation,
+                            mode,
                         });
                     }
                 }
@@ -253,6 +300,10 @@ pub struct App {
     search_generation: u64,
     /// Whether a search is currently in-flight on the worker thread
     search_in_flight: bool,
+    /// Current list search mode
+    list_search_mode: ListSearchMode,
+    /// Semantic TUI state
+    semantic_search: SemanticSearchState,
 }
 
 impl App {
@@ -264,6 +315,25 @@ impl App {
         show_thinking: bool,
         keys: KeyBindings,
         exclude_projects: Vec<String>,
+    ) -> Self {
+        Self::new_with_options(
+            conversations,
+            tool_display,
+            show_thinking,
+            keys,
+            exclude_projects,
+            TuiSearchOptions::default(),
+        )
+    }
+
+    #[allow(dead_code)]
+    pub fn new_with_options(
+        conversations: Vec<Conversation>,
+        tool_display: ToolDisplayMode,
+        show_thinking: bool,
+        keys: KeyBindings,
+        exclude_projects: Vec<String>,
+        search_options: TuiSearchOptions,
     ) -> Self {
         let searchable = search::precompute_search_text(&conversations);
         let excluded_projects = exclude_projects.into_iter().collect();
@@ -306,17 +376,23 @@ impl App {
             search_rx,
             search_generation: 0,
             search_in_flight: false,
+            list_search_mode: ListSearchMode::Lexical,
+            semantic_search: SemanticSearchState {
+                available: search_options.semantic_enabled,
+                ..Default::default()
+            },
         }
     }
 
     /// Create a new app in loading state
-    pub fn new_loading(
+    pub fn new_loading_with_options(
         tool_display: ToolDisplayMode,
         show_thinking: bool,
         keys: KeyBindings,
         workspace_filter: bool,
         current_project_dir_name: Option<String>,
         exclude_projects: Vec<String>,
+        search_options: TuiSearchOptions,
     ) -> Self {
         let (search_tx, search_rx) = spawn_search_worker();
         let excluded_projects = exclude_projects.into_iter().collect();
@@ -344,6 +420,11 @@ impl App {
             search_rx,
             search_generation: 0,
             search_in_flight: false,
+            list_search_mode: ListSearchMode::Lexical,
+            semantic_search: SemanticSearchState {
+                available: search_options.semantic_enabled,
+                ..Default::default()
+            },
         }
     }
 
@@ -415,6 +496,8 @@ impl App {
             search_rx,
             search_generation: 0,
             search_in_flight: false,
+            list_search_mode: ListSearchMode::Lexical,
+            semantic_search: SemanticSearchState::default(),
         }
     }
 
@@ -465,8 +548,7 @@ impl App {
 
         self.loading_state = LoadingState::Ready;
 
-        self.search_generation += 1;
-        self.search_in_flight = false;
+        self.invalidate_search_generation();
 
         // Apply filter (handles query, exclusions, and workspace filter)
         self.update_filter();
@@ -507,23 +589,54 @@ impl App {
         };
     }
 
-    /// Update filtered results based on current query
-    fn update_filter(&mut self) {
-        let query = self.query.trim().to_string();
+    fn invalidate_search_generation(&mut self) {
+        self.search_generation += 1;
+        self.search_in_flight = false;
+        self.semantic_search.pending_generation = None;
+    }
 
-        // UUID search: find session by UUID across all projects
-        if search::is_uuid(&query)
-            && let Some(idx) = self.find_or_load_uuid(&query)
-        {
+    fn apply_uuid_filter(&mut self, query: &str) -> bool {
+        if let Some(idx) = self.find_or_load_uuid(query) {
             self.filtered = vec![idx];
             self.selected = Some(0);
-            return;
+            true
+        } else {
+            false
         }
+    }
 
+    fn apply_lexical_filter(&mut self) {
         let now = Local::now();
         let filtered = search::search(&self.conversations, &self.searchable, &self.query, now);
         let filtered = self.filter_indices(filtered);
         self.apply_filtered(filtered);
+    }
+
+    /// Update filtered results based on current query
+    fn update_filter(&mut self) {
+        let query = self.query.trim().to_string();
+
+        if query.is_empty() {
+            self.semantic_search.error = None;
+            self.apply_lexical_filter();
+            return;
+        }
+
+        if search::is_uuid(&query) {
+            self.semantic_search.error = None;
+            self.apply_uuid_filter(&query);
+            return;
+        }
+
+        if self.list_search_mode == ListSearchMode::Semantic {
+            self.semantic_search.error =
+                Some("Semantic TUI search is not available yet".to_string());
+            self.apply_filtered(Vec::new());
+            return;
+        }
+
+        self.semantic_search.error = None;
+        self.apply_lexical_filter();
     }
 
     /// Dispatch a search to the background worker.
@@ -531,22 +644,36 @@ impl App {
     fn dispatch_search(&mut self) {
         let query = self.query.trim().to_string();
 
+        if query.is_empty() {
+            self.invalidate_search_generation();
+            self.semantic_search.error = None;
+            self.update_filter();
+            return;
+        }
+
         // UUID search: synchronous (rare, needs to modify conversations)
         if search::is_uuid(&query) {
-            self.search_generation += 1;
-            self.search_in_flight = false;
-            if let Some(idx) = self.find_or_load_uuid(&query) {
-                self.filtered = vec![idx];
-                self.selected = Some(0);
-            }
+            self.invalidate_search_generation();
+            self.semantic_search.error = None;
+            self.apply_uuid_filter(&query);
+            return;
+        }
+
+        if self.list_search_mode == ListSearchMode::Semantic {
+            self.invalidate_search_generation();
+            self.semantic_search.error =
+                Some("Semantic TUI search is not available yet".to_string());
+            self.apply_filtered(Vec::new());
             return;
         }
 
         self.search_generation += 1;
         self.search_in_flight = true;
+        self.semantic_search.error = None;
         let _ = self.search_tx.send(SearchCommand::Search {
             query,
             generation: self.search_generation,
+            mode: self.list_search_mode,
         });
     }
 
@@ -555,8 +682,10 @@ impl App {
     pub fn receive_search_results(&mut self) -> bool {
         let mut applied = false;
         while let Ok(response) = self.search_rx.try_recv() {
-            // Only apply the result if it matches the latest generation
-            if response.generation == self.search_generation {
+            // Only apply the result if it matches the latest request identity
+            if response.generation == self.search_generation
+                && response.mode == self.list_search_mode
+            {
                 let filtered = self.filter_indices(response.filtered);
                 self.apply_filtered(filtered);
                 self.search_in_flight = false;
@@ -701,7 +830,7 @@ impl App {
             conversations: Arc::new(self.conversations.clone()),
             searchable: Arc::new(self.searchable.clone()),
         });
-        self.search_generation += 1;
+        self.invalidate_search_generation();
     }
 
     // Getters for UI access
@@ -753,6 +882,26 @@ impl App {
         self.workspace_filter
     }
 
+    #[cfg(test)]
+    pub fn list_search_mode(&self) -> ListSearchMode {
+        self.list_search_mode
+    }
+
+    #[cfg(test)]
+    pub fn semantic_search_available(&self) -> bool {
+        self.semantic_search.available
+    }
+
+    #[cfg(test)]
+    fn search_generation(&self) -> u64 {
+        self.search_generation
+    }
+
+    #[cfg(test)]
+    fn semantic_search_error(&self) -> Option<&str> {
+        self.semantic_search.error.as_deref()
+    }
+
     pub fn has_project_context(&self) -> bool {
         self.current_project_dir_name.is_some()
     }
@@ -762,10 +911,22 @@ impl App {
         // Only toggle if we have a workspace context
         if self.current_project_dir_name.is_some() {
             self.workspace_filter = !self.workspace_filter;
-            self.search_generation += 1;
-            self.search_in_flight = false;
+            self.invalidate_search_generation();
             self.update_filter();
         }
+    }
+
+    #[cfg(test)]
+    fn toggle_list_search_mode(&mut self) {
+        if !self.semantic_search.available {
+            return;
+        }
+        self.list_search_mode = match self.list_search_mode {
+            ListSearchMode::Lexical => ListSearchMode::Semantic,
+            ListSearchMode::Semantic => ListSearchMode::Lexical,
+        };
+        self.invalidate_search_generation();
+        self.dispatch_search();
     }
 
     /// Move cursor left by one character
@@ -2694,11 +2855,83 @@ mod tests {
         )
     }
 
+    fn app_with_options(
+        conversations: Vec<Conversation>,
+        excluded: Vec<&str>,
+        search_options: TuiSearchOptions,
+    ) -> App {
+        App::new_with_options(
+            conversations,
+            ToolDisplayMode::Truncated,
+            false,
+            KeyBindings::default(),
+            excluded.into_iter().map(str::to_string).collect(),
+            search_options,
+        )
+    }
+
     fn filtered_projects(app: &App) -> Vec<Option<&str>> {
         app.filtered()
             .iter()
             .map(|&idx| app.conversations()[idx].project_name.as_deref())
             .collect()
+    }
+
+    #[test]
+    fn default_app_uses_lexical_search_without_semantic_state() {
+        let app = app(vec![], vec![]);
+
+        assert_eq!(app.list_search_mode(), ListSearchMode::Lexical);
+        assert!(!app.semantic_search_available());
+        assert_eq!(app.semantic_search.pending_generation, None);
+        assert_eq!(app.semantic_search_error(), None);
+        assert!(app.semantic_search.results.is_empty());
+        assert!(app.semantic_search.worker_tx.is_none());
+        assert!(app.semantic_search.worker_rx.is_none());
+    }
+
+    #[test]
+    fn semantic_tui_opt_in_keeps_lexical_default() {
+        let app = app_with_options(
+            vec![],
+            vec![],
+            TuiSearchOptions {
+                semantic_enabled: true,
+            },
+        );
+
+        assert_eq!(app.list_search_mode(), ListSearchMode::Lexical);
+        assert!(app.semantic_search_available());
+        assert_eq!(app.semantic_search.pending_generation, None);
+        assert_eq!(app.semantic_search_error(), None);
+    }
+
+    #[test]
+    fn semantic_mode_toggle_requires_opt_in() {
+        let mut app = app(vec![], vec![]);
+        let generation = app.search_generation();
+
+        app.toggle_list_search_mode();
+
+        assert_eq!(app.list_search_mode(), ListSearchMode::Lexical);
+        assert_eq!(app.search_generation(), generation);
+    }
+
+    #[test]
+    fn semantic_mode_toggle_increments_generation_when_enabled() {
+        let mut app = app_with_options(
+            vec![],
+            vec![],
+            TuiSearchOptions {
+                semantic_enabled: true,
+            },
+        );
+        let generation = app.search_generation();
+
+        app.toggle_list_search_mode();
+
+        assert_eq!(app.list_search_mode(), ListSearchMode::Semantic);
+        assert!(app.search_generation() > generation);
     }
 
     #[test]
@@ -2832,6 +3065,195 @@ mod tests {
     }
 
     #[test]
+    fn stale_response_with_current_generation_but_old_mode_is_ignored() {
+        let mut app = app_with_options(
+            vec![conversation(
+                Some("Visible"),
+                "-tmp-visible",
+                "22222222-2222-4222-8222-222222222222",
+                "needle",
+            )],
+            vec![],
+            TuiSearchOptions {
+                semantic_enabled: true,
+            },
+        );
+
+        let (tx, rx) = mpsc::channel();
+        app.search_rx = rx;
+        app.list_search_mode = ListSearchMode::Semantic;
+        app.search_generation = 7;
+        app.filtered.clear();
+        app.selected = None;
+
+        tx.send(SearchResponse {
+            filtered: vec![0],
+            generation: 7,
+            mode: ListSearchMode::Lexical,
+        })
+        .unwrap();
+
+        assert!(!app.receive_search_results());
+        assert!(app.filtered().is_empty());
+        assert_eq!(app.selected(), None);
+    }
+
+    #[test]
+    fn semantic_empty_query_preserves_default_browse_behavior() {
+        let mut app = app_with_options(
+            vec![conversation(
+                Some("Visible"),
+                "-tmp-visible",
+                "22222222-2222-4222-8222-222222222222",
+                "needle",
+            )],
+            vec![],
+            TuiSearchOptions {
+                semantic_enabled: true,
+            },
+        );
+
+        app.toggle_list_search_mode();
+        app.query.clear();
+        app.dispatch_search();
+
+        assert_eq!(app.list_search_mode(), ListSearchMode::Semantic);
+        assert_eq!(filtered_projects(&app), vec![Some("Visible")]);
+        assert_eq!(app.semantic_search_error(), None);
+        assert!(app.semantic_search.worker_tx.is_none());
+        assert!(app.semantic_search.worker_rx.is_none());
+    }
+
+    #[test]
+    fn stale_semantic_response_is_ignored_while_lexical_mode_is_active() {
+        let mut app = app(vec![], vec![]);
+        let (tx, rx) = mpsc::channel();
+        app.search_rx = rx;
+        app.search_generation = 3;
+
+        tx.send(SearchResponse {
+            filtered: vec![0],
+            generation: 3,
+            mode: ListSearchMode::Semantic,
+        })
+        .unwrap();
+
+        assert!(!app.receive_search_results());
+        assert!(app.filtered().is_empty());
+        assert_eq!(app.selected(), None);
+    }
+
+    #[test]
+    fn semantic_nonempty_query_records_unsupported_state_without_worker() {
+        let mut app = app_with_options(
+            vec![conversation(
+                Some("Visible"),
+                "-tmp-visible",
+                "22222222-2222-4222-8222-222222222222",
+                "needle",
+            )],
+            vec![],
+            TuiSearchOptions {
+                semantic_enabled: true,
+            },
+        );
+
+        app.toggle_list_search_mode();
+        app.query = "needle".to_string();
+        app.dispatch_search();
+
+        assert_eq!(app.list_search_mode(), ListSearchMode::Semantic);
+        assert!(app.semantic_search_available());
+        assert!(app.filtered().is_empty());
+        assert_eq!(app.selected(), None);
+        assert_eq!(
+            app.semantic_search_error(),
+            Some("Semantic TUI search is not available yet")
+        );
+        assert!(app.semantic_search.worker_tx.is_none());
+        assert!(app.semantic_search.worker_rx.is_none());
+    }
+
+    #[test]
+    fn semantic_empty_query_clears_unsupported_error() {
+        let mut app = app_with_options(
+            vec![conversation(
+                Some("Visible"),
+                "-tmp-visible",
+                "22222222-2222-4222-8222-222222222222",
+                "needle",
+            )],
+            vec![],
+            TuiSearchOptions {
+                semantic_enabled: true,
+            },
+        );
+
+        app.toggle_list_search_mode();
+        app.query = "needle".to_string();
+        app.dispatch_search();
+        assert!(app.semantic_search_error().is_some());
+
+        app.query.clear();
+        app.dispatch_search();
+
+        assert_eq!(filtered_projects(&app), vec![Some("Visible")]);
+        assert_eq!(app.semantic_search_error(), None);
+    }
+
+    #[test]
+    fn semantic_uuid_query_uses_uuid_lookup_and_clears_unsupported_error() {
+        let uuid = "11111111-1111-4111-8111-111111111111";
+        let mut app = app_with_options(
+            vec![conversation(Some("Hidden"), "-tmp-hidden", uuid, "needle")],
+            vec!["Hidden"],
+            TuiSearchOptions {
+                semantic_enabled: true,
+            },
+        );
+        app.toggle_list_search_mode();
+        app.query = "needle".to_string();
+        app.dispatch_search();
+        assert!(app.semantic_search_error().is_some());
+
+        app.query = uuid.to_string();
+        app.dispatch_search();
+
+        assert_eq!(filtered_projects(&app), vec![Some("Hidden")]);
+        assert_eq!(app.semantic_search_error(), None);
+        assert!(app.semantic_search.worker_tx.is_none());
+        assert!(app.semantic_search.worker_rx.is_none());
+    }
+
+    #[test]
+    fn workspace_toggle_keeps_semantic_nonempty_query_in_placeholder_state() {
+        let mut app = app_with_options(
+            vec![conversation(
+                Some("Visible"),
+                "-tmp-visible",
+                "22222222-2222-4222-8222-222222222222",
+                "needle",
+            )],
+            vec![],
+            TuiSearchOptions {
+                semantic_enabled: true,
+            },
+        );
+        app.current_project_dir_name = Some("-tmp-visible".to_string());
+        app.toggle_list_search_mode();
+        app.query = "needle".to_string();
+
+        app.toggle_workspace_filter();
+
+        assert!(app.filtered().is_empty());
+        assert_eq!(app.selected(), None);
+        assert_eq!(
+            app.semantic_search_error(),
+            Some("Semantic TUI search is not available yet")
+        );
+    }
+
+    #[test]
     fn uuid_dispatch_invalidates_stale_search_response() {
         let uuid = "11111111-1111-4111-8111-111111111111";
         let mut app = app(
@@ -2859,6 +3281,7 @@ mod tests {
         tx.send(SearchResponse {
             filtered: vec![1],
             generation: 1,
+            mode: ListSearchMode::Lexical,
         })
         .unwrap();
 
@@ -2868,13 +3291,14 @@ mod tests {
 
     #[test]
     fn finish_loading_invalidates_stale_loading_search_response() {
-        let mut app = App::new_loading(
+        let mut app = App::new_loading_with_options(
             ToolDisplayMode::Truncated,
             false,
             KeyBindings::default(),
             false,
             None,
             vec![],
+            TuiSearchOptions::default(),
         );
 
         let (tx, rx) = mpsc::channel();
@@ -2894,6 +3318,7 @@ mod tests {
         tx.send(SearchResponse {
             filtered: vec![],
             generation: 1,
+            mode: ListSearchMode::Lexical,
         })
         .unwrap();
 
@@ -2903,13 +3328,14 @@ mod tests {
 
     #[test]
     fn workspace_filter_without_project_context_keeps_rows() {
-        let mut app = App::new_loading(
+        let mut app = App::new_loading_with_options(
             ToolDisplayMode::Truncated,
             false,
             KeyBindings::default(),
             true,
             None,
             vec![],
+            TuiSearchOptions::default(),
         );
 
         app.append_conversations(vec![conversation(
@@ -2924,13 +3350,14 @@ mod tests {
 
     #[test]
     fn exclude_projects_filters_incremental_loading() {
-        let mut app = App::new_loading(
+        let mut app = App::new_loading_with_options(
             ToolDisplayMode::Truncated,
             false,
             KeyBindings::default(),
             false,
             None,
             vec!["Hidden".to_string()],
+            TuiSearchOptions::default(),
         );
 
         app.append_conversations(vec![
@@ -3407,6 +3834,7 @@ fn drain_events(wait: Duration) -> Result<Vec<Event>> {
 
 /// Run the TUI with background loading
 /// Returns the action and the final list of conversations
+#[allow(clippy::too_many_arguments)]
 pub fn run_with_loader(
     rx: Receiver<LoaderMessage>,
     tool_display: ToolDisplayMode,
@@ -3415,6 +3843,7 @@ pub fn run_with_loader(
     workspace_filter: bool,
     current_project_dir_name: Option<String>,
     exclude_projects: Vec<String>,
+    search_options: TuiSearchOptions,
 ) -> Result<(Action, Vec<Conversation>)> {
     // Set up panic hook to restore terminal
     let original_hook = std::panic::take_hook();
@@ -3425,13 +3854,14 @@ pub fn run_with_loader(
     }));
 
     let mut guard = TerminalGuard::new()?;
-    let mut app = App::new_loading(
+    let mut app = App::new_loading_with_options(
         tool_display,
         show_thinking,
         keys,
         workspace_filter,
         current_project_dir_name,
         exclude_projects,
+        search_options,
     );
 
     loop {

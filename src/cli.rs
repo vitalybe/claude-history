@@ -202,6 +202,10 @@ pub struct Args {
     )]
     pub semantic_limit: usize,
 
+    /// Enable semantic search mode inside the TUI
+    #[arg(long = "semantic-tui", hide = true)]
+    pub semantic_tui: bool,
+
     /// Input JSONL file to view directly (skips conversation selection)
     #[arg(
         value_name = "FILE",
@@ -287,5 +291,13 @@ mod tests {
         assert!(!help.contains("--semantic-search"));
         assert!(!help.contains("--semantic-top"));
         assert!(!help.contains("--semantic-limit"));
+        assert!(!help.contains("--semantic-tui"));
+    }
+
+    #[test]
+    fn semantic_tui_flag_is_parseable() {
+        let args = Args::try_parse_from(["claude-history", "--semantic-tui"]).unwrap();
+
+        assert!(args.semantic_tui);
     }
 }

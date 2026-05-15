@@ -322,6 +322,9 @@ fn run() -> Result<()> {
         workspace_filter,
         current_project_dir_name,
         exclude_projects,
+        tui::TuiSearchOptions {
+            semantic_enabled: args.semantic_tui,
+        },
     )? {
         (tui::Action::Select(path), convs) => (convs, path),
         (tui::Action::Resume(path), convs) => {
