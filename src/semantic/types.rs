@@ -44,6 +44,56 @@ pub struct EmbeddedChunk {
     pub embedding: Vec<f32>,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SemanticScoreBreakdown {
+    pub hybrid: f32,
+    pub semantic: f32,
+    pub lexical: f32,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SemanticQuality {
+    Strong,
+    Good,
+    Fair,
+    Weak,
+}
+
+impl SemanticQuality {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Strong => "strong",
+            Self::Good => "good",
+            Self::Fair => "fair",
+            Self::Weak => "weak",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SemanticRationaleKind {
+    SemanticOnly,
+    LexicalBoosted,
+    WeakMatch,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SemanticChunkIdentity {
+    pub conversation_index: usize,
+    pub session: String,
+    pub chunk_index: usize,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct SemanticExplanation {
+    pub quality: SemanticQuality,
+    pub quality_label: &'static str,
+    pub matched_terms: Vec<String>,
+    pub evidence_preview: String,
+    pub rationale_kind: SemanticRationaleKind,
+    pub chunk: SemanticChunkIdentity,
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct SemanticHit {
     pub conversation_index: usize,
@@ -52,7 +102,26 @@ pub struct SemanticHit {
     pub semantic_score: f32,
     pub lexical_score: f32,
     pub hybrid_score: f32,
+    pub score_breakdown: SemanticScoreBreakdown,
+    pub explanation: SemanticExplanation,
     pub snippet: String,
+}
+
+impl SemanticHit {
+    pub fn new(score_breakdown: SemanticScoreBreakdown, explanation: SemanticExplanation) -> Self {
+        let chunk = &explanation.chunk;
+        Self {
+            conversation_index: chunk.conversation_index,
+            session: chunk.session.clone(),
+            chunk_index: chunk.chunk_index,
+            semantic_score: score_breakdown.semantic,
+            lexical_score: score_breakdown.lexical,
+            hybrid_score: score_breakdown.hybrid,
+            snippet: explanation.evidence_preview.clone(),
+            score_breakdown,
+            explanation,
+        }
+    }
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]

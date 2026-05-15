@@ -11,6 +11,7 @@ mod pager;
 mod semantic;
 mod semantic_poc;
 mod syntax;
+mod text_match;
 mod tool_format;
 mod tui;
 mod update;

@@ -1,4 +1,5 @@
 use crate::history::Conversation;
+pub use crate::text_match::{is_word_separator, normalize_for_search};
 use chrono::{DateTime, Duration, Local};
 use rayon::prelude::*;
 
@@ -32,65 +33,6 @@ pub fn is_uuid(query: &str) -> bool {
         .iter()
         .zip(expected_lens.iter())
         .all(|(part, &len)| part.len() == len && part.chars().all(|c| c.is_ascii_hexdigit()))
-}
-
-/// Check if a character is CJK punctuation or symbol.
-/// Only includes actual punctuation — excludes iteration marks (々), shorthand (〆),
-/// and CJK zero (〇) which appear inside words/names.
-fn is_cjk_punctuation(c: char) -> bool {
-    matches!(
-        c,
-        '\u{3000}' | // ideographic space
-        '\u{3001}' | // ideographic comma
-        '\u{3002}' | // ideographic full stop
-        '\u{3008}' | // left angle bracket
-        '\u{3009}' | // right angle bracket
-        '\u{300A}' | // left double angle bracket
-        '\u{300B}' | // right double angle bracket
-        '\u{300C}' | // left corner bracket
-        '\u{300D}' | // right corner bracket
-        '\u{300E}' | // left white corner bracket
-        '\u{300F}' | // right white corner bracket
-        '\u{3010}' | // left black lenticular bracket
-        '\u{3011}' | // right black lenticular bracket
-        '\u{3014}' | // left tortoise shell bracket
-        '\u{3015}' | // right tortoise shell bracket
-        '\u{3016}' | // left white lenticular bracket
-        '\u{3017}' | // right white lenticular bracket
-        '\u{FF01}' | // fullwidth exclamation
-        '\u{FF08}' | // fullwidth left parenthesis
-        '\u{FF09}' | // fullwidth right parenthesis
-        '\u{FF0C}' | // fullwidth comma
-        '\u{FF1A}' | // fullwidth colon
-        '\u{FF1B}' | // fullwidth semicolon
-        '\u{FF1F}' | // fullwidth question mark
-        '\u{201C}' | // left double quotation mark
-        '\u{201D}' | // right double quotation mark
-        '\u{2018}' | // left single quotation mark
-        '\u{2019}' | // right single quotation mark
-        '\u{2014}' | // em dash
-        '\u{2026}' | // horizontal ellipsis
-        '\u{00B7}' // middle dot
-    )
-}
-
-/// Normalize text for search: lowercase, replace separators with spaces,
-/// and handle CJK punctuation as word boundaries
-pub fn normalize_for_search(text: &str) -> String {
-    let mut out = String::with_capacity(text.len());
-    for ch in text.chars() {
-        if ch == '_' || ch == '-' || ch == '/' || is_cjk_punctuation(ch) {
-            out.push(' ');
-        } else {
-            out.extend(ch.to_lowercase());
-        }
-    }
-    out
-}
-
-/// Check if a character is a word separator for search purposes
-pub fn is_word_separator(c: char) -> bool {
-    c.is_whitespace() || c == '_' || c == '-' || c == '/' || is_cjk_punctuation(c)
 }
 
 /// Build searchable index from conversations using pre-normalized search text.

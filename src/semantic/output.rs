@@ -27,11 +27,11 @@ pub fn format_hit(rank: usize, hit: &SemanticHit, conversations: &[&Conversation
 
     format!(
         "#{rank:2} hybrid={:.3} semantic={:.3} lexical={:.3} | {project} | {}\n     {title}\n     {}\n",
-        hit.hybrid_score,
-        hit.semantic_score,
-        hit.lexical_score,
+        hit.score_breakdown.hybrid,
+        hit.score_breakdown.semantic,
+        hit.score_breakdown.lexical,
         session_or_path,
-        truncate(&hit.snippet, 260)
+        truncate(&hit.explanation.evidence_preview, 260)
     )
 }
 
@@ -48,8 +48,33 @@ fn truncate(text: &str, max_chars: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::semantic::types::{
+        SemanticChunkIdentity, SemanticExplanation, SemanticQuality, SemanticRationaleKind,
+        SemanticScoreBreakdown,
+    };
     use chrono::Local;
     use std::path::PathBuf;
+
+    fn hit(session: &str, snippet: &str) -> SemanticHit {
+        let score_breakdown = SemanticScoreBreakdown {
+            hybrid: 0.7,
+            semantic: 0.5,
+            lexical: 0.2,
+        };
+        let explanation = SemanticExplanation {
+            quality: SemanticQuality::Good,
+            quality_label: SemanticQuality::Good.label(),
+            matched_terms: Vec::new(),
+            evidence_preview: snippet.to_string(),
+            rationale_kind: SemanticRationaleKind::LexicalBoosted,
+            chunk: SemanticChunkIdentity {
+                conversation_index: 0,
+                session: session.to_string(),
+                chunk_index: 0,
+            },
+        };
+        SemanticHit::new(score_breakdown, explanation)
+    }
 
     fn conversation() -> Conversation {
         Conversation {
@@ -78,15 +103,7 @@ mod tests {
     #[test]
     fn formats_hit_with_selected_conversation_metadata() {
         let conversation = conversation();
-        let hit = SemanticHit {
-            conversation_index: 0,
-            session: "session-1".to_string(),
-            chunk_index: 0,
-            semantic_score: 0.5,
-            lexical_score: 0.2,
-            hybrid_score: 0.7,
-            snippet: "snippet text".to_string(),
-        };
+        let hit = hit("session-1", "snippet text");
 
         let formatted = format_hit(1, &hit, &[&conversation]);
 
@@ -99,15 +116,7 @@ mod tests {
     #[test]
     fn formats_path_when_session_is_unknown() {
         let conversation = conversation();
-        let hit = SemanticHit {
-            conversation_index: 0,
-            session: "?".to_string(),
-            chunk_index: 0,
-            semantic_score: 0.5,
-            lexical_score: 0.2,
-            hybrid_score: 0.7,
-            snippet: "snippet text".to_string(),
-        };
+        let hit = hit("?", "snippet text");
 
         let formatted = format_hit(1, &hit, &[&conversation]);
 
@@ -119,15 +128,7 @@ mod tests {
         let first = conversation();
         let mut second = conversation();
         second.path = PathBuf::from("/projects/project-b/session-1.jsonl");
-        let hit = SemanticHit {
-            conversation_index: 0,
-            session: "session-1".to_string(),
-            chunk_index: 0,
-            semantic_score: 0.5,
-            lexical_score: 0.2,
-            hybrid_score: 0.7,
-            snippet: "snippet text".to_string(),
-        };
+        let hit = hit("session-1", "snippet text");
 
         let formatted = format_hit(1, &hit, &[&first, &second]);
 

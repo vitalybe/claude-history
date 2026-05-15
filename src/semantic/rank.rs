@@ -1,4 +1,8 @@
-use crate::semantic::types::{EmbeddedChunk, SemanticHit};
+use crate::semantic::evidence::{evidence_preview, matched_terms};
+use crate::semantic::types::{
+    EmbeddedChunk, SemanticChunkIdentity, SemanticExplanation, SemanticHit, SemanticQuality,
+    SemanticRationaleKind, SemanticScoreBreakdown,
+};
 use std::cmp::Ordering;
 use std::collections::HashMap;
 
@@ -11,16 +15,25 @@ pub fn rank_chunks(
     for chunk in chunks {
         let semantic_score = cosine(query_embedding, &chunk.embedding);
         let lexical_score = lexical_overlap(query, &chunk.text);
-        let hybrid_score = semantic_score + lexical_score;
-        let hit = SemanticHit {
-            conversation_index: chunk.conversation_index,
-            session: chunk.session.clone(),
-            chunk_index: chunk.chunk_index,
-            semantic_score,
-            lexical_score,
-            hybrid_score,
-            snippet: chunk.text.clone(),
+        let score_breakdown = SemanticScoreBreakdown {
+            hybrid: semantic_score + lexical_score,
+            semantic: semantic_score,
+            lexical: lexical_score,
         };
+        let quality = quality_for_score(score_breakdown.hybrid);
+        let explanation = SemanticExplanation {
+            quality,
+            quality_label: quality.label(),
+            matched_terms: matched_terms(query, &chunk.text),
+            evidence_preview: evidence_preview(&chunk.text),
+            rationale_kind: rationale_kind(score_breakdown),
+            chunk: SemanticChunkIdentity {
+                conversation_index: chunk.conversation_index,
+                session: chunk.session.clone(),
+                chunk_index: chunk.chunk_index,
+            },
+        };
+        let hit = SemanticHit::new(score_breakdown, explanation);
 
         let replace = best_by_conversation
             .get(&chunk.conversation_index)
@@ -36,13 +49,44 @@ pub fn rank_chunks(
 }
 
 fn compare_hits(a: &SemanticHit, b: &SemanticHit) -> Ordering {
-    b.hybrid_score
-        .total_cmp(&a.hybrid_score)
-        .then_with(|| b.semantic_score.total_cmp(&a.semantic_score))
-        .then_with(|| b.lexical_score.total_cmp(&a.lexical_score))
+    b.score_breakdown
+        .hybrid
+        .total_cmp(&a.score_breakdown.hybrid)
+        .then_with(|| {
+            b.score_breakdown
+                .semantic
+                .total_cmp(&a.score_breakdown.semantic)
+        })
+        .then_with(|| {
+            b.score_breakdown
+                .lexical
+                .total_cmp(&a.score_breakdown.lexical)
+        })
         .then_with(|| a.conversation_index.cmp(&b.conversation_index))
         .then_with(|| a.session.cmp(&b.session))
         .then_with(|| a.chunk_index.cmp(&b.chunk_index))
+}
+
+fn quality_for_score(hybrid_score: f32) -> SemanticQuality {
+    if hybrid_score >= 0.85 {
+        SemanticQuality::Strong
+    } else if hybrid_score >= 0.65 {
+        SemanticQuality::Good
+    } else if hybrid_score >= 0.35 {
+        SemanticQuality::Fair
+    } else {
+        SemanticQuality::Weak
+    }
+}
+
+fn rationale_kind(score_breakdown: SemanticScoreBreakdown) -> SemanticRationaleKind {
+    if quality_for_score(score_breakdown.hybrid) == SemanticQuality::Weak {
+        SemanticRationaleKind::WeakMatch
+    } else if score_breakdown.lexical > 0.0 {
+        SemanticRationaleKind::LexicalBoosted
+    } else {
+        SemanticRationaleKind::SemanticOnly
+    }
 }
 
 fn cosine(a: &[f32], b: &[f32]) -> f32 {
@@ -184,5 +228,95 @@ mod tests {
         assert_eq!(hits[0].conversation_index, 0);
         assert_eq!(hits[0].chunk_index, 0);
         assert_eq!(hits[1].conversation_index, 1);
+    }
+
+    #[test]
+    fn score_breakdown_mirrors_compatibility_fields() {
+        let chunks = vec![embedded("session-a", 0, 0, "rust cache", vec![1.0, 0.0])];
+
+        let hits = rank_chunks("rust cache", &[1.0, 0.0], &chunks);
+        let hit = &hits[0];
+
+        assert_eq!(hit.score_breakdown.hybrid, hit.hybrid_score);
+        assert_eq!(hit.score_breakdown.semantic, hit.semantic_score);
+        assert_eq!(hit.score_breakdown.lexical, hit.lexical_score);
+        assert_eq!(hit.snippet, hit.explanation.evidence_preview);
+    }
+
+    #[test]
+    fn explanation_records_matched_terms_in_query_order() {
+        let chunks = vec![embedded(
+            "session-a",
+            0,
+            0,
+            "The audio_generation cache uses Rust code",
+            vec![1.0, 0.0],
+        )];
+
+        let hits = rank_chunks("rust audio-generation audio", &[1.0, 0.0], &chunks);
+
+        assert_eq!(
+            hits[0].explanation.matched_terms,
+            vec![
+                "rust".to_string(),
+                "audio".to_string(),
+                "generation".to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn explanation_assigns_quality_and_rationale_deterministically() {
+        assert_eq!(quality_for_score(0.85), SemanticQuality::Strong);
+        assert_eq!(quality_for_score(0.65), SemanticQuality::Good);
+        assert_eq!(quality_for_score(0.35), SemanticQuality::Fair);
+        assert_eq!(quality_for_score(0.349), SemanticQuality::Weak);
+        let chunks = vec![embedded("session-a", 0, 0, "semantic text", vec![1.0, 0.0])];
+        let hits = rank_chunks("semantic", &[1.0, 0.0], &chunks);
+
+        assert_eq!(hits[0].explanation.quality_label, "strong");
+        assert_eq!(SemanticQuality::Good.label(), "good");
+        assert_eq!(SemanticQuality::Fair.label(), "fair");
+        assert_eq!(SemanticQuality::Weak.label(), "weak");
+        assert_eq!(
+            rationale_kind(SemanticScoreBreakdown {
+                hybrid: 0.2,
+                semantic: 0.2,
+                lexical: 0.2,
+            }),
+            SemanticRationaleKind::WeakMatch
+        );
+        assert_eq!(
+            rationale_kind(SemanticScoreBreakdown {
+                hybrid: 0.7,
+                semantic: 0.5,
+                lexical: 0.2,
+            }),
+            SemanticRationaleKind::LexicalBoosted
+        );
+        assert_eq!(
+            rationale_kind(SemanticScoreBreakdown {
+                hybrid: 0.7,
+                semantic: 0.7,
+                lexical: 0.0,
+            }),
+            SemanticRationaleKind::SemanticOnly
+        );
+    }
+
+    #[test]
+    fn explanation_uses_sanitized_evidence_preview() {
+        let chunks = vec![embedded(
+            "session-a",
+            0,
+            0,
+            "alpha\n<system-reminder>hidden</system-reminder>\tVec<T> x < y",
+            vec![1.0, 0.0],
+        )];
+
+        let hits = rank_chunks("alpha", &[1.0, 0.0], &chunks);
+
+        assert_eq!(hits[0].explanation.evidence_preview, "alpha Vec<T> x < y");
+        assert_eq!(hits[0].snippet, "alpha Vec<T> x < y");
     }
 }
