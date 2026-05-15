@@ -390,19 +390,14 @@ fn select_conversations(
 fn build_chunks<'a>(conversations: &[&'a Conversation]) -> Vec<SemanticChunk<'a>> {
     let mut chunks = Vec::new();
     for conversation in conversations {
-        let prefix = metadata_prefix(conversation);
-        let semantic_turns = if conversation.semantic_turns.is_empty() {
-            vec![conversation.full_text.as_str()]
-        } else {
-            conversation
-                .semantic_turns
-                .iter()
-                .map(String::as_str)
-                .collect::<Vec<_>>()
-        };
+        let semantic_turns = conversation
+            .semantic_turns
+            .iter()
+            .map(String::as_str)
+            .collect::<Vec<_>>();
 
         for (chunk_index, chunk) in group_turns(&semantic_turns).into_iter().enumerate() {
-            push_chunk(&mut chunks, conversation, chunk_index, &prefix, &chunk);
+            push_chunk(&mut chunks, conversation, chunk_index, &chunk);
         }
     }
     chunks
@@ -477,15 +472,9 @@ fn push_chunk<'a>(
     chunks: &mut Vec<SemanticChunk<'a>>,
     conversation: &'a Conversation,
     chunk_index: usize,
-    prefix: &str,
     chunk: &str,
 ) {
-    let text = if prefix.is_empty() {
-        chunk.to_owned()
-    } else {
-        format!("{prefix}\n\n{chunk}")
-    };
-    let text = normalize_snippet(&text);
+    let text = normalize_snippet(chunk);
     if !text.is_empty() {
         let session = conversation
             .path
@@ -499,24 +488,6 @@ fn push_chunk<'a>(
             text,
         });
     }
-}
-
-#[cfg(feature = "semantic-poc")]
-fn metadata_prefix(conversation: &Conversation) -> String {
-    let mut parts = Vec::new();
-    if let Some(title) = &conversation.custom_title {
-        parts.push(format!("Title: {title}"));
-    }
-    if let Some(summary) = &conversation.summary {
-        parts.push(format!("Summary: {summary}"));
-    }
-    if let Some(project) = &conversation.project_name {
-        parts.push(format!("Project: {project}"));
-    }
-    if let Some(cwd) = &conversation.cwd {
-        parts.push(format!("Working directory: {}", cwd.display()));
-    }
-    parts.join("\n")
 }
 
 #[cfg(feature = "semantic-poc")]
@@ -617,4 +588,61 @@ fn truncate(text: &str, max_chars: usize) -> String {
     let mut out: String = text.chars().take(max_chars.saturating_sub(1)).collect();
     out.push('…');
     out
+}
+
+#[cfg(all(test, feature = "semantic-poc"))]
+mod tests {
+    use super::*;
+    use chrono::Local;
+    use std::path::PathBuf;
+
+    fn test_conversation(semantic_turns: Vec<String>) -> Conversation {
+        Conversation {
+            path: PathBuf::from("/projects/project-a/session-1.jsonl"),
+            index: 0,
+            timestamp: Local::now(),
+            preview: "visible user text".to_string(),
+            preview_first: "visible user text".to_string(),
+            preview_last: "visible assistant text".to_string(),
+            full_text: "title sentinel summary sentinel cwd sentinel project sentinel tool output sentinel full text only sentinel".to_string(),
+            semantic_turns,
+            search_text_lower: "title sentinel summary sentinel cwd sentinel project sentinel tool output sentinel full text only sentinel".to_string(),
+            project_name: Some("project sentinel".to_string()),
+            project_path: Some(PathBuf::from("/projects/project-a")),
+            cwd: Some(PathBuf::from("/cwd/sentinel")),
+            message_count: 2,
+            parse_errors: Vec::new(),
+            summary: Some("summary sentinel".to_string()),
+            custom_title: Some("title sentinel".to_string()),
+            model: Some("claude-sonnet-4-6".to_string()),
+            total_tokens: 0,
+            duration_minutes: None,
+        }
+    }
+
+    #[test]
+    fn semantic_chunks_exclude_metadata_and_full_text() {
+        let conversation = test_conversation(vec![
+            "visible user text".to_string(),
+            "visible assistant text".to_string(),
+        ]);
+
+        let chunks = build_chunks(&[&conversation]);
+
+        assert_eq!(chunks.len(), 1);
+        assert_eq!(chunks[0].text, "visible user text visible assistant text");
+        assert!(!chunks[0].text.contains("title sentinel"));
+        assert!(!chunks[0].text.contains("summary sentinel"));
+        assert!(!chunks[0].text.contains("cwd sentinel"));
+        assert!(!chunks[0].text.contains("project sentinel"));
+        assert!(!chunks[0].text.contains("tool output sentinel"));
+        assert!(!chunks[0].text.contains("full text only sentinel"));
+    }
+
+    #[test]
+    fn semantic_chunks_do_not_fall_back_to_full_text() {
+        let conversation = test_conversation(Vec::new());
+
+        assert!(build_chunks(&[&conversation]).is_empty());
+    }
 }
