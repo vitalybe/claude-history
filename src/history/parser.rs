@@ -368,8 +368,7 @@ pub(crate) fn process_conversation_reader<R: BufRead>(
         full_text,
         semantic_turns: semantic_turns
             .into_iter()
-            .map(|turn| normalize_whitespace(&turn))
-            .filter(|turn| !turn.is_empty())
+            .filter_map(|turn| semantic_embedding_turn(&turn))
             .collect(),
         search_text_lower,
         project_name: None,
@@ -474,6 +473,81 @@ pub(crate) fn is_clear_only_conversation(user_messages: &[String]) -> bool {
     }
 
     saw_caveat && saw_command && saw_stdout
+}
+
+fn semantic_embedding_turn(turn: &str) -> Option<String> {
+    let normalized = normalize_whitespace(turn);
+    if normalized.is_empty() || is_low_value_semantic_turn(&normalized) {
+        None
+    } else {
+        Some(normalized)
+    }
+}
+
+fn is_low_value_semantic_turn(turn: &str) -> bool {
+    let trimmed = turn.trim();
+    if is_clear_metadata_message(trimmed) {
+        return true;
+    }
+    if trimmed.starts_with('/') {
+        return true;
+    }
+    if trimmed.contains("<system-reminder>")
+        || trimmed.contains("</system-reminder>")
+        || trimmed.contains("<local-command-caveat>")
+        || trimmed.contains("</local-command-caveat>")
+        || trimmed.contains("<local-command-stdout>")
+        || trimmed.contains("</local-command-stdout>")
+    {
+        return true;
+    }
+    if trimmed.contains("<command-message>")
+        || trimmed.contains("</command-message>")
+        || trimmed.contains("<command-name>")
+        || trimmed.contains("</command-name>")
+    {
+        return true;
+    }
+
+    let lower = trimmed.to_lowercase();
+    let starts_like_workflow_status = [
+        "i'll ",
+        "i’ll ",
+        "i will ",
+        "i found ",
+        "i ran ",
+        "i added ",
+        "i updated ",
+        "i changed ",
+        "i committed ",
+        "i merged ",
+        "running ",
+        "validation ",
+        "implemented and committed ",
+    ]
+    .iter()
+    .any(|prefix| lower.starts_with(prefix));
+
+    if starts_like_workflow_status {
+        let workflow_terms = [
+            "cargo test",
+            "just check",
+            "git status",
+            "git diff",
+            "worktree",
+            "sentinel",
+            "validation",
+            "committed",
+            "merged",
+            "phase",
+            "tests pass",
+        ];
+        if workflow_terms.iter().any(|term| lower.contains(term)) {
+            return true;
+        }
+    }
+
+    false
 }
 
 /// Normalize whitespace in a string
@@ -1395,6 +1469,60 @@ mod tests {
                 "Real answer",
                 "Follow up",
                 "Follow up answer"
+            ]
+        );
+    }
+
+    #[test]
+    fn command_wrappers_are_not_embedded_semantically() {
+        let content = [
+            user_msg("Find conversations about semantic search", None),
+            assistant_msg("Relevant answer"),
+            user_msg(
+                "<command-message>goal</command-message> <command-name>/goal</command-name> <command-args>improve semantic input</command-args>",
+                None,
+            ),
+            user_msg("After command real question", None),
+            assistant_msg("After command real answer"),
+        ]
+        .join("\n");
+
+        let conv = parse_jsonl(&content).unwrap().unwrap();
+        let semantic = conv.semantic_turns.join(" ");
+
+        assert!(conv.full_text.contains("improve semantic input"));
+        assert!(!semantic.contains("<command-message>"));
+        assert!(!semantic.contains("/goal"));
+        assert_eq!(
+            conv.semantic_turns,
+            vec![
+                "Find conversations about semantic search",
+                "Relevant answer",
+                "After command real question",
+                "After command real answer"
+            ]
+        );
+    }
+
+    #[test]
+    fn workflow_status_narration_is_not_embedded_semantically() {
+        let content = [
+            user_msg("Implement semantic cache", None),
+            assistant_msg("I’ll run cargo test and just check before committing."),
+            assistant_msg("Validation passed and I committed the phase."),
+            assistant_msg("Semantic cache stores visible dialogue embeddings."),
+        ]
+        .join("\n");
+
+        let conv = parse_jsonl(&content).unwrap().unwrap();
+
+        assert!(conv.full_text.contains("cargo test"));
+        assert!(conv.full_text.contains("Validation passed"));
+        assert_eq!(
+            conv.semantic_turns,
+            vec![
+                "Implement semantic cache",
+                "Semantic cache stores visible dialogue embeddings."
             ]
         );
     }
