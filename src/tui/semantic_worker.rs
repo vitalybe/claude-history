@@ -13,11 +13,16 @@ use std::sync::Arc;
 use std::sync::mpsc;
 
 #[derive(Clone)]
+pub struct SemanticSearchCandidate {
+    pub index: usize,
+    pub conversation: Conversation,
+}
+
+#[derive(Clone)]
 pub struct SemanticSearchRequest {
     pub generation: u64,
     pub query: String,
-    pub conversations: Arc<Vec<Conversation>>,
-    pub candidate_indices: Vec<usize>,
+    pub candidates: Arc<Vec<SemanticSearchCandidate>>,
 }
 
 pub enum SemanticSearchMessage {
@@ -278,12 +283,10 @@ fn semantic_chunks(
     chunk_config: ChunkConfig,
 ) -> Vec<crate::semantic::types::SemanticChunk> {
     build_chunks_with_indices(
-        request.candidate_indices.iter().filter_map(|&index| {
-            request
-                .conversations
-                .get(index)
-                .map(|conversation| (index, conversation))
-        }),
+        request
+            .candidates
+            .iter()
+            .map(|candidate| (candidate.index, &candidate.conversation)),
         chunk_config,
     )
 }
@@ -293,15 +296,12 @@ fn semantic_index_signature(
     chunk_config: ChunkConfig,
 ) -> SemanticIndexSignature {
     let conversations = request
-        .candidate_indices
+        .candidates
         .iter()
-        .filter_map(|&index| {
-            let conversation = request.conversations.get(index)?;
-            Some(ConversationSignature {
-                index,
-                path: conversation.path.clone(),
-                semantic_turns: conversation.semantic_turns.clone(),
-            })
+        .map(|candidate| ConversationSignature {
+            index: candidate.index,
+            path: candidate.conversation.path.clone(),
+            semantic_turns: candidate.conversation.semantic_turns.clone(),
         })
         .collect();
 
@@ -392,11 +392,17 @@ mod tests {
         conversations: Vec<Conversation>,
         candidate_indices: Vec<usize>,
     ) -> SemanticSearchRequest {
+        let candidates = candidate_indices
+            .into_iter()
+            .map(|index| SemanticSearchCandidate {
+                index,
+                conversation: conversations[index].clone(),
+            })
+            .collect();
         SemanticSearchRequest {
             generation: 1,
             query: query.to_string(),
-            conversations: Arc::new(conversations),
-            candidate_indices,
+            candidates: Arc::new(candidates),
         }
     }
 
@@ -548,10 +554,10 @@ mod tests {
             &progress_tx().0,
         )
         .expect("same signature rank succeeds");
-        request.conversations = Arc::new(vec![conversation(
-            "/projects/project-a/session-a.jsonl",
-            vec!["visible beta"],
-        )]);
+        request.candidates = Arc::new(vec![SemanticSearchCandidate {
+            index: 0,
+            conversation: conversation("/projects/project-a/session-a.jsonl", vec!["visible beta"]),
+        }]);
         cache_request_passages(&mut cache, &request);
         rank_semantic_request(
             &request,

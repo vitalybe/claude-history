@@ -6,7 +6,7 @@ use crate::history::{
 };
 use crate::tui::search::{self, SearchableConversation};
 use crate::tui::semantic_worker::{
-    SemanticSearchMessage, SemanticSearchRequest, spawn_semantic_worker,
+    SemanticSearchCandidate, SemanticSearchMessage, SemanticSearchRequest, spawn_semantic_worker,
 };
 use crate::tui::ui;
 use crate::tui::viewer::{
@@ -683,11 +683,17 @@ impl App {
         }
     }
 
-    fn semantic_candidate_indices(&self) -> Vec<usize> {
-        self.filter_indices(0..self.conversations.len())
-            .into_iter()
-            .take(self.semantic_limit)
-            .collect()
+    fn semantic_candidates(&self) -> Arc<Vec<SemanticSearchCandidate>> {
+        Arc::new(
+            self.filter_indices(0..self.conversations.len())
+                .into_iter()
+                .take(self.semantic_limit)
+                .map(|index| SemanticSearchCandidate {
+                    index,
+                    conversation: self.conversations[index].clone(),
+                })
+                .collect(),
+        )
     }
 
     /// Update filtered results based on current query
@@ -745,14 +751,13 @@ impl App {
             self.semantic_search.last_status = SemanticProgress::Idle;
             self.semantic_search.error = None;
             self.semantic_search.results.clear();
-            let candidate_indices = self.semantic_candidate_indices();
+            let candidates = self.semantic_candidates();
             self.ensure_semantic_worker();
             if let Some(tx) = &self.semantic_search.worker_tx {
                 let _ = tx.send(SemanticSearchRequest {
                     generation: self.search_generation,
                     query,
-                    conversations: self.conversations_snapshot.clone(),
-                    candidate_indices,
+                    candidates,
                 });
             }
             return;
@@ -3451,12 +3456,50 @@ mod tests {
             Some(request.generation)
         );
         assert_eq!(request.query, "needle");
-        assert_eq!(request.candidate_indices, vec![0]);
+        assert_eq!(request.candidates.len(), 1);
+        assert_eq!(request.candidates[0].index, 0);
+        assert_eq!(
+            request.candidates[0].conversation.semantic_turns,
+            vec!["needle"]
+        );
         assert_eq!(app.semantic_search_error(), None);
     }
 
     #[test]
-    fn semantic_candidate_indices_apply_scope_before_limit() {
+    fn semantic_request_uses_live_conversations_not_stale_snapshot() {
+        let mut app = app_with_options(
+            vec![conversation(
+                Some("Visible"),
+                "-tmp-visible",
+                "22222222-2222-4222-8222-222222222222",
+                "needle",
+            )],
+            vec![],
+            TuiSearchOptions {
+                semantic_enabled: true,
+                ..Default::default()
+            },
+        );
+        app.conversations_snapshot = Arc::new(Vec::new());
+        let (request_tx, request_rx) = mpsc::channel();
+        let (_response_tx, response_rx) = mpsc::channel();
+        app.semantic_search.worker_tx = Some(request_tx);
+        app.semantic_search.worker_rx = Some(response_rx);
+
+        app.query = "needle".to_string();
+        app.dispatch_search();
+
+        let request = request_rx.try_recv().expect("semantic request");
+        assert_eq!(request.candidates.len(), 1);
+        assert_eq!(request.candidates[0].index, 0);
+        assert_eq!(
+            request.candidates[0].conversation.semantic_turns,
+            vec!["needle"]
+        );
+    }
+
+    #[test]
+    fn semantic_candidates_apply_scope_before_limit() {
         let mut app = app_with_options(
             vec![
                 conversation(
@@ -3487,7 +3530,10 @@ mod tests {
         app.current_project_dir_name = Some("-tmp-visible".to_string());
         app.workspace_filter = true;
 
-        assert_eq!(app.semantic_candidate_indices(), vec![1]);
+        let candidates = app.semantic_candidates();
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(candidates[0].index, 1);
+        assert_eq!(candidates[0].conversation.semantic_turns, vec!["visible"]);
     }
 
     #[test]
@@ -3792,7 +3838,12 @@ mod tests {
         app.toggle_workspace_filter();
 
         let request = request_rx.try_recv().expect("semantic request");
-        assert_eq!(request.candidate_indices, vec![0]);
+        assert_eq!(request.candidates.len(), 1);
+        assert_eq!(request.candidates[0].index, 0);
+        assert_eq!(
+            request.candidates[0].conversation.semantic_turns,
+            vec!["needle"]
+        );
         assert_eq!(filtered_projects(&app), vec![Some("Visible")]);
         assert_eq!(app.selected(), Some(0));
         assert_eq!(app.semantic_search_error(), None);
