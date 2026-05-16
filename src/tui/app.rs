@@ -819,7 +819,6 @@ impl App {
         }
 
         if self.list_search_mode == ListSearchMode::Semantic {
-            self.apply_filtered(Vec::new());
             return;
         }
 
@@ -875,10 +874,10 @@ impl App {
         self.search_generation += 1;
         self.search_in_flight = false;
         self.semantic_search.pending_generation = Some(self.search_generation);
-        self.semantic_search.pending_status = Some(SemanticProgress::InitializingModel);
+        self.semantic_search.pending_status = None;
         if prewarm {
             self.semantic_search.prewarm_generation = Some(self.search_generation);
-            self.semantic_search.prewarm_status = Some(SemanticProgress::InitializingModel);
+            self.semantic_search.prewarm_status = None;
         } else {
             self.semantic_search.prewarm_generation = None;
             self.semantic_search.prewarm_status = None;
@@ -3896,14 +3895,8 @@ mod tests {
         assert_eq!(app.cursor_pos(), 1);
         assert_eq!(app.search_generation(), previous_generation + 1);
         assert_eq!(app.semantic_search.pending_generation, Some(request.0));
-        assert_eq!(
-            app.semantic_search.pending_status,
-            Some(SemanticProgress::InitializingModel)
-        );
-        assert_eq!(
-            app.semantic_activity_status_text().as_deref(),
-            Some("sem preparing embeddings")
-        );
+        assert_eq!(app.semantic_search.pending_status, None);
+        assert_eq!(app.semantic_activity_status_text(), None);
         assert_eq!(request.1, "n");
         assert!(!request.4);
     }
@@ -3979,6 +3972,32 @@ mod tests {
             })
             .expect("semantic corpus");
         assert_eq!(corpus[0].semantic_turns, vec!["needle"]);
+    }
+
+    #[test]
+    fn semantic_keypress_preserves_browse_rows_while_pending() {
+        let mut app = app_with_options(
+            vec![conversation(
+                Some("Visible"),
+                "-tmp-visible",
+                "22222222-2222-4222-8222-222222222222",
+                "needle",
+            )],
+            vec![],
+            TuiSearchOptions {
+                semantic_enabled: true,
+            },
+        );
+        let (request_tx, request_rx) = mpsc::channel();
+        let (_response_tx, response_rx) = mpsc::channel();
+        app.semantic_search.worker_tx = Some(request_tx);
+        app.semantic_search.worker_rx = Some(response_rx);
+
+        app.handle_key(KeyCode::Char('n'), KeyModifiers::NONE, 10);
+
+        assert!(last_semantic_search(&drain_semantic_commands(&request_rx)).is_some());
+        assert_eq!(filtered_projects(&app), vec![Some("Visible")]);
+        assert_eq!(app.selected(), Some(0));
     }
 
     #[test]
