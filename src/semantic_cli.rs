@@ -360,6 +360,7 @@ mod tests {
         passage_calls: usize,
         query_calls: usize,
         query_embedding: Option<Vec<f32>>,
+        query_error: bool,
     }
 
     impl FakeEmbedder {
@@ -368,6 +369,7 @@ mod tests {
                 passage_calls: 0,
                 query_calls: 0,
                 query_embedding,
+                query_error: false,
             }
         }
     }
@@ -386,6 +388,9 @@ mod tests {
 
         fn embed_query(&mut self, query: &str) -> Result<Option<Vec<f32>>> {
             self.query_calls += 1;
+            if self.query_error {
+                return Err(AppError::ConfigError("query failed".to_string()));
+            }
             Ok(if query.contains("beta") {
                 Some(vec![0.0, 1.0])
             } else {
@@ -452,6 +457,44 @@ mod tests {
         assert!(!response.query_embedding_returned);
         assert_eq!(embedder.passage_calls, 1);
         assert_eq!(embedder.query_calls, 1);
+    }
+
+    #[test]
+    fn interactive_refresh_writes_cache_before_query_error() {
+        let conversations = vec![test_conversation(
+            "/projects/project-a/session-1.jsonl",
+            "one",
+            vec!["visible alpha".to_string()],
+        )];
+        let selected = vec![&conversations[0]];
+        let candidates = semantic_index_candidates(&selected);
+        let query = "alpha".to_string();
+        let request = crate::semantic::index::SemanticIndexRequest {
+            query: &query,
+            candidates: &candidates,
+            prewarm: false,
+        };
+        let cache = crate::semantic::cache::empty_embedding_cache(ChunkConfig::default());
+        let mut state =
+            crate::semantic::index::SemanticIndexState::with_cache(ChunkConfig::default(), cache);
+        let mut embedder = FakeEmbedder::new(Some(vec![1.0, 0.0]));
+        embedder.query_error = true;
+        let mut saved_entry_counts = Vec::new();
+
+        let error = match refresh_and_rank_interactive(
+            &request,
+            &mut state,
+            &mut embedder,
+            |cache: &EmbeddingCache| saved_entry_counts.push(cache.entries.len()),
+        ) {
+            Ok(_) => panic!("query error should propagate"),
+            Err(error) => error,
+        };
+
+        assert_eq!(saved_entry_counts, vec![1]);
+        assert_eq!(embedder.passage_calls, 1);
+        assert_eq!(embedder.query_calls, 1);
+        assert!(error.to_string().contains("query failed"));
     }
 
     #[test]
