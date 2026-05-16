@@ -608,7 +608,6 @@ impl App {
     pub fn append_conversations(&mut self, new_convs: Vec<Conversation>) {
         let start_idx = self.conversations.len();
         self.conversations.extend(new_convs);
-        self.rebuild_semantic_conversations_snapshot();
         let end_idx = self.conversations.len();
 
         let new_filtered = self.filter_indices(start_idx..end_idx);
@@ -3906,7 +3905,7 @@ mod tests {
     }
 
     #[test]
-    fn semantic_dispatch_after_incremental_loading_keeps_snapshot_aligned() {
+    fn semantic_dispatch_after_loading_keeps_snapshot_aligned() {
         let mut app = App::new_loading_with_options(
             ToolDisplayMode::Truncated,
             false,
@@ -3924,13 +3923,13 @@ mod tests {
             "22222222-2222-4222-8222-222222222222",
             "needle",
         )]);
+        assert!(app.semantic_conversations_snapshot.is_empty());
         let (request_tx, request_rx) = mpsc::channel();
         let (_response_tx, response_rx) = mpsc::channel();
         app.semantic_search.worker_tx = Some(request_tx);
         app.semantic_search.worker_rx = Some(response_rx);
-        app.query = "needle".to_string();
 
-        app.dispatch_search();
+        app.finish_loading();
 
         let commands = drain_semantic_commands(&request_rx);
         let corpus = commands
