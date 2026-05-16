@@ -1,6 +1,9 @@
 use crate::error::Result;
 use crate::history::Conversation;
-use crate::semantic::cache::{cached_chunks, read_embedding_cache};
+use crate::semantic::cache::{
+    cache_entry_matches, embed_chunks_with_progress_and_save, read_embedding_cache,
+    write_embedding_cache,
+};
 use crate::semantic::chunk::build_chunks_with_indices;
 use crate::semantic::embed::SemanticEmbedder;
 use crate::semantic::fastembed::FastembedEmbedder;
@@ -23,6 +26,7 @@ pub struct SemanticSearchRequest {
     pub generation: u64,
     pub query: String,
     pub candidates: Arc<Vec<SemanticSearchCandidate>>,
+    pub prewarm: bool,
 }
 
 pub enum SemanticSearchMessage {
@@ -39,6 +43,7 @@ pub struct SemanticSearchResponse {
     pub metadata: HashMap<usize, SemanticResultMetadata>,
     pub error: Option<String>,
     pub progress: SemanticProgress,
+    pub prewarm: bool,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -114,17 +119,21 @@ pub fn spawn_semantic_worker() -> (
                                         metadata: HashMap::new(),
                                         error: Some(error.to_string()),
                                         progress: SemanticProgress::Failed,
+                                        prewarm: request.prewarm,
                                     },
                                 ));
                                 continue;
                             }
                         };
                     }
-                    rank_semantic_request(
+                    rank_or_prewarm_semantic_request(
                         &request,
-                        &mut state.signature,
-                        &mut state.embedded_chunks,
-                        &mut state.cache,
+                        &mut SemanticCacheBuild {
+                            signature: &mut state.signature,
+                            embedded_chunks: &mut state.embedded_chunks,
+                            cache: &mut state.cache,
+                            save_cache: &mut write_embedding_cache,
+                        },
                         state.chunk_config,
                         embedder.as_mut().unwrap(),
                         &res_tx,
@@ -135,6 +144,7 @@ pub fn spawn_semantic_worker() -> (
                         metadata: HashMap::new(),
                         error: Some(error.to_string()),
                         progress: SemanticProgress::Failed,
+                        prewarm: request.prewarm,
                     })
                 } else {
                     state.signature = Some(next_signature);
@@ -145,6 +155,7 @@ pub fn spawn_semantic_worker() -> (
                         metadata: HashMap::new(),
                         error: None,
                         progress: SemanticProgress::EmptyCorpus,
+                        prewarm: request.prewarm,
                     }
                 };
 
@@ -156,55 +167,62 @@ pub fn spawn_semantic_worker() -> (
     (cmd_tx, res_rx)
 }
 
-fn rank_semantic_request(
+struct SemanticCacheBuild<'a> {
+    signature: &'a mut Option<SemanticIndexSignature>,
+    embedded_chunks: &'a mut Vec<EmbeddedChunk>,
+    cache: &'a mut EmbeddingCache,
+    save_cache: &'a mut dyn FnMut(&EmbeddingCache),
+}
+
+fn rank_or_prewarm_semantic_request(
     request: &SemanticSearchRequest,
-    signature: &mut Option<SemanticIndexSignature>,
-    embedded_chunks: &mut Vec<EmbeddedChunk>,
-    cache: &mut EmbeddingCache,
+    cache_build: &mut SemanticCacheBuild<'_>,
     chunk_config: ChunkConfig,
     embedder: &mut dyn SemanticEmbedder,
     res_tx: &mpsc::Sender<SemanticSearchMessage>,
 ) -> Result<SemanticSearchResponse> {
     let next_signature = semantic_index_signature(request, chunk_config);
-    if signature.as_ref() != Some(&next_signature) {
+    if cache_build.signature.as_ref() != Some(&next_signature) {
         let chunks = semantic_chunks(request, chunk_config);
 
         if chunks.is_empty() {
-            *signature = Some(next_signature);
-            embedded_chunks.clear();
+            *cache_build.signature = Some(next_signature);
+            cache_build.embedded_chunks.clear();
             return Ok(SemanticSearchResponse {
                 generation: request.generation,
                 filtered: Vec::new(),
                 metadata: HashMap::new(),
                 error: None,
                 progress: SemanticProgress::EmptyCorpus,
+                prewarm: request.prewarm,
             });
         }
 
-        let (cached, miss_count) = cached_chunks(chunks, cache);
-        if cached.is_empty() {
-            *signature = None;
-            embedded_chunks.clear();
-            return Ok(SemanticSearchResponse {
-                generation: request.generation,
-                filtered: Vec::new(),
-                metadata: HashMap::new(),
-                error: Some(format!(
-                    "semantic cache missing {miss_count} chunk(s); run --generate-semantic-cache"
-                )),
-                progress: SemanticProgress::MissingCache { count: miss_count },
-            });
-        }
+        let miss_count = cache_miss_count(&chunks, cache_build.cache);
         let _ = res_tx.send(SemanticSearchMessage::Progress {
             generation: request.generation,
             progress: if miss_count > 0 {
-                SemanticProgress::MissingCache { count: miss_count }
+                SemanticProgress::Embedding {
+                    completed: 0,
+                    total: miss_count,
+                }
             } else {
                 SemanticProgress::CacheReady
             },
         });
-        *embedded_chunks = cached;
-        *signature = Some(next_signature);
+        *cache_build.embedded_chunks = embed_chunks_with_progress_and_save(
+            embedder,
+            chunks,
+            cache_build.cache,
+            |completed, total| {
+                let _ = res_tx.send(SemanticSearchMessage::Progress {
+                    generation: request.generation,
+                    progress: SemanticProgress::Embedding { completed, total },
+                });
+            },
+            &mut cache_build.save_cache,
+        )?;
+        *cache_build.signature = Some(next_signature);
     } else {
         let _ = res_tx.send(SemanticSearchMessage::Progress {
             generation: request.generation,
@@ -212,13 +230,18 @@ fn rank_semantic_request(
         });
     }
 
-    if embedded_chunks.is_empty() {
+    if cache_build.embedded_chunks.is_empty() || request.prewarm {
         return Ok(SemanticSearchResponse {
             generation: request.generation,
             filtered: Vec::new(),
             metadata: HashMap::new(),
             error: None,
-            progress: SemanticProgress::EmptyCorpus,
+            progress: if cache_build.embedded_chunks.is_empty() {
+                SemanticProgress::EmptyCorpus
+            } else {
+                SemanticProgress::CacheReady
+            },
+            prewarm: request.prewarm,
         });
     }
 
@@ -233,10 +256,15 @@ fn rank_semantic_request(
             metadata: HashMap::new(),
             error: None,
             progress: SemanticProgress::EmptyCorpus,
+            prewarm: request.prewarm,
         });
     };
 
-    let hits = rank_chunks(&request.query, &query_embedding, embedded_chunks);
+    let hits = rank_chunks(
+        &request.query,
+        &query_embedding,
+        cache_build.embedded_chunks,
+    );
     let filtered = hits
         .iter()
         .map(|hit| hit.conversation_index)
@@ -266,7 +294,23 @@ fn rank_semantic_request(
         metadata,
         error: None,
         progress,
+        prewarm: request.prewarm,
     })
+}
+
+fn cache_miss_count(
+    chunks: &[crate::semantic::types::SemanticChunk],
+    cache: &EmbeddingCache,
+) -> usize {
+    chunks
+        .iter()
+        .filter(|chunk| {
+            !cache
+                .entries
+                .get(&chunk.key)
+                .is_some_and(|entry| cache_entry_matches(entry, &chunk.text))
+        })
+        .count()
 }
 
 fn semantic_index_has_chunks(
@@ -407,6 +451,7 @@ mod tests {
             generation: 1,
             query: query.to_string(),
             candidates: Arc::new(candidates),
+            prewarm: false,
         }
     }
 
@@ -458,11 +503,14 @@ mod tests {
             embedded_passages: Vec::new(),
         };
 
-        let response = rank_semantic_request(
+        let response = rank_or_prewarm_semantic_request(
             &request,
-            &mut signature,
-            &mut embedded_chunks,
-            &mut cache,
+            &mut SemanticCacheBuild {
+                signature: &mut signature,
+                embedded_chunks: &mut embedded_chunks,
+                cache: &mut cache,
+                save_cache: &mut |_| {},
+            },
             ChunkConfig::default(),
             &mut embedder,
             &progress_tx().0,
@@ -505,22 +553,28 @@ mod tests {
             embedded_passages: Vec::new(),
         };
 
-        rank_semantic_request(
+        rank_or_prewarm_semantic_request(
             &request,
-            &mut signature,
-            &mut embedded_chunks,
-            &mut cache,
+            &mut SemanticCacheBuild {
+                signature: &mut signature,
+                embedded_chunks: &mut embedded_chunks,
+                cache: &mut cache,
+                save_cache: &mut |_| {},
+            },
             ChunkConfig::default(),
             &mut embedder,
             &progress_tx().0,
         )
         .expect("first rank succeeds");
         request.query = "beta".to_string();
-        rank_semantic_request(
+        rank_or_prewarm_semantic_request(
             &request,
-            &mut signature,
-            &mut embedded_chunks,
-            &mut cache,
+            &mut SemanticCacheBuild {
+                signature: &mut signature,
+                embedded_chunks: &mut embedded_chunks,
+                cache: &mut cache,
+                save_cache: &mut |_| {},
+            },
             ChunkConfig::default(),
             &mut embedder,
             &progress_tx().0,
@@ -551,22 +605,28 @@ mod tests {
             embedded_passages: Vec::new(),
         };
 
-        rank_semantic_request(
+        rank_or_prewarm_semantic_request(
             &request,
-            &mut signature,
-            &mut embedded_chunks,
-            &mut cache,
+            &mut SemanticCacheBuild {
+                signature: &mut signature,
+                embedded_chunks: &mut embedded_chunks,
+                cache: &mut cache,
+                save_cache: &mut |_| {},
+            },
             ChunkConfig::default(),
             &mut embedder,
             &progress_tx().0,
         )
         .expect("first rank succeeds");
         request.query = "beta".to_string();
-        rank_semantic_request(
+        rank_or_prewarm_semantic_request(
             &request,
-            &mut signature,
-            &mut embedded_chunks,
-            &mut cache,
+            &mut SemanticCacheBuild {
+                signature: &mut signature,
+                embedded_chunks: &mut embedded_chunks,
+                cache: &mut cache,
+                save_cache: &mut |_| {},
+            },
             ChunkConfig::default(),
             &mut embedder,
             &progress_tx().0,
@@ -577,11 +637,14 @@ mod tests {
             conversation: conversation("/projects/project-a/session-a.jsonl", vec!["visible beta"]),
         }]);
         cache_request_passages(&mut cache, &request);
-        rank_semantic_request(
+        rank_or_prewarm_semantic_request(
             &request,
-            &mut signature,
-            &mut embedded_chunks,
-            &mut cache,
+            &mut SemanticCacheBuild {
+                signature: &mut signature,
+                embedded_chunks: &mut embedded_chunks,
+                cache: &mut cache,
+                save_cache: &mut |_| {},
+            },
             ChunkConfig::default(),
             &mut embedder,
             &progress_tx().0,
@@ -610,11 +673,14 @@ mod tests {
         };
 
         cache_request_passages(&mut cache, &request);
-        let response = rank_semantic_request(
+        let response = rank_or_prewarm_semantic_request(
             &request,
-            &mut signature,
-            &mut embedded_chunks,
-            &mut cache,
+            &mut SemanticCacheBuild {
+                signature: &mut signature,
+                embedded_chunks: &mut embedded_chunks,
+                cache: &mut cache,
+                save_cache: &mut |_| {},
+            },
             ChunkConfig::default(),
             &mut embedder,
             &progress_tx().0,
@@ -635,7 +701,7 @@ mod tests {
     }
 
     #[test]
-    fn missing_cached_passages_returns_error_without_embedding() {
+    fn missing_cached_passages_are_embedded_and_ranked() {
         let conversations = vec![conversation(
             "/projects/project-a/session-a.jsonl",
             vec!["visible alpha"],
@@ -649,37 +715,51 @@ mod tests {
             query_calls: 0,
             embedded_passages: Vec::new(),
         };
+        let mut save_calls = 0;
+        let (tx, rx) = progress_tx();
 
-        let response = rank_semantic_request(
+        let response = rank_or_prewarm_semantic_request(
             &request,
-            &mut signature,
-            &mut embedded_chunks,
-            &mut cache,
+            &mut SemanticCacheBuild {
+                signature: &mut signature,
+                embedded_chunks: &mut embedded_chunks,
+                cache: &mut cache,
+                save_cache: &mut |_| save_calls += 1,
+            },
             ChunkConfig::default(),
             &mut embedder,
-            &progress_tx().0,
+            &tx,
         )
-        .expect("missing cache succeeds as recoverable error");
+        .expect("missing cache embeds and ranks");
 
-        assert!(response.filtered.is_empty());
-        assert!(
-            response
-                .error
-                .as_deref()
-                .unwrap()
-                .contains("--generate-semantic-cache")
-        );
+        assert_eq!(response.filtered, vec![0]);
+        assert_eq!(response.progress, SemanticProgress::Complete);
+        assert_eq!(response.error, None);
         assert_eq!(
-            response.progress,
-            SemanticProgress::MissingCache { count: 1 }
+            signature,
+            Some(semantic_index_signature(&request, ChunkConfig::default()))
         );
-        assert_eq!(signature, None);
-        assert_eq!(embedder.passage_calls, 0);
-        assert_eq!(embedder.query_calls, 0);
+        assert_eq!(embedder.passage_calls, 1);
+        assert_eq!(embedder.query_calls, 1);
+        assert_eq!(save_calls, 1);
+        assert_eq!(
+            cache_miss_count(&semantic_chunks(&request, ChunkConfig::default()), &cache),
+            0
+        );
+        assert!(rx.try_iter().any(|message| matches!(
+            message,
+            SemanticSearchMessage::Progress {
+                progress: SemanticProgress::Embedding {
+                    completed: 0,
+                    total: 1,
+                },
+                ..
+            }
+        )));
     }
 
     #[test]
-    fn partial_cached_passages_are_ranked_without_embedding() {
+    fn partial_cached_passages_embed_missing_chunks_and_rank_all() {
         let conversations = vec![
             conversation("/projects/project-a/session-a.jsonl", vec!["visible alpha"]),
             conversation("/projects/project-a/session-b.jsonl", vec!["visible beta"]),
@@ -705,29 +785,80 @@ mod tests {
         };
         let (tx, rx) = progress_tx();
 
-        let response = rank_semantic_request(
+        let response = rank_or_prewarm_semantic_request(
             &request,
-            &mut signature,
-            &mut embedded_chunks,
-            &mut cache,
+            &mut SemanticCacheBuild {
+                signature: &mut signature,
+                embedded_chunks: &mut embedded_chunks,
+                cache: &mut cache,
+                save_cache: &mut |_| {},
+            },
             ChunkConfig::default(),
             &mut embedder,
             &tx,
         )
-        .expect("partial cache ranks cached chunks");
+        .expect("partial cache embeds misses and ranks all chunks");
 
-        assert_eq!(response.filtered, vec![0]);
+        assert_eq!(response.filtered, vec![0, 1]);
         assert_eq!(response.progress, SemanticProgress::Complete);
         assert_eq!(response.error, None);
-        assert_eq!(embedder.passage_calls, 0);
+        assert_eq!(embedder.passage_calls, 1);
         assert_eq!(embedder.query_calls, 1);
+        assert_eq!(
+            embedder.embedded_passages,
+            vec![vec!["visible beta".to_string()]]
+        );
         assert!(rx.try_iter().any(|message| matches!(
             message,
             SemanticSearchMessage::Progress {
-                progress: SemanticProgress::MissingCache { count: 1 },
+                progress: SemanticProgress::Embedding {
+                    completed: 0,
+                    total: 1,
+                },
                 ..
             }
         )));
+    }
+
+    #[test]
+    fn prewarm_request_builds_cache_without_ranking_query() {
+        let conversations = vec![conversation(
+            "/projects/project-a/session-a.jsonl",
+            vec!["visible alpha"],
+        )];
+        let mut request = request("", conversations, vec![0]);
+        request.prewarm = true;
+        let mut signature = None;
+        let mut embedded_chunks = Vec::new();
+        let mut cache = empty_embedding_cache(ChunkConfig::default());
+        let mut embedder = FakeEmbedder {
+            passage_calls: 0,
+            query_calls: 0,
+            embedded_passages: Vec::new(),
+        };
+
+        let response = rank_or_prewarm_semantic_request(
+            &request,
+            &mut SemanticCacheBuild {
+                signature: &mut signature,
+                embedded_chunks: &mut embedded_chunks,
+                cache: &mut cache,
+                save_cache: &mut |_| {},
+            },
+            ChunkConfig::default(),
+            &mut embedder,
+            &progress_tx().0,
+        )
+        .expect("prewarm succeeds");
+
+        assert!(response.filtered.is_empty());
+        assert_eq!(response.progress, SemanticProgress::CacheReady);
+        assert_eq!(embedder.passage_calls, 1);
+        assert_eq!(embedder.query_calls, 0);
+        assert_eq!(
+            cache_miss_count(&semantic_chunks(&request, ChunkConfig::default()), &cache),
+            0
+        );
     }
 
     #[test]
@@ -747,11 +878,14 @@ mod tests {
             embedded_passages: Vec::new(),
         };
         let (tx, _rx) = progress_tx();
-        rank_semantic_request(
+        rank_or_prewarm_semantic_request(
             &request,
-            &mut signature,
-            &mut embedded_chunks,
-            &mut cache,
+            &mut SemanticCacheBuild {
+                signature: &mut signature,
+                embedded_chunks: &mut embedded_chunks,
+                cache: &mut cache,
+                save_cache: &mut |_| {},
+            },
             ChunkConfig::default(),
             &mut embedder,
             &tx,
@@ -759,11 +893,14 @@ mod tests {
         .expect("first rank succeeds");
         let (tx, rx) = progress_tx();
 
-        rank_semantic_request(
+        rank_or_prewarm_semantic_request(
             &request,
-            &mut signature,
-            &mut embedded_chunks,
-            &mut cache,
+            &mut SemanticCacheBuild {
+                signature: &mut signature,
+                embedded_chunks: &mut embedded_chunks,
+                cache: &mut cache,
+                save_cache: &mut |_| {},
+            },
             ChunkConfig::default(),
             &mut embedder,
             &tx,
@@ -800,11 +937,14 @@ mod tests {
             embedded_passages: Vec::new(),
         };
 
-        let response = rank_semantic_request(
+        let response = rank_or_prewarm_semantic_request(
             &request,
-            &mut signature,
-            &mut embedded_chunks,
-            &mut cache,
+            &mut SemanticCacheBuild {
+                signature: &mut signature,
+                embedded_chunks: &mut embedded_chunks,
+                cache: &mut cache,
+                save_cache: &mut |_| {},
+            },
             ChunkConfig::default(),
             &mut embedder,
             &progress_tx().0,

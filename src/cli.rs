@@ -177,7 +177,7 @@ pub struct Args {
         value_name = "QUERY",
         value_parser = non_empty_string,
         hide = true,
-        conflicts_with_all = ["show_dir", "resume", "show_path", "show_id", "plain", "render", "delete", "input_file", "debug_search", "semantic_search", "semantic", "generate_semantic_cache"]
+        conflicts_with_all = ["show_dir", "resume", "show_path", "show_id", "plain", "render", "delete", "input_file", "debug_search", "semantic_search", "semantic", "generate_semantic_cache", "clear_semantic_cache"]
     )]
     pub debug_semantic_search: Option<String>,
 
@@ -188,7 +188,7 @@ pub struct Args {
         help = "Run a local semantic search over conversations",
         value_parser = non_empty_string,
         hide = true,
-        conflicts_with_all = ["show_dir", "resume", "show_path", "show_id", "plain", "render", "delete", "input_file", "debug_search"]
+        conflicts_with_all = ["show_dir", "resume", "show_path", "show_id", "plain", "render", "delete", "input_file", "debug_search", "clear_semantic_cache"]
     )]
     pub semantic_search: Option<String>,
 
@@ -219,9 +219,17 @@ pub struct Args {
     #[arg(
         long = "generate-semantic-cache",
         hide = true,
-        conflicts_with_all = ["show_dir", "resume", "show_path", "show_id", "plain", "render", "delete", "input_file", "debug_search", "semantic_search", "semantic"]
+        conflicts_with_all = ["show_dir", "resume", "show_path", "show_id", "plain", "render", "delete", "input_file", "debug_search", "semantic_search", "semantic", "clear_semantic_cache"]
     )]
     pub generate_semantic_cache: bool,
+
+    /// Clear semantic embedding and model cache files and exit
+    #[arg(
+        long = "clear-semantic-cache",
+        hide = true,
+        conflicts_with_all = ["show_dir", "resume", "show_path", "show_id", "plain", "render", "delete", "input_file", "debug_search", "semantic_search", "semantic", "generate_semantic_cache", "debug_semantic_search"]
+    )]
+    pub clear_semantic_cache: bool,
 
     /// Input JSONL file to view directly (skips conversation selection)
     #[arg(
@@ -310,6 +318,7 @@ mod tests {
         assert!(!help.contains("--semantic-limit"));
         assert!(!help.contains("--semantic"));
         assert!(!help.contains("--generate-semantic-cache"));
+        assert!(!help.contains("--clear-semantic-cache"));
         assert!(!help.contains("--debug-semantic-search"));
     }
 
@@ -333,5 +342,12 @@ mod tests {
         let args = Args::try_parse_from(["claude-history", "--generate-semantic-cache"]).unwrap();
 
         assert!(args.generate_semantic_cache);
+    }
+
+    #[test]
+    fn clear_semantic_cache_flag_is_parseable() {
+        let args = Args::try_parse_from(["claude-history", "--clear-semantic-cache"]).unwrap();
+
+        assert!(args.clear_semantic_cache);
     }
 }

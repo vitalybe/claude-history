@@ -177,6 +177,17 @@ pub fn embedding_cache_file_path() -> Option<PathBuf> {
     embedding_cache_path()
 }
 
+pub fn clear_semantic_cache_files() -> std::io::Result<bool> {
+    let Some(path) = semantic_cache_dir() else {
+        return Ok(false);
+    };
+    if !path.exists() {
+        return Ok(false);
+    }
+    std::fs::remove_dir_all(path)?;
+    Ok(true)
+}
+
 fn write_embedding_cache_to_path(cache: &EmbeddingCache, path: &Path) {
     let Some(parent) = path.parent() else {
         return;
@@ -216,11 +227,14 @@ fn cache_matches_config(cache: &EmbeddingCache, config: ChunkConfig) -> bool {
 }
 
 fn embedding_cache_path() -> Option<PathBuf> {
+    semantic_cache_dir().map(|path| path.join("embeddings-v1.bin"))
+}
+
+fn semantic_cache_dir() -> Option<PathBuf> {
     home::home_dir().map(|home| {
         home.join(".cache")
             .join("claude-history")
             .join("semantic-poc")
-            .join("embeddings-v1.bin")
     })
 }
 

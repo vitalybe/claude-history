@@ -57,6 +57,16 @@ pub fn run(
     Ok(())
 }
 
+pub fn clear_cache() -> Result<()> {
+    let cleared = crate::semantic::cache::clear_semantic_cache_files()?;
+    if cleared {
+        eprintln!("Semantic cache cleared.");
+    } else {
+        eprintln!("Semantic cache is already empty.");
+    }
+    Ok(())
+}
+
 pub fn generate_cache(conversations: &[Conversation], limit: usize, local: bool) -> Result<()> {
     use crate::semantic::cache::{
         embed_chunks_with_progress_and_save, read_embedding_cache, write_embedding_cache,

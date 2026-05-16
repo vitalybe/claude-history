@@ -178,6 +178,15 @@ fn render_status_message(frame: &mut Frame, msg: &str, area: Rect) {
     frame.render_widget(status, area);
 }
 
+fn render_activity_status(frame: &mut Frame, msg: &str, area: Rect) {
+    let status_line = Line::from(vec![
+        Span::raw("  "),
+        Span::styled(msg, Style::default().fg(rgb(th().accent)).bold()),
+    ]);
+    let status = Paragraph::new(status_line).style(Style::default().bg(rgb(th().status_bar_bg)));
+    frame.render_widget(status, area);
+}
+
 fn render_list_status_bar(frame: &mut Frame, app: &App, area: Rect) {
     let is_loading = app.is_loading();
 
@@ -189,6 +198,11 @@ fn render_list_status_bar(frame: &mut Frame, app: &App, area: Rect) {
 
     if let Some(metadata) = selected_semantic_metadata(app) {
         render_semantic_status_bar(frame, metadata, area);
+        return;
+    }
+
+    if let Some(status) = app.semantic_activity_status_text() {
+        render_activity_status(frame, &status, area);
         return;
     }
 
@@ -2762,7 +2776,10 @@ mod tests {
     fn semantic_search_bar_keeps_query_mode_count_status_and_cursor_at_normal_width() {
         let app = semantic_searching_app(
             "vector query with enough words",
-            SemanticProgress::MissingCache { count: 42 },
+            SemanticProgress::Embedding {
+                completed: 21,
+                total: 42,
+            },
         );
         let width = 80;
         let backend = TestBackend::new(width, 4);
@@ -2775,9 +2792,9 @@ mod tests {
         let line = row_text(&terminal, 0);
         assert_eq!(line.chars().count(), width as usize);
         assert!(line.contains("vector query with enough words"), "{line:?}");
-        assert!(line.contains("sem 1/1 sem cache missing 42"), "{line:?}");
+        assert!(line.contains("sem 1/1"), "{line:?}");
         assert!(line.contains("1/1"), "{line:?}");
-        assert!(line.contains("sem cache missing 42"), "{line:?}");
+        assert!(!line.contains("sem embedding"), "{line:?}");
         assert_cursor_inside(&mut terminal, width);
     }
 
@@ -2791,6 +2808,7 @@ mod tests {
                 metadata: HashMap::from([(0, metadata)]),
                 error: None,
                 progress: SemanticProgress::Complete,
+                prewarm: false,
             }))
             .unwrap();
         app.receive_search_results();
@@ -2927,6 +2945,7 @@ mod tests {
                 )]),
                 error: None,
                 progress: SemanticProgress::Complete,
+                prewarm: false,
             }))
             .unwrap();
         app.receive_search_results();
@@ -2941,6 +2960,27 @@ mod tests {
         assert!(line.contains("sem 0.98"), "{line:?}");
         assert!(line.contains("lex 0.25"), "{line:?}");
         assert!(line.contains("lex boost"), "{line:?}");
+    }
+
+    #[test]
+    fn semantic_status_bar_shows_embedding_progress_before_results() {
+        let app = semantic_searching_app(
+            "sentinel",
+            SemanticProgress::Embedding {
+                completed: 21,
+                total: 42,
+            },
+        );
+        let backend = TestBackend::new(80, 2);
+        let mut terminal = Terminal::new(backend).unwrap();
+
+        terminal
+            .draw(|frame| render_list_status_bar(frame, &app, frame.area()))
+            .unwrap();
+
+        let line = row_text(&terminal, 0);
+        assert!(line.contains("sem embedding 50%"), "{line:?}");
+        assert!(line.contains("21/42 chunks"), "{line:?}");
     }
 
     #[test]
@@ -3052,6 +3092,7 @@ mod tests {
                 metadata: HashMap::from([(0, test_semantic_metadata("semantic evidence only"))]),
                 error: None,
                 progress: SemanticProgress::Complete,
+                prewarm: false,
             }))
             .unwrap();
         app.receive_search_results();

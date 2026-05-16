@@ -256,6 +256,10 @@ fn run() -> Result<()> {
         return semantic_poc::generate_cache(&conversations, args.semantic_limit, args.local);
     }
 
+    if args.clear_semantic_cache {
+        return semantic_poc::clear_cache();
+    }
+
     // Handle --semantic-search flag
     if let Some(ref query) = args.semantic_search {
         let mut conversations = history::load_all_conversations(show_last, args.debug)?;

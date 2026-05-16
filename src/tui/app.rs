@@ -178,8 +178,9 @@ pub enum SemanticProgress {
     Idle,
     InitializingModel,
     CacheReady,
-    MissingCache {
-        count: usize,
+    Embedding {
+        completed: usize,
+        total: usize,
     },
     Ranking,
     Complete,
@@ -411,7 +412,7 @@ impl App {
             searchable: Arc::new(searchable.clone()),
         });
 
-        Self {
+        let mut app = Self {
             conversations_snapshot: Arc::new(conversations.clone()),
             conversations,
             searchable,
@@ -445,7 +446,9 @@ impl App {
                 available: search_options.semantic_enabled,
                 ..Default::default()
             },
-        }
+        };
+        app.prewarm_semantic_cache();
+        app
     }
 
     /// Create a new app in loading state
@@ -626,6 +629,7 @@ impl App {
 
         // Apply filter (handles query, exclusions, and workspace filter)
         self.update_filter();
+        self.prewarm_semantic_cache();
     }
 
     /// Consume the app and return its conversations
@@ -759,22 +763,7 @@ impl App {
         }
 
         if self.list_search_mode == ListSearchMode::Semantic {
-            self.search_generation += 1;
-            self.search_in_flight = false;
-            self.semantic_search.pending_generation = Some(self.search_generation);
-            self.semantic_search.pending_status = Some(SemanticProgress::InitializingModel);
-            self.semantic_search.last_status = SemanticProgress::Idle;
-            self.semantic_search.error = None;
-            self.semantic_search.results.clear();
-            let candidates = self.semantic_candidates();
-            self.ensure_semantic_worker();
-            if let Some(tx) = &self.semantic_search.worker_tx {
-                let _ = tx.send(SemanticSearchRequest {
-                    generation: self.search_generation,
-                    query,
-                    candidates,
-                });
-            }
+            self.dispatch_semantic_search(query, false);
             return;
         }
 
@@ -787,6 +776,35 @@ impl App {
             generation: self.search_generation,
             mode: self.list_search_mode,
         });
+    }
+
+    fn dispatch_semantic_search(&mut self, query: String, prewarm: bool) {
+        self.search_generation += 1;
+        self.search_in_flight = false;
+        self.semantic_search.pending_generation = Some(self.search_generation);
+        self.semantic_search.pending_status = Some(SemanticProgress::InitializingModel);
+        self.semantic_search.last_status = SemanticProgress::Idle;
+        self.semantic_search.error = None;
+        self.semantic_search.results.clear();
+        let candidates = self.semantic_candidates();
+        self.ensure_semantic_worker();
+        if let Some(tx) = &self.semantic_search.worker_tx {
+            let _ = tx.send(SemanticSearchRequest {
+                generation: self.search_generation,
+                query,
+                candidates,
+                prewarm,
+            });
+        }
+    }
+
+    fn prewarm_semantic_cache(&mut self) {
+        if self.list_search_mode == ListSearchMode::Semantic
+            && self.query.trim().is_empty()
+            && !self.is_loading()
+        {
+            self.dispatch_semantic_search(String::new(), true);
+        }
     }
 
     /// Check for completed search results from the background worker.
@@ -805,13 +823,14 @@ impl App {
             }
         }
         if let Some(rx) = self.semantic_search.worker_rx.take() {
+            let active_generation = self.search_generation;
             while let Ok(message) = rx.try_recv() {
                 match message {
                     SemanticSearchMessage::Progress {
                         generation,
                         progress,
                     } => {
-                        if generation == self.search_generation
+                        if generation == active_generation
                             && self.list_search_mode == ListSearchMode::Semantic
                         {
                             self.semantic_search.pending_status = Some(progress);
@@ -819,7 +838,7 @@ impl App {
                         }
                     }
                     SemanticSearchMessage::Complete(response) => {
-                        if response.generation == self.search_generation
+                        if response.generation == active_generation
                             && self.list_search_mode == ListSearchMode::Semantic
                         {
                             self.semantic_search.pending_generation = None;
@@ -827,8 +846,12 @@ impl App {
                             self.semantic_search.last_status = response.progress;
                             self.semantic_search.error = response.error;
                             self.semantic_search.results = response.metadata;
-                            let filtered = self.filter_indices(response.filtered);
-                            self.apply_filtered(filtered);
+                            if response.prewarm && !self.query.trim().is_empty() {
+                                self.dispatch_semantic_search(self.query.trim().to_string(), false);
+                            } else if !response.prewarm {
+                                let filtered = self.filter_indices(response.filtered);
+                                self.apply_filtered(filtered);
+                            }
                             applied = true;
                         }
                     }
@@ -1088,14 +1111,33 @@ impl App {
             .as_ref()
             .unwrap_or(&self.semantic_search.last_status);
         match status {
-            SemanticProgress::Idle
-            | SemanticProgress::InitializingModel
-            | SemanticProgress::CacheReady
-            | SemanticProgress::Ranking
-            | SemanticProgress::Complete => None,
-            SemanticProgress::MissingCache { count } => Some(format!("sem cache missing {count}")),
             SemanticProgress::EmptyCorpus => Some("sem no text".to_string()),
             SemanticProgress::Failed => Some("sem failed".to_string()),
+            _ => None,
+        }
+    }
+
+    pub fn semantic_activity_status_text(&self) -> Option<String> {
+        if self.list_search_mode != ListSearchMode::Semantic || self.semantic_search.error.is_some()
+        {
+            return None;
+        }
+        let status = self.semantic_search.pending_status.as_ref()?;
+        match status {
+            SemanticProgress::InitializingModel => Some("sem preparing embeddings".to_string()),
+            SemanticProgress::Embedding { completed, total } => {
+                let percent = if *total == 0 {
+                    100
+                } else {
+                    completed.min(total).saturating_mul(100) / total
+                };
+                Some(format!(
+                    "sem embedding {percent}%  {}/{total} chunks",
+                    completed.min(total)
+                ))
+            }
+            SemanticProgress::Ranking => Some("sem ranking".to_string()),
+            _ => None,
         }
     }
 
@@ -1126,7 +1168,11 @@ impl App {
             ListSearchMode::Semantic => ListSearchMode::Lexical,
         };
         self.invalidate_search_generation();
-        self.dispatch_search();
+        if self.list_search_mode == ListSearchMode::Semantic && self.query.trim().is_empty() {
+            self.prewarm_semantic_cache();
+        } else {
+            self.dispatch_search();
+        }
     }
 
     pub fn semantic_toggle_available(&self) -> bool {
@@ -3403,6 +3449,7 @@ mod tests {
                     metadata: HashMap::new(),
                     error: None,
                     progress: SemanticProgress::Complete,
+                    prewarm: false,
                 },
             ))
             .unwrap();
@@ -3449,6 +3496,7 @@ mod tests {
                     metadata: HashMap::from([(0, test_semantic_metadata(0, "stale"))]),
                     error: None,
                     progress: SemanticProgress::Complete,
+                    prewarm: false,
                 },
             ))
             .unwrap();
@@ -3492,6 +3540,7 @@ mod tests {
                     metadata: HashMap::from([(0, test_semantic_metadata(0, "stale"))]),
                     error: None,
                     progress: SemanticProgress::Complete,
+                    prewarm: false,
                 },
             ))
             .unwrap();
@@ -3536,6 +3585,7 @@ mod tests {
                     metadata: HashMap::from([(0, test_semantic_metadata(0, "stale"))]),
                     error: None,
                     progress: SemanticProgress::Complete,
+                    prewarm: false,
                 },
             ))
             .unwrap();
@@ -3578,6 +3628,7 @@ mod tests {
             Some(request.generation)
         );
         assert_eq!(request.query, "needle");
+        assert!(!request.prewarm);
         assert_eq!(request.candidates.len(), 1);
         assert_eq!(request.candidates[0].index, 0);
         assert_eq!(
@@ -3585,6 +3636,39 @@ mod tests {
             vec!["needle"]
         );
         assert_eq!(app.semantic_search_error(), None);
+    }
+
+    #[test]
+    fn semantic_mode_prewarms_cache_without_query() {
+        let mut app = app_with_options(
+            vec![conversation(
+                Some("Visible"),
+                "-tmp-visible",
+                "22222222-2222-4222-8222-222222222222",
+                "needle",
+            )],
+            vec![],
+            TuiSearchOptions {
+                semantic_enabled: true,
+                ..Default::default()
+            },
+        );
+        let (request_tx, request_rx) = mpsc::channel();
+        let (_response_tx, response_rx) = mpsc::channel();
+        app.semantic_search.worker_tx = Some(request_tx);
+        app.semantic_search.worker_rx = Some(response_rx);
+        app.invalidate_search_generation();
+
+        app.prewarm_semantic_cache();
+
+        let request = request_rx.try_recv().expect("semantic prewarm request");
+        assert_eq!(request.query, "");
+        assert!(request.prewarm);
+        assert_eq!(request.candidates.len(), 1);
+        assert_eq!(
+            app.semantic_search.pending_generation,
+            Some(request.generation)
+        );
     }
 
     #[test]
@@ -3701,6 +3785,7 @@ mod tests {
                     metadata,
                     error: None,
                     progress: SemanticProgress::Complete,
+                    prewarm: false,
                 },
             ))
             .unwrap();
@@ -3766,7 +3851,7 @@ mod tests {
     }
 
     #[test]
-    fn semantic_progress_messages_update_status_text() {
+    fn semantic_progress_messages_update_activity_status_text() {
         let mut app = app_with_options(
             vec![conversation(
                 Some("Visible"),
@@ -3792,14 +3877,18 @@ mod tests {
         response_tx
             .send(SemanticSearchMessage::Progress {
                 generation: 7,
-                progress: SemanticProgress::MissingCache { count: 2 },
+                progress: SemanticProgress::Embedding {
+                    completed: 1,
+                    total: 2,
+                },
             })
             .unwrap();
 
         assert!(app.receive_search_results());
+        assert_eq!(app.semantic_status_text(), None);
         assert_eq!(
-            app.semantic_status_text().as_deref(),
-            Some("sem cache missing 2")
+            app.semantic_activity_status_text().as_deref(),
+            Some("sem embedding 50%  1/2 chunks")
         );
         assert_eq!(app.semantic_search.pending_generation, Some(7));
     }
@@ -3836,6 +3925,7 @@ mod tests {
                     metadata: HashMap::new(),
                     error: None,
                     progress: SemanticProgress::EmptyCorpus,
+                    prewarm: false,
                 },
             ))
             .unwrap();
@@ -4343,6 +4433,7 @@ mod interaction_tests {
                     )]),
                     error: None,
                     progress: SemanticProgress::Complete,
+                    prewarm: false,
                 },
             ))
             .unwrap();
@@ -4406,6 +4497,7 @@ mod interaction_tests {
                     ]),
                     error: None,
                     progress: SemanticProgress::Complete,
+                    prewarm: false,
                 },
             ))
             .unwrap();
