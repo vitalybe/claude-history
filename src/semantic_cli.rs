@@ -2,15 +2,11 @@ use crate::error::{AppError, Result};
 use crate::history::Conversation;
 
 pub fn run(query: &str, conversations: &[Conversation], top: usize, local: bool) -> Result<()> {
-    use crate::semantic::cache::{
-        embed_chunks, model_cache_dir, read_embedding_cache, write_embedding_cache,
-    };
-    use crate::semantic::chunk::build_chunks;
-    use crate::semantic::embed::SemanticEmbedder;
+    use crate::semantic::cache::{model_cache_dir, write_embedding_cache};
     use crate::semantic::fastembed::FastembedEmbedder;
+    use crate::semantic::index::{SemanticIndexRequest, SemanticIndexState};
     use crate::semantic::output::format_hit;
-    use crate::semantic::rank::rank_chunks;
-    use crate::semantic::types::{ChunkConfig, MODEL_NAME};
+    use crate::semantic::types::MODEL_NAME;
 
     let selected = select_conversations(conversations, local)?;
     if selected.is_empty() {
@@ -18,35 +14,40 @@ pub fn run(query: &str, conversations: &[Conversation], top: usize, local: bool)
         return Ok(());
     }
 
-    let chunk_config = ChunkConfig::default();
-    let chunks = build_chunks(&selected, chunk_config);
-    if chunks.is_empty() {
+    let candidates = semantic_index_candidates(&selected);
+    let request = SemanticIndexRequest {
+        query,
+        candidates: &candidates,
+        prewarm: false,
+    };
+    let mut state = SemanticIndexState::new();
+    if !state.has_chunks(&request) {
+        state.clear_empty(&request);
         eprintln!("No visible dialogue text available for semantic search.");
         return Ok(());
     }
 
     let mut embedder = FastembedEmbedder::new(model_cache_dir())?;
-    let mut cache = read_embedding_cache(chunk_config);
-    let embedded_chunks = embed_chunks(&mut embedder, chunks, &mut cache)?;
-    write_embedding_cache(&cache);
+    let response =
+        state.refresh_or_prewarm(&request, &mut embedder, |_| {}, write_embedding_cache)?;
+    write_embedding_cache(&state.cache);
 
     eprintln!(
         "Semantic search: searching {} cached chunk(s) from {} recent conversation(s) with fastembed {MODEL_NAME}",
-        embedded_chunks.len(),
+        response.indexed_chunk_count,
         selected.len()
     );
 
-    let Some(query_embedding) = embedder.embed_query(query)? else {
+    if !response.query_embedding_returned {
         eprintln!("No query embedding returned.");
         return Ok(());
-    };
-    let hits = rank_chunks(query, &query_embedding, &embedded_chunks);
+    }
 
-    for (rank, hit) in hits.iter().take(top).enumerate() {
+    for (rank, hit) in response.hits.iter().take(top).enumerate() {
         eprintln!("{}", format_hit(rank + 1, hit, &selected));
     }
 
-    if hits.is_empty() {
+    if response.hits.is_empty() {
         eprintln!("No semantic matches found.");
     }
 
@@ -64,12 +65,10 @@ pub fn clear_cache() -> Result<()> {
 }
 
 pub fn generate_cache(conversations: &[Conversation], local: bool) -> Result<()> {
-    use crate::semantic::cache::{
-        embed_chunks_with_progress_and_save, model_cache_dir, read_embedding_cache,
-        write_embedding_cache,
-    };
+    use crate::semantic::cache::{model_cache_dir, write_embedding_cache};
     use crate::semantic::chunk::build_chunks;
     use crate::semantic::fastembed::FastembedEmbedder;
+    use crate::semantic::index::{SemanticIndexProgress, SemanticIndexRequest, SemanticIndexState};
     use crate::semantic::types::ChunkConfig;
 
     let selected = select_conversations(conversations, local)?;
@@ -78,34 +77,43 @@ pub fn generate_cache(conversations: &[Conversation], local: bool) -> Result<()>
         return Ok(());
     }
 
-    let chunk_config = ChunkConfig::default();
-    let chunks = build_chunks(&selected, chunk_config);
-    if chunks.is_empty() {
+    let chunk_count = build_chunks(&selected, ChunkConfig::default()).len();
+    if chunk_count == 0 {
         eprintln!("No visible dialogue text available for semantic cache generation.");
         return Ok(());
     }
 
-    let chunk_count = chunks.len();
-    let mut embedder = FastembedEmbedder::new(model_cache_dir())?;
-    let mut cache = read_embedding_cache(chunk_config);
+    let candidates = semantic_index_candidates(&selected);
+    let request = SemanticIndexRequest {
+        query: "",
+        candidates: &candidates,
+        prewarm: true,
+    };
+    let mut state = SemanticIndexState::new();
     eprintln!(
         "Semantic cache: checking {chunk_count} chunk(s) from {} recent conversation(s).",
         selected.len()
     );
-    let embedded_chunks = embed_chunks_with_progress_and_save(
+
+    let mut embedder = FastembedEmbedder::new(model_cache_dir())?;
+    let response = state.refresh_or_prewarm(
+        &request,
         &mut embedder,
-        chunks,
-        &mut cache,
-        |done, total| {
-            eprintln!("Semantic cache: embedded {done}/{total} changed chunk(s)");
+        |progress| {
+            if let SemanticIndexProgress::Embedding { completed, total } = progress
+                && total > 0
+                && completed > 0
+            {
+                eprintln!("Semantic cache: embedded {completed}/{total} changed chunk(s)");
+            }
         },
         write_embedding_cache,
     )?;
-    write_embedding_cache(&cache);
+    write_embedding_cache(&state.cache);
 
     eprintln!(
         "Semantic cache: cached {} chunk(s) from {} recent conversation(s).",
-        embedded_chunks.len().min(chunk_count),
+        response.indexed_chunk_count.min(chunk_count),
         selected.len()
     );
 
@@ -275,6 +283,21 @@ fn truncate_debug(text: &str, max_chars: usize) -> String {
     out
 }
 
+fn semantic_index_candidates(
+    selected: &[&Conversation],
+) -> Vec<crate::semantic::index::SemanticIndexCandidate> {
+    selected
+        .iter()
+        .enumerate()
+        .map(
+            |(index, conversation)| crate::semantic::index::SemanticIndexCandidate {
+                index,
+                conversation: (*conversation).clone(),
+            },
+        )
+        .collect()
+}
+
 fn select_conversations(conversations: &[Conversation], local: bool) -> Result<Vec<&Conversation>> {
     let current_project_dir_name = if local {
         let dir = std::env::current_dir().map_err(AppError::Io)?;
@@ -400,6 +423,36 @@ mod tests {
         assert_eq!(
             no_conversations_message(false),
             "No conversations available for semantic search."
+        );
+    }
+
+    #[test]
+    fn semantic_index_candidates_use_selected_slice_indices() {
+        let conversations = vec![
+            test_conversation(
+                "/projects/project-a/session-1.jsonl",
+                "one",
+                vec!["one".to_string()],
+            ),
+            test_conversation(
+                "/projects/project-a/session-2.jsonl",
+                "two",
+                vec!["two".to_string()],
+            ),
+        ];
+        let selected = vec![&conversations[1], &conversations[0]];
+
+        let candidates = semantic_index_candidates(&selected);
+
+        assert_eq!(candidates[0].index, 0);
+        assert_eq!(
+            candidates[0].conversation.custom_title.as_deref(),
+            Some("two")
+        );
+        assert_eq!(candidates[1].index, 1);
+        assert_eq!(
+            candidates[1].conversation.custom_title.as_deref(),
+            Some("one")
         );
     }
 

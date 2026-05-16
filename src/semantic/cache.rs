@@ -8,23 +8,6 @@ use std::collections::{HashMap, HashSet};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
-pub fn embed_chunks(
-    embedder: &mut dyn SemanticEmbedder,
-    chunks: Vec<SemanticChunk>,
-    cache: &mut EmbeddingCache,
-) -> Result<Vec<EmbeddedChunk>> {
-    embed_chunks_with_progress(embedder, chunks, cache, |_, _| {})
-}
-
-pub fn embed_chunks_with_progress(
-    embedder: &mut dyn SemanticEmbedder,
-    chunks: Vec<SemanticChunk>,
-    cache: &mut EmbeddingCache,
-    progress: impl FnMut(usize, usize),
-) -> Result<Vec<EmbeddedChunk>> {
-    embed_chunks_with_progress_and_save(embedder, chunks, cache, progress, |_| {})
-}
-
 pub fn embed_chunks_with_progress_and_save(
     embedder: &mut dyn SemanticEmbedder,
     chunks: Vec<SemanticChunk>,
@@ -323,10 +306,12 @@ mod tests {
             .insert("session:0".to_string(), cached("cached text"));
         let mut embedder = FakeEmbedder { calls: 0 };
 
-        let embedded = embed_chunks(
+        let embedded = embed_chunks_with_progress_and_save(
             &mut embedder,
             vec![chunk("session:0", "cached text")],
             &mut cache,
+            |_, _| {},
+            |_| {},
         )
         .expect("embedding succeeds");
 
@@ -341,10 +326,12 @@ mod tests {
         let mut cache = empty_embedding_cache(config);
         let mut embedder = FakeEmbedder { calls: 0 };
 
-        let embedded = embed_chunks(
+        let embedded = embed_chunks_with_progress_and_save(
             &mut embedder,
             vec![chunk("session:0", "new text")],
             &mut cache,
+            |_, _| {},
+            |_| {},
         )
         .expect("embedding succeeds");
 
@@ -363,10 +350,12 @@ mod tests {
             .insert("session:0".to_string(), cached("old text"));
         let mut embedder = FakeEmbedder { calls: 0 };
 
-        let embedded = embed_chunks(
+        let embedded = embed_chunks_with_progress_and_save(
             &mut embedder,
             vec![chunk("session:0", "new text")],
             &mut cache,
+            |_, _| {},
+            |_| {},
         )
         .expect("embedding succeeds");
 
@@ -388,7 +377,14 @@ mod tests {
         current.metadata = None;
         let mut embedder = FakeEmbedder { calls: 0 };
 
-        embed_chunks(&mut embedder, vec![current], &mut cache).expect("embedding succeeds");
+        embed_chunks_with_progress_and_save(
+            &mut embedder,
+            vec![current],
+            &mut cache,
+            |_, _| {},
+            |_| {},
+        )
+        .expect("embedding succeeds");
 
         let restored = cache.entries.get("session:0").expect("cache entry");
         assert_eq!(embedder.calls, 1);
@@ -411,10 +407,12 @@ mod tests {
             .insert("other-session:0".to_string(), cached("unselected"));
         let mut embedder = FakeEmbedder { calls: 0 };
 
-        embed_chunks(
+        embed_chunks_with_progress_and_save(
             &mut embedder,
             vec![chunk("session:0", "current")],
             &mut cache,
+            |_, _| {},
+            |_| {},
         )
         .expect("embedding succeeds");
 

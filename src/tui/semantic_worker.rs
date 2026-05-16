@@ -277,6 +277,8 @@ mod tests {
                         },
                     },
                 )],
+                indexed_chunk_count: 1,
+                query_embedding_returned: true,
                 progress: SemanticIndexProgress::Complete,
                 prewarm: false,
             },

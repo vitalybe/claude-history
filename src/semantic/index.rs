@@ -25,6 +25,8 @@ pub struct SemanticIndexRequest<'a> {
 
 pub struct SemanticIndexResponse {
     pub hits: Vec<SemanticHit>,
+    pub indexed_chunk_count: usize,
+    pub query_embedding_returned: bool,
     pub progress: SemanticIndexProgress,
     pub prewarm: bool,
 }
@@ -101,6 +103,8 @@ impl SemanticIndexState {
                 self.embedded_chunks.clear();
                 return Ok(SemanticIndexResponse {
                     hits: Vec::new(),
+                    indexed_chunk_count: 0,
+                    query_embedding_returned: true,
                     progress: SemanticIndexProgress::EmptyCorpus,
                     prewarm: request.prewarm,
                 });
@@ -128,10 +132,13 @@ impl SemanticIndexState {
         } else {
             progress(SemanticIndexProgress::CacheReady);
         }
+        save_cache(&self.cache);
 
         if self.embedded_chunks.is_empty() || request.prewarm {
             return Ok(SemanticIndexResponse {
                 hits: Vec::new(),
+                indexed_chunk_count: self.embedded_chunks.len(),
+                query_embedding_returned: true,
                 progress: if self.embedded_chunks.is_empty() {
                     SemanticIndexProgress::EmptyCorpus
                 } else {
@@ -145,6 +152,8 @@ impl SemanticIndexState {
         let Some(query_embedding) = embedder.embed_query(request.query)? else {
             return Ok(SemanticIndexResponse {
                 hits: Vec::new(),
+                indexed_chunk_count: self.embedded_chunks.len(),
+                query_embedding_returned: false,
                 progress: SemanticIndexProgress::EmptyCorpus,
                 prewarm: request.prewarm,
             });
@@ -159,6 +168,8 @@ impl SemanticIndexState {
 
         Ok(SemanticIndexResponse {
             hits,
+            indexed_chunk_count: self.embedded_chunks.len(),
+            query_embedding_returned: true,
             progress,
             prewarm: request.prewarm,
         })
@@ -536,7 +547,7 @@ mod tests {
         assert_eq!(response.progress, SemanticIndexProgress::Complete);
         assert_eq!(embedder.passage_calls, 1);
         assert_eq!(embedder.query_calls, 1);
-        assert_eq!(save_calls, 1);
+        assert_eq!(save_calls, 2);
         assert_eq!(
             cache_miss_count(
                 &semantic_chunks(&request, ChunkConfig::default()),
@@ -630,6 +641,7 @@ mod tests {
             .expect("prewarm succeeds");
 
         assert!(response.hits.is_empty());
+        assert_eq!(response.indexed_chunk_count, 1);
         assert_eq!(response.progress, SemanticIndexProgress::CacheReady);
         assert_eq!(embedder.passage_calls, 1);
         assert_eq!(embedder.query_calls, 0);
@@ -639,6 +651,38 @@ mod tests {
                 &state.cache
             ),
             0
+        );
+    }
+
+    #[test]
+    fn reports_indexed_chunk_count() {
+        let conversations = vec![
+            conversation("/projects/project-a/session-a.jsonl", vec!["visible alpha"]),
+            conversation("/projects/project-a/session-b.jsonl", vec!["visible beta"]),
+        ];
+        let (query, candidates) = request("beta", conversations, vec![1, 0]);
+        let request = index_request(&query, &candidates);
+        let mut cache = empty_embedding_cache(ChunkConfig::default());
+        cache_request_passages(&mut cache, &request);
+        let mut state = SemanticIndexState::with_cache(ChunkConfig::default(), cache);
+        let mut embedder = FakeEmbedder {
+            passage_calls: 0,
+            query_calls: 0,
+            embedded_passages: Vec::new(),
+        };
+
+        let response = state
+            .refresh_or_prewarm(&request, &mut embedder, |_| {}, |_| {})
+            .expect("rank succeeds");
+
+        assert_eq!(response.indexed_chunk_count, 2);
+        assert_eq!(
+            response
+                .hits
+                .iter()
+                .map(|hit| hit.conversation_index)
+                .collect::<Vec<_>>(),
+            vec![1, 0]
         );
     }
 
