@@ -273,10 +273,7 @@ fn semantic_rationale_label(metadata: &SemanticResultMetadata) -> &'static str {
 }
 
 fn semantic_row_metadata(metadata: &SemanticResultMetadata) -> String {
-    format!(
-        "{} · h {:.2}",
-        metadata.explanation.quality_label, metadata.score_breakdown.hybrid
-    )
+    format!("{:.2}", metadata.score_breakdown.hybrid)
 }
 
 fn render_semantic_status_bar(frame: &mut Frame, metadata: &SemanticResultMetadata, area: Rect) {
@@ -1450,7 +1447,7 @@ fn render_list(frame: &mut Frame, app: &App, area: Rect) {
                 });
 
             let semantic_metadata = app.semantic_result_metadata(conv_idx);
-            let semantic_meta_part = semantic_mode
+            let semantic_meta_part = (semantic_mode && width >= 100)
                 .then(|| semantic_metadata.map(semantic_row_metadata))
                 .flatten();
             let semantic_meta_len = semantic_meta_part
@@ -2799,7 +2796,7 @@ mod tests {
     }
 
     #[test]
-    fn semantic_list_shows_quality_and_score_metadata() {
+    fn semantic_list_shows_compact_score_metadata_on_wide_rows() {
         let mut app = semantic_app();
         app.set_query_for_test("sentinel");
         complete_semantic_search(
@@ -2822,8 +2819,38 @@ mod tests {
             .unwrap();
 
         let contents = terminal_contents(&terminal);
-        assert!(contents.contains("strong"), "{contents:?}");
-        assert!(contents.contains("h 1.23"), "{contents:?}");
+        assert!(contents.contains("1.23"), "{contents:?}");
+        assert!(!contents.contains("strong"), "{contents:?}");
+        assert!(!contents.contains("good"), "{contents:?}");
+    }
+
+    #[test]
+    fn semantic_list_hides_score_metadata_on_narrow_rows() {
+        let mut app = semantic_app();
+        app.set_query_for_test("sentinel");
+        complete_semantic_search(
+            &mut app,
+            test_semantic_metadata_with_scores(
+                "semantic evidence only",
+                SemanticScoreBreakdown {
+                    hybrid: 1.23,
+                    semantic: 1.0,
+                    lexical: 0.23,
+                },
+                SemanticRationaleKind::LexicalBoosted,
+            ),
+        );
+        let backend = TestBackend::new(80, 8);
+        let mut terminal = Terminal::new(backend).unwrap();
+
+        terminal
+            .draw(|frame| render_list(frame, &app, frame.area()))
+            .unwrap();
+
+        let contents = terminal_contents(&terminal);
+        assert!(!contents.contains("1.23"), "{contents:?}");
+        assert!(!contents.contains("strong"), "{contents:?}");
+        assert!(!contents.contains("good"), "{contents:?}");
     }
 
     #[test]
