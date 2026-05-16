@@ -653,7 +653,11 @@ impl App {
 
         // Apply filter (handles query, exclusions, and workspace filter)
         self.update_filter();
-        self.prewarm_semantic_cache();
+        if self.list_search_mode == ListSearchMode::Semantic && !self.query.trim().is_empty() {
+            self.dispatch_search();
+        } else {
+            self.prewarm_semantic_cache();
+        }
     }
 
     /// Consume the app and return its conversations
@@ -3902,6 +3906,41 @@ mod tests {
         );
         assert_eq!(request.1, "n");
         assert!(!request.4);
+    }
+
+    #[test]
+    fn finish_loading_dispatches_buffered_semantic_query() {
+        let mut app = App::new_loading_with_options(
+            ToolDisplayMode::Truncated,
+            false,
+            KeyBindings::default(),
+            false,
+            None,
+            vec![],
+            TuiSearchOptions {
+                semantic_enabled: true,
+            },
+        );
+        app.append_conversations(vec![conversation(
+            Some("Visible"),
+            "-tmp-visible",
+            "22222222-2222-4222-8222-222222222222",
+            "needle",
+        )]);
+        let (request_tx, request_rx) = mpsc::channel();
+        let (_response_tx, response_rx) = mpsc::channel();
+        app.semantic_search.worker_tx = Some(request_tx);
+        app.semantic_search.worker_rx = Some(response_rx);
+        app.query = "needle".to_string();
+        app.cursor_pos = app.query.chars().count();
+
+        app.finish_loading();
+
+        let commands = drain_semantic_commands(&request_rx);
+        let request = last_semantic_search(&commands).expect("semantic search");
+        assert_eq!(request.1, "needle");
+        assert!(!request.4);
+        assert_eq!(app.semantic_search.pending_generation, Some(request.0));
     }
 
     #[test]
