@@ -1,7 +1,7 @@
 use crate::error::Result;
 use crate::history::Conversation;
 use crate::semantic::cache::{
-    cache_entry_matches, embed_chunks_with_progress_and_save, read_embedding_cache,
+    cache_miss_count, embed_chunks_with_progress_and_save, model_cache_dir, read_embedding_cache,
     write_embedding_cache,
 };
 use crate::semantic::chunk::build_chunks_with_indices;
@@ -298,21 +298,6 @@ fn rank_or_prewarm_semantic_request(
     })
 }
 
-fn cache_miss_count(
-    chunks: &[crate::semantic::types::SemanticChunk],
-    cache: &EmbeddingCache,
-) -> usize {
-    chunks
-        .iter()
-        .filter(|chunk| {
-            !cache
-                .entries
-                .get(&chunk.key)
-                .is_some_and(|entry| cache_entry_matches(entry, &chunk.text))
-        })
-        .count()
-}
-
 fn semantic_index_has_chunks(
     request: &SemanticSearchRequest,
     signature: &Option<SemanticIndexSignature>,
@@ -357,15 +342,6 @@ fn semantic_index_signature(
         chunk_config,
         conversations,
     }
-}
-
-fn model_cache_dir() -> PathBuf {
-    home::home_dir()
-        .unwrap_or_else(|| PathBuf::from("."))
-        .join(".cache")
-        .join("claude-history")
-        .join("semantic")
-        .join("fastembed")
 }
 
 #[cfg(test)]

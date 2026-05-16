@@ -2,7 +2,9 @@ use crate::error::{AppError, Result};
 use crate::history::Conversation;
 
 pub fn run(query: &str, conversations: &[Conversation], top: usize, local: bool) -> Result<()> {
-    use crate::semantic::cache::{embed_chunks, read_embedding_cache, write_embedding_cache};
+    use crate::semantic::cache::{
+        embed_chunks, model_cache_dir, read_embedding_cache, write_embedding_cache,
+    };
     use crate::semantic::chunk::build_chunks;
     use crate::semantic::embed::SemanticEmbedder;
     use crate::semantic::fastembed::FastembedEmbedder;
@@ -63,7 +65,8 @@ pub fn clear_cache() -> Result<()> {
 
 pub fn generate_cache(conversations: &[Conversation], local: bool) -> Result<()> {
     use crate::semantic::cache::{
-        embed_chunks_with_progress_and_save, read_embedding_cache, write_embedding_cache,
+        embed_chunks_with_progress_and_save, model_cache_dir, read_embedding_cache,
+        write_embedding_cache,
     };
     use crate::semantic::chunk::build_chunks;
     use crate::semantic::fastembed::FastembedEmbedder;
@@ -111,7 +114,8 @@ pub fn generate_cache(conversations: &[Conversation], local: bool) -> Result<()>
 
 pub fn debug_search(query: &str, conversations: &[Conversation], local: bool) -> Result<()> {
     use crate::semantic::cache::{
-        cache_entry_matches, cached_chunks, embedding_cache_file_path, read_embedding_cache,
+        cache_entry_matches, cache_miss_count, cached_chunks, embedding_cache_file_path,
+        model_cache_dir, read_embedding_cache,
     };
     use crate::semantic::chunk::build_chunks;
     use crate::semantic::embed::SemanticEmbedder;
@@ -208,15 +212,7 @@ pub fn debug_search(query: &str, conversations: &[Conversation], local: bool) ->
     }
 
     let cache = read_embedding_cache(chunk_config);
-    let missing = chunks
-        .iter()
-        .filter(|chunk| {
-            cache
-                .entries
-                .get(&chunk.key)
-                .is_none_or(|entry| !cache_entry_matches(entry, &chunk.text))
-        })
-        .count();
+    let missing = cache_miss_count(&chunks, &cache);
     let cached_count = chunks.len().saturating_sub(missing);
     eprintln!(
         "Semantic debug: cache entries={}, hits={}, misses={}",
@@ -313,15 +309,6 @@ fn no_conversations_message(local: bool) -> &'static str {
     } else {
         "No conversations available for semantic search."
     }
-}
-
-fn model_cache_dir() -> std::path::PathBuf {
-    home::home_dir()
-        .unwrap_or_else(|| std::path::PathBuf::from("."))
-        .join(".cache")
-        .join("claude-history")
-        .join("semantic")
-        .join("fastembed")
 }
 
 #[cfg(test)]

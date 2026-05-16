@@ -1,8 +1,8 @@
 use crate::error::Result;
 use crate::semantic::embed::SemanticEmbedder;
 use crate::semantic::types::{
-    CACHE_SCHEMA_VERSION, CachedChunk, ChunkConfig, EmbeddedChunk, EmbeddingCache, MODEL_NAME,
-    SemanticChunk,
+    CACHE_SCHEMA_VERSION, CachedChunk, ChunkConfig, DEFAULT_EMBEDDING_BATCH_SIZE, EmbeddedChunk,
+    EmbeddingCache, MODEL_NAME, SemanticChunk,
 };
 use std::collections::{HashMap, HashSet};
 use std::io::Write;
@@ -58,7 +58,7 @@ pub fn embed_chunks_with_progress_and_save(
 
     let total_misses = misses.len();
     let mut completed = 0;
-    for batch in misses.chunks(32) {
+    for batch in misses.chunks(DEFAULT_EMBEDDING_BATCH_SIZE) {
         let texts = batch
             .iter()
             .map(|chunk| chunk.text.clone())
@@ -122,6 +122,18 @@ pub fn cached_chunks(
     (embedded, misses)
 }
 
+pub fn cache_miss_count(chunks: &[SemanticChunk], cache: &EmbeddingCache) -> usize {
+    chunks
+        .iter()
+        .filter(|chunk| {
+            !cache
+                .entries
+                .get(&chunk.key)
+                .is_some_and(|entry| cache_entry_matches(entry, &chunk.text))
+        })
+        .count()
+}
+
 pub fn cache_entry_matches(entry: &CachedChunk, text: &str) -> bool {
     entry.text == text
 }
@@ -175,6 +187,10 @@ pub fn write_embedding_cache(cache: &EmbeddingCache) {
 
 pub fn embedding_cache_file_path() -> Option<PathBuf> {
     embedding_cache_path()
+}
+
+pub fn model_cache_dir() -> PathBuf {
+    semantic_cache_dir_with_fallback().join("fastembed")
 }
 
 pub fn clear_semantic_cache_files() -> std::io::Result<bool> {
@@ -231,7 +247,15 @@ fn embedding_cache_path() -> Option<PathBuf> {
 }
 
 fn semantic_cache_dir() -> Option<PathBuf> {
-    home::home_dir().map(|home| home.join(".cache").join("claude-history").join("semantic"))
+    home::home_dir().map(semantic_cache_dir_in)
+}
+
+fn semantic_cache_dir_with_fallback() -> PathBuf {
+    semantic_cache_dir_in(home::home_dir().unwrap_or_else(|| PathBuf::from(".")))
+}
+
+fn semantic_cache_dir_in(home: PathBuf) -> PathBuf {
+    home.join(".cache").join("claude-history").join("semantic")
 }
 
 #[cfg(test)]
@@ -475,5 +499,42 @@ mod tests {
             restored.entries.get("session:0").unwrap(),
             "cached text"
         ));
+    }
+
+    #[test]
+    fn cache_miss_count_matches_cached_chunks() {
+        let config = ChunkConfig::default();
+        let mut cache = empty_embedding_cache(config);
+        cache
+            .entries
+            .insert("session:0".to_string(), cached("cached text"));
+        cache
+            .entries
+            .insert("session:1".to_string(), cached("old text"));
+        let chunks = vec![
+            chunk("session:0", "cached text"),
+            chunk("session:1", "new text"),
+            chunk("session:2", "uncached text"),
+        ];
+
+        let (_, cached_chunk_misses) = cached_chunks(chunks.clone(), &cache);
+
+        assert_eq!(cache_miss_count(&chunks, &cache), cached_chunk_misses);
+        assert_eq!(cache_miss_count(&chunks, &cache), 2);
+    }
+
+    #[test]
+    fn semantic_cache_paths_preserve_existing_locations() {
+        let home = PathBuf::from("/home/example");
+        let cache_dir = semantic_cache_dir_in(home);
+
+        assert_eq!(
+            cache_dir.join("embeddings-v1.bin"),
+            PathBuf::from("/home/example/.cache/claude-history/semantic/embeddings-v1.bin")
+        );
+        assert_eq!(
+            cache_dir.join("fastembed"),
+            PathBuf::from("/home/example/.cache/claude-history/semantic/fastembed")
+        );
     }
 }
