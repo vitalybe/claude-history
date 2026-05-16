@@ -1,13 +1,7 @@
 use crate::error::{AppError, Result};
 use crate::history::Conversation;
 
-pub fn run(
-    query: &str,
-    conversations: &[Conversation],
-    top: usize,
-    limit: usize,
-    local: bool,
-) -> Result<()> {
+pub fn run(query: &str, conversations: &[Conversation], top: usize, local: bool) -> Result<()> {
     use crate::semantic::cache::{embed_chunks, read_embedding_cache, write_embedding_cache};
     use crate::semantic::chunk::build_chunks;
     use crate::semantic::embed::SemanticEmbedder;
@@ -16,7 +10,7 @@ pub fn run(
     use crate::semantic::rank::rank_chunks;
     use crate::semantic::types::{ChunkConfig, MODEL_NAME};
 
-    let selected = select_conversations(conversations, limit, local)?;
+    let selected = select_conversations(conversations, local)?;
     if selected.is_empty() {
         eprintln!("{}", no_conversations_message(local));
         return Ok(());
@@ -67,7 +61,7 @@ pub fn clear_cache() -> Result<()> {
     Ok(())
 }
 
-pub fn generate_cache(conversations: &[Conversation], limit: usize, local: bool) -> Result<()> {
+pub fn generate_cache(conversations: &[Conversation], local: bool) -> Result<()> {
     use crate::semantic::cache::{
         embed_chunks_with_progress_and_save, read_embedding_cache, write_embedding_cache,
     };
@@ -75,7 +69,7 @@ pub fn generate_cache(conversations: &[Conversation], limit: usize, local: bool)
     use crate::semantic::fastembed::FastembedEmbedder;
     use crate::semantic::types::ChunkConfig;
 
-    let selected = select_conversations(conversations, limit, local)?;
+    let selected = select_conversations(conversations, local)?;
     if selected.is_empty() {
         eprintln!("{}", no_conversations_message(local));
         return Ok(());
@@ -115,12 +109,7 @@ pub fn generate_cache(conversations: &[Conversation], limit: usize, local: bool)
     Ok(())
 }
 
-pub fn debug_search(
-    query: &str,
-    conversations: &[Conversation],
-    limit: usize,
-    local: bool,
-) -> Result<()> {
+pub fn debug_search(query: &str, conversations: &[Conversation], local: bool) -> Result<()> {
     use crate::semantic::cache::{
         cache_entry_matches, cached_chunks, embedding_cache_file_path, read_embedding_cache,
     };
@@ -132,7 +121,7 @@ pub fn debug_search(
     use crate::semantic::types::{ChunkConfig, MODEL_NAME};
     use std::collections::HashMap;
 
-    let selected = select_conversations(conversations, limit, local)?;
+    let selected = select_conversations(conversations, local)?;
     eprintln!(
         "Semantic debug: selected {} conversation(s).",
         selected.len()
@@ -290,11 +279,7 @@ fn truncate_debug(text: &str, max_chars: usize) -> String {
     out
 }
 
-fn select_conversations(
-    conversations: &[Conversation],
-    limit: usize,
-    local: bool,
-) -> Result<Vec<&Conversation>> {
+fn select_conversations(conversations: &[Conversation], local: bool) -> Result<Vec<&Conversation>> {
     let current_project_dir_name = if local {
         let dir = std::env::current_dir().map_err(AppError::Io)?;
         Some(crate::history::convert_path_to_project_dir_name(&dir))
@@ -318,9 +303,6 @@ fn select_conversations(
         }
 
         selected.push(conversation);
-        if selected.len() >= limit {
-            break;
-        }
     }
     Ok(selected)
 }
@@ -338,7 +320,7 @@ fn model_cache_dir() -> std::path::PathBuf {
         .unwrap_or_else(|| std::path::PathBuf::from("."))
         .join(".cache")
         .join("claude-history")
-        .join("semantic-poc")
+        .join("semantic")
         .join("fastembed")
 }
 
@@ -373,7 +355,7 @@ mod tests {
     }
 
     #[test]
-    fn selection_applies_limit_before_chunking() {
+    fn selection_includes_all_conversations() {
         let conversations = vec![
             test_conversation(
                 "/projects/project-a/session-1.jsonl",
@@ -387,11 +369,11 @@ mod tests {
             ),
         ];
 
-        let selected =
-            select_conversations(&conversations, 1, false).expect("select conversations");
+        let selected = select_conversations(&conversations, false).expect("select conversations");
 
-        assert_eq!(selected.len(), 1);
+        assert_eq!(selected.len(), 2);
         assert_eq!(selected[0].custom_title.as_deref(), Some("one"));
+        assert_eq!(selected[1].custom_title.as_deref(), Some("two"));
     }
 
     #[test]
@@ -415,8 +397,7 @@ mod tests {
             ),
         ];
 
-        let selected =
-            select_conversations(&conversations, 10, true).expect("select conversations");
+        let selected = select_conversations(&conversations, true).expect("select conversations");
         std::env::set_current_dir(cwd).expect("restore cwd");
 
         assert_eq!(selected.len(), 1);
@@ -437,6 +418,6 @@ mod tests {
 
     #[test]
     fn empty_corpus_returns_before_model_initialization() {
-        run("cache", &[], 1, 1, false).expect("empty corpus returns");
+        run("cache", &[], 1, false).expect("empty corpus returns");
     }
 }

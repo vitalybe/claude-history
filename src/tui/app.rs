@@ -125,23 +125,9 @@ pub enum ViewSearchMode {
     Active,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct TuiSearchOptions {
     pub semantic_enabled: bool,
-    pub semantic_limit: usize,
-}
-
-impl TuiSearchOptions {
-    pub const DEFAULT_SEMANTIC_LIMIT: usize = 200;
-}
-
-impl Default for TuiSearchOptions {
-    fn default() -> Self {
-        Self {
-            semantic_enabled: false,
-            semantic_limit: Self::DEFAULT_SEMANTIC_LIMIT,
-        }
-    }
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -363,8 +349,6 @@ pub struct App {
     search_in_flight: bool,
     /// Current list search mode
     list_search_mode: ListSearchMode,
-    /// Recent conversation limit for semantic TUI search
-    semantic_limit: usize,
     /// Semantic TUI state
     semantic_search: SemanticSearchState,
 }
@@ -445,7 +429,6 @@ impl App {
             } else {
                 ListSearchMode::Lexical
             },
-            semantic_limit: search_options.semantic_limit,
             semantic_search: SemanticSearchState {
                 available: search_options.semantic_enabled,
                 ..Default::default()
@@ -497,7 +480,6 @@ impl App {
             } else {
                 ListSearchMode::Lexical
             },
-            semantic_limit: search_options.semantic_limit,
             semantic_search: SemanticSearchState {
                 available: search_options.semantic_enabled,
                 ..Default::default()
@@ -575,7 +557,6 @@ impl App {
             search_generation: 0,
             search_in_flight: false,
             list_search_mode: ListSearchMode::Lexical,
-            semantic_limit: TuiSearchOptions::DEFAULT_SEMANTIC_LIMIT,
             semantic_search: SemanticSearchState::default(),
         }
     }
@@ -712,7 +693,6 @@ impl App {
         Arc::new(
             self.filter_indices(0..self.conversations.len())
                 .into_iter()
-                .take(self.semantic_limit)
                 .map(|index| SemanticSearchCandidate {
                     index,
                     conversation: self.conversations[index].clone(),
@@ -3807,7 +3787,7 @@ mod tests {
     }
 
     #[test]
-    fn semantic_candidates_apply_scope_before_limit() {
+    fn semantic_candidates_apply_scope() {
         let mut app = app_with_options(
             vec![
                 conversation(
@@ -3832,7 +3812,6 @@ mod tests {
             vec!["Hidden"],
             TuiSearchOptions {
                 semantic_enabled: true,
-                semantic_limit: 1,
             },
         );
         app.current_project_dir_name = Some("-tmp-visible".to_string());

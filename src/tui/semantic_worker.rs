@@ -364,7 +364,7 @@ fn model_cache_dir() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from("."))
         .join(".cache")
         .join("claude-history")
-        .join("semantic-poc")
+        .join("semantic")
         .join("fastembed")
 }
 

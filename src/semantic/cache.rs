@@ -231,11 +231,7 @@ fn embedding_cache_path() -> Option<PathBuf> {
 }
 
 fn semantic_cache_dir() -> Option<PathBuf> {
-    home::home_dir().map(|home| {
-        home.join(".cache")
-            .join("claude-history")
-            .join("semantic-poc")
-    })
+    home::home_dir().map(|home| home.join(".cache").join("claude-history").join("semantic"))
 }
 
 #[cfg(test)]

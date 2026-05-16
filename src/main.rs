@@ -9,7 +9,7 @@ mod history;
 mod markdown;
 mod pager;
 mod semantic;
-mod semantic_poc;
+mod semantic_cli;
 mod syntax;
 mod text_match;
 mod tool_format;
@@ -247,30 +247,24 @@ fn run() -> Result<()> {
     if let Some(ref query) = args.debug_semantic_search {
         let mut conversations = history::load_all_conversations(show_last, args.debug)?;
         conversations.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
-        return semantic_poc::debug_search(query, &conversations, args.semantic_limit, args.local);
+        return semantic_cli::debug_search(query, &conversations, args.local);
     }
 
     if args.generate_semantic_cache {
         let mut conversations = history::load_all_conversations(show_last, args.debug)?;
         conversations.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
-        return semantic_poc::generate_cache(&conversations, args.semantic_limit, args.local);
+        return semantic_cli::generate_cache(&conversations, args.local);
     }
 
     if args.clear_semantic_cache {
-        return semantic_poc::clear_cache();
+        return semantic_cli::clear_cache();
     }
 
     // Handle --semantic-search flag
     if let Some(ref query) = args.semantic_search {
         let mut conversations = history::load_all_conversations(show_last, args.debug)?;
         conversations.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
-        return semantic_poc::run(
-            query,
-            &conversations,
-            args.semantic_top,
-            args.semantic_limit,
-            args.local,
-        );
+        return semantic_cli::run(query, &conversations, args.semantic_top, args.local);
     }
 
     // Handle --render flag: render a JSONL file in ledger format and exit
@@ -341,7 +335,6 @@ fn run() -> Result<()> {
         exclude_projects,
         tui::TuiSearchOptions {
             semantic_enabled: args.semantic,
-            semantic_limit: args.semantic_limit,
         },
     )? {
         (tui::Action::Select(path), convs) => (convs, path),

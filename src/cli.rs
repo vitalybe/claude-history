@@ -202,15 +202,6 @@ pub struct Args {
     )]
     pub semantic_top: usize,
 
-    /// Number of recent conversations to include in semantic search
-    #[arg(
-        long = "semantic-limit",
-        default_value_t = 200,
-        value_parser = non_zero_usize,
-        hide = true
-    )]
-    pub semantic_limit: usize,
-
     /// Use semantic search mode inside the TUI
     #[arg(long = "semantic", hide = true)]
     pub semantic: bool,
@@ -288,20 +279,6 @@ mod tests {
     }
 
     #[test]
-    fn semantic_limit_must_be_positive() {
-        let err = Args::try_parse_from([
-            "claude-history",
-            "--semantic-search",
-            "cache",
-            "--semantic-limit",
-            "0",
-        ])
-        .expect_err("zero limit should fail");
-
-        assert!(err.to_string().contains("value must be greater than zero"));
-    }
-
-    #[test]
     fn semantic_help_text_is_polished_when_available() {
         let help = Args::command().render_long_help().to_string();
 
@@ -315,7 +292,6 @@ mod tests {
 
         assert!(!help.contains("--semantic-search"));
         assert!(!help.contains("--semantic-top"));
-        assert!(!help.contains("--semantic-limit"));
         assert!(!help.contains("--semantic"));
         assert!(!help.contains("--generate-semantic-cache"));
         assert!(!help.contains("--clear-semantic-cache"));
