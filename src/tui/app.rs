@@ -305,6 +305,8 @@ pub struct App {
     conversations: Vec<Conversation>,
     /// Shared search data snapshot for background workers
     conversations_snapshot: Arc<Vec<Conversation>>,
+    /// Shared semantic conversation snapshot for background workers
+    semantic_conversations_snapshot: Arc<Vec<Arc<Conversation>>>,
     /// Precomputed search data
     searchable: Vec<SearchableConversation>,
     /// Indices into conversations, sorted by current score
@@ -394,14 +396,24 @@ impl App {
         let selected = if filtered.is_empty() { None } else { Some(0) };
         let (search_tx, search_rx) = spawn_search_worker();
 
+        let conversations_snapshot = Arc::new(conversations.clone());
+        let semantic_conversations_snapshot = Arc::new(
+            conversations
+                .iter()
+                .cloned()
+                .map(Arc::new)
+                .collect::<Vec<_>>(),
+        );
+
         // Send initial data to the worker
         let _ = search_tx.send(SearchCommand::UpdateData {
-            conversations: Arc::new(conversations.clone()),
+            conversations: conversations_snapshot.clone(),
             searchable: Arc::new(searchable.clone()),
         });
 
         Self {
-            conversations_snapshot: Arc::new(conversations.clone()),
+            conversations_snapshot,
+            semantic_conversations_snapshot,
             conversations,
             searchable,
             filtered,
@@ -452,6 +464,7 @@ impl App {
         Self {
             conversations: Vec::new(),
             conversations_snapshot: Arc::new(Vec::new()),
+            semantic_conversations_snapshot: Arc::new(Vec::new()),
             searchable: Vec::new(),
             filtered: Vec::new(),
             selected: None,
@@ -513,6 +526,13 @@ impl App {
 
         Self {
             conversations_snapshot: Arc::new(conversations.clone()),
+            semantic_conversations_snapshot: Arc::new(
+                conversations
+                    .iter()
+                    .cloned()
+                    .map(Arc::new)
+                    .collect::<Vec<_>>(),
+            ),
             conversations,
             searchable: Vec::new(),
             filtered,
@@ -568,6 +588,7 @@ impl App {
     pub fn append_conversations(&mut self, new_convs: Vec<Conversation>) {
         let start_idx = self.conversations.len();
         self.conversations.extend(new_convs);
+        self.rebuild_semantic_conversations_snapshot();
         let end_idx = self.conversations.len();
 
         let new_filtered = self.filter_indices(start_idx..end_idx);
@@ -596,6 +617,7 @@ impl App {
         }
 
         self.conversations_snapshot = Arc::new(self.conversations.clone());
+        self.rebuild_semantic_conversations_snapshot();
 
         // Now precompute search text (only once, at the end)
         self.searchable = search::precompute_search_text(&self.conversations);
@@ -687,13 +709,23 @@ impl App {
         }
     }
 
+    fn rebuild_semantic_conversations_snapshot(&mut self) {
+        self.semantic_conversations_snapshot = Arc::new(
+            self.conversations
+                .iter()
+                .cloned()
+                .map(Arc::new)
+                .collect::<Vec<_>>(),
+        );
+    }
+
     fn semantic_candidates(&self) -> Arc<Vec<SemanticSearchCandidate>> {
         Arc::new(
             self.filter_indices(0..self.conversations.len())
                 .into_iter()
                 .map(|index| SemanticSearchCandidate {
                     index,
-                    conversation: self.conversations[index].clone(),
+                    conversation: self.semantic_conversations_snapshot[index].clone(),
                 })
                 .collect(),
         )
@@ -924,6 +956,7 @@ impl App {
         self.searchable = search::precompute_search_text(&self.conversations);
 
         self.conversations_snapshot = Arc::new(self.conversations.clone());
+        self.rebuild_semantic_conversations_snapshot();
 
         // Update the worker's data snapshot
         let _ = self.search_tx.send(SearchCommand::UpdateData {
@@ -1020,6 +1053,7 @@ impl App {
 
     fn refresh_search_data(&mut self) {
         self.conversations_snapshot = Arc::new(self.conversations.clone());
+        self.rebuild_semantic_conversations_snapshot();
         self.searchable = search::precompute_search_text(&self.conversations);
         let _ = self.search_tx.send(SearchCommand::UpdateData {
             conversations: self.conversations_snapshot.clone(),
@@ -3694,6 +3728,120 @@ mod tests {
             vec!["needle"]
         );
         assert_eq!(app.semantic_search_error(), None);
+    }
+
+    #[test]
+    fn semantic_keypress_dispatches_immediately() {
+        let mut app = app_with_options(
+            vec![conversation(
+                Some("Visible"),
+                "-tmp-visible",
+                "22222222-2222-4222-8222-222222222222",
+                "needle",
+            )],
+            vec![],
+            TuiSearchOptions {
+                semantic_enabled: true,
+            },
+        );
+        let (request_tx, request_rx) = mpsc::channel();
+        let (_response_tx, response_rx) = mpsc::channel();
+        app.semantic_search.worker_tx = Some(request_tx);
+        app.semantic_search.worker_rx = Some(response_rx);
+        let previous_generation = app.search_generation();
+
+        app.handle_key(KeyCode::Char('n'), KeyModifiers::NONE, 10);
+
+        let request = request_rx.try_recv().expect("semantic request");
+        assert_eq!(app.query(), "n");
+        assert_eq!(app.cursor_pos(), 1);
+        assert_eq!(app.search_generation(), previous_generation + 1);
+        assert_eq!(
+            app.semantic_search.pending_generation,
+            Some(request.generation)
+        );
+        assert_eq!(
+            app.semantic_search.pending_status,
+            Some(SemanticProgress::InitializingModel)
+        );
+        assert_eq!(
+            app.semantic_activity_status_text().as_deref(),
+            Some("sem preparing embeddings")
+        );
+        assert_eq!(request.query, "n");
+        assert!(!request.prewarm);
+    }
+
+    #[test]
+    fn semantic_dispatch_after_incremental_loading_keeps_snapshot_aligned() {
+        let mut app = App::new_loading_with_options(
+            ToolDisplayMode::Truncated,
+            false,
+            KeyBindings::default(),
+            false,
+            None,
+            vec![],
+            TuiSearchOptions {
+                semantic_enabled: true,
+            },
+        );
+        app.append_conversations(vec![conversation(
+            Some("Visible"),
+            "-tmp-visible",
+            "22222222-2222-4222-8222-222222222222",
+            "needle",
+        )]);
+        let (request_tx, request_rx) = mpsc::channel();
+        let (_response_tx, response_rx) = mpsc::channel();
+        app.semantic_search.worker_tx = Some(request_tx);
+        app.semantic_search.worker_rx = Some(response_rx);
+        app.query = "needle".to_string();
+
+        app.dispatch_search();
+
+        let request = request_rx.try_recv().expect("semantic request");
+        assert_eq!(request.candidates.len(), 1);
+        assert_eq!(
+            request.candidates[0].conversation.semantic_turns,
+            vec!["needle"]
+        );
+    }
+
+    #[test]
+    fn semantic_keypress_does_not_clone_full_corpus_on_ui_thread() {
+        let conversations = (0..150)
+            .map(|index| {
+                conversation(
+                    Some("Visible"),
+                    &format!("-tmp-visible-{index}"),
+                    &format!("22222222-2222-4222-8222-{index:012}"),
+                    "needle",
+                )
+            })
+            .collect::<Vec<_>>();
+        let mut app = app_with_options(
+            conversations,
+            vec![],
+            TuiSearchOptions {
+                semantic_enabled: true,
+            },
+        );
+        let snapshot = app.semantic_conversations_snapshot.clone();
+        let (request_tx, request_rx) = mpsc::channel();
+        let (_response_tx, response_rx) = mpsc::channel();
+        app.semantic_search.worker_tx = Some(request_tx);
+        app.semantic_search.worker_rx = Some(response_rx);
+
+        app.handle_key(KeyCode::Char('n'), KeyModifiers::NONE, 10);
+
+        let request = request_rx.try_recv().expect("semantic request");
+        assert_eq!(request.candidates.len(), 150);
+        for candidate in request.candidates.iter() {
+            assert!(Arc::ptr_eq(
+                &candidate.conversation,
+                &snapshot[candidate.index]
+            ));
+        }
     }
 
     #[test]

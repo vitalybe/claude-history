@@ -306,7 +306,7 @@ fn semantic_index_candidates(
         .map(
             |(index, conversation)| crate::semantic::index::SemanticIndexCandidate {
                 index,
-                conversation: (*conversation).clone(),
+                conversation: std::sync::Arc::new((*conversation).clone()),
             },
         )
         .collect()

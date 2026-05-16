@@ -242,7 +242,7 @@ mod tests {
             .into_iter()
             .map(|index| SemanticSearchCandidate {
                 index,
-                conversation: conversations[index].clone(),
+                conversation: Arc::new(conversations[index].clone()),
             })
             .collect();
         SemanticSearchRequest {

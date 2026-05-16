@@ -10,11 +10,12 @@ use crate::semantic::types::{
     ChunkConfig, EmbeddedChunk, EmbeddingCache, SemanticChunk, SemanticHit,
 };
 use std::path::PathBuf;
+use std::sync::Arc;
 
 #[derive(Clone)]
 pub struct SemanticIndexCandidate {
     pub index: usize,
-    pub conversation: Conversation,
+    pub conversation: Arc<Conversation>,
 }
 
 pub struct SemanticIndexRequest<'a> {
@@ -232,7 +233,7 @@ fn semantic_chunks(
         request
             .candidates
             .iter()
-            .map(|candidate| (candidate.index, &candidate.conversation)),
+            .map(|candidate| (candidate.index, candidate.conversation.as_ref())),
         chunk_config,
     )
 }
@@ -344,7 +345,7 @@ mod tests {
             .into_iter()
             .map(|index| SemanticIndexCandidate {
                 index,
-                conversation: conversations[index].clone(),
+                conversation: Arc::new(conversations[index].clone()),
             })
             .collect();
         (query.to_string(), candidates)
@@ -497,7 +498,10 @@ mod tests {
             .expect("same signature rank succeeds");
         candidates = vec![SemanticIndexCandidate {
             index: 0,
-            conversation: conversation("/projects/project-a/session-a.jsonl", vec!["visible beta"]),
+            conversation: Arc::new(conversation(
+                "/projects/project-a/session-a.jsonl",
+                vec!["visible beta"],
+            )),
         }];
         cache_request_passages(&mut state.cache, &index_request(&query, &candidates));
         state
@@ -751,6 +755,41 @@ mod tests {
                 .map(|hit| hit.conversation_index)
                 .collect::<Vec<_>>(),
             vec![1, 0]
+        );
+    }
+
+    #[test]
+    fn semantic_index_ranks_more_than_legacy_limit_without_cap() {
+        const LEGACY_LIMIT: usize = 100;
+        let conversations = (0..LEGACY_LIMIT + 25)
+            .map(|index| {
+                conversation(
+                    &format!("/projects/project-a/session-{index}.jsonl"),
+                    vec!["visible alpha"],
+                )
+            })
+            .collect::<Vec<_>>();
+        let candidate_indices = (0..conversations.len()).collect::<Vec<_>>();
+        let (query, candidates) = request("alpha", conversations, candidate_indices);
+        let request = index_request(&query, &candidates);
+        let mut cache = empty_embedding_cache(ChunkConfig::default());
+        cache_request_passages(&mut cache, &request);
+        let mut state = SemanticIndexState::with_cache(ChunkConfig::default(), cache);
+        let mut embedder = FakeEmbedder::new();
+
+        let response = state
+            .refresh_or_prewarm(&request, &mut embedder, |_| {}, |_| {})
+            .expect("rank succeeds");
+
+        assert_eq!(response.indexed_chunk_count, LEGACY_LIMIT + 25);
+        assert_eq!(response.hits.len(), LEGACY_LIMIT + 25);
+        assert_eq!(
+            response
+                .hits
+                .iter()
+                .map(|hit| hit.conversation_index)
+                .collect::<Vec<_>>(),
+            (0..LEGACY_LIMIT + 25).collect::<Vec<_>>()
         );
     }
 
