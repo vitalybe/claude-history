@@ -897,7 +897,9 @@ impl App {
     }
 
     pub fn has_search_work_in_flight(&self) -> bool {
-        self.search_in_flight || self.semantic_search.pending_generation.is_some()
+        self.search_in_flight
+            || self.semantic_search.pending_generation.is_some()
+            || self.semantic_search.prewarm_generation.is_some()
     }
 
     /// Find a conversation by UUID in loaded conversations, or load it from disk.
@@ -1156,11 +1158,7 @@ impl App {
         {
             return None;
         }
-        let status = self
-            .semantic_search
-            .prewarm_status
-            .as_ref()
-            .or(self.semantic_search.pending_status.as_ref())?;
+        let status = self.semantic_search.prewarm_status.as_ref()?;
         match status {
             SemanticProgress::InitializingModel => Some("sem preparing embeddings".to_string()),
             SemanticProgress::Embedding { completed, total } => {
@@ -1174,7 +1172,6 @@ impl App {
                     completed.min(total)
                 ))
             }
-            SemanticProgress::Ranking => Some("sem ranking".to_string()),
             _ => None,
         }
     }
@@ -3994,6 +3991,56 @@ mod tests {
             app.semantic_activity_status_text().as_deref(),
             Some("sem embedding 30%  3/10 chunks")
         );
+    }
+
+    #[test]
+    fn query_ranking_status_does_not_use_activity_bar() {
+        let mut app = app_with_options(
+            vec![conversation(
+                Some("Visible"),
+                "-tmp-visible",
+                "22222222-2222-4222-8222-222222222222",
+                "needle",
+            )],
+            vec![],
+            TuiSearchOptions {
+                semantic_enabled: true,
+                ..Default::default()
+            },
+        );
+        app.list_search_mode = ListSearchMode::Semantic;
+        app.semantic_search.prewarm_generation = None;
+        app.semantic_search.prewarm_status = None;
+        app.semantic_search.pending_generation = Some(10);
+        app.semantic_search.pending_status = Some(SemanticProgress::Ranking);
+
+        assert_eq!(app.semantic_activity_status_text(), None);
+    }
+
+    #[test]
+    fn prewarm_generation_keeps_search_polling_until_completion() {
+        let mut app = app_with_options(
+            vec![conversation(
+                Some("Visible"),
+                "-tmp-visible",
+                "22222222-2222-4222-8222-222222222222",
+                "needle",
+            )],
+            vec![],
+            TuiSearchOptions {
+                semantic_enabled: true,
+                ..Default::default()
+            },
+        );
+        app.list_search_mode = ListSearchMode::Semantic;
+        app.search_generation = 10;
+        app.semantic_search.prewarm_generation = Some(9);
+        app.semantic_search.prewarm_status = Some(SemanticProgress::Embedding {
+            completed: 10,
+            total: 10,
+        });
+
+        assert!(app.has_search_work_in_flight());
     }
 
     #[test]
