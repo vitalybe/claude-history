@@ -1683,7 +1683,7 @@ fn render_list(frame: &mut Frame, app: &App, area: Rect) {
             let preview_text = if semantic_mode && !query_normalized.is_empty() {
                 semantic_metadata
                     .map(|metadata| sanitize_preview(&metadata.explanation.evidence_preview))
-                    .unwrap_or_default()
+                    .unwrap_or_else(|| sanitize_preview(&conv.preview))
             } else {
                 sanitize_preview(&conv.preview)
             };
@@ -2914,6 +2914,24 @@ mod tests {
             "{contents:?}"
         );
         assert!(!contents.contains("semantic visible text"), "{contents:?}");
+    }
+
+    #[test]
+    fn semantic_list_uses_conversation_preview_while_query_has_no_metadata() {
+        let mut app = semantic_app();
+        app.set_query_for_test("sentinel");
+        let backend = TestBackend::new(80, 8);
+        let mut terminal = Terminal::new(backend).unwrap();
+
+        terminal
+            .draw(|frame| render_list(frame, &app, frame.area()))
+            .unwrap();
+
+        let contents = terminal_contents(&terminal);
+        assert!(
+            contents.contains("lexical preview sentinel"),
+            "{contents:?}"
+        );
     }
 
     #[test]
