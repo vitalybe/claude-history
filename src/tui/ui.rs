@@ -1444,7 +1444,7 @@ fn render_list(frame: &mut Frame, app: &App, area: Rect) {
                 + 3
                 + UnicodeWidthStr::width(timestamp.as_str());
             let indicator_len = UnicodeWidthStr::width(indicator);
-            let min_padding = 2;
+            let min_padding = 3;
             let left_budget = width.saturating_sub(indicator_len + right_len + min_padding);
 
             // Build left part: indicator + project + optional custom title + optional summary
@@ -2808,7 +2808,7 @@ mod tests {
 
         let first_row = row_text(&terminal, 0);
         assert!(
-            first_row.contains("claude-history/drop-semantic-…"),
+            first_row.contains("claude-history/drop-semantic…"),
             "{first_row:?}"
         );
         assert!(
