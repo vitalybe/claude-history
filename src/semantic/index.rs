@@ -87,7 +87,7 @@ impl SemanticIndexState {
         self.embedded_chunks.clear();
     }
 
-    pub fn refresh_or_prewarm(
+    pub fn refresh_passages(
         &mut self,
         request: &SemanticIndexRequest<'_>,
         embedder: &mut dyn SemanticEmbedder,
@@ -133,6 +133,25 @@ impl SemanticIndexState {
             progress(SemanticIndexProgress::CacheReady);
         }
 
+        Ok(SemanticIndexResponse {
+            hits: Vec::new(),
+            indexed_chunk_count: self.embedded_chunks.len(),
+            query_embedding_returned: true,
+            progress: if self.embedded_chunks.is_empty() {
+                SemanticIndexProgress::EmptyCorpus
+            } else {
+                SemanticIndexProgress::CacheReady
+            },
+            prewarm: request.prewarm,
+        })
+    }
+
+    pub fn rank_refreshed(
+        &self,
+        request: &SemanticIndexRequest<'_>,
+        embedder: &mut dyn SemanticEmbedder,
+        mut progress: impl FnMut(SemanticIndexProgress),
+    ) -> Result<SemanticIndexResponse> {
         if self.embedded_chunks.is_empty() || request.prewarm {
             return Ok(SemanticIndexResponse {
                 hits: Vec::new(),
@@ -174,8 +193,22 @@ impl SemanticIndexState {
         })
     }
 
+    pub fn refresh_or_prewarm(
+        &mut self,
+        request: &SemanticIndexRequest<'_>,
+        embedder: &mut dyn SemanticEmbedder,
+        mut progress: impl FnMut(SemanticIndexProgress),
+        save_cache: impl FnMut(&EmbeddingCache),
+    ) -> Result<SemanticIndexResponse> {
+        let response = self.refresh_passages(request, embedder, &mut progress, save_cache)?;
+        if response.progress == SemanticIndexProgress::EmptyCorpus || request.prewarm {
+            return Ok(response);
+        }
+        self.rank_refreshed(request, embedder, progress)
+    }
+
     #[cfg(test)]
-    fn with_cache(chunk_config: ChunkConfig, cache: EmbeddingCache) -> Self {
+    pub(crate) fn with_cache(chunk_config: ChunkConfig, cache: EmbeddingCache) -> Self {
         Self {
             signature: None,
             embedded_chunks: Vec::new(),
@@ -236,6 +269,18 @@ mod tests {
         passage_calls: usize,
         query_calls: usize,
         embedded_passages: Vec<Vec<String>>,
+        query_embedding: Option<Vec<f32>>,
+    }
+
+    impl FakeEmbedder {
+        fn new() -> Self {
+            Self {
+                passage_calls: 0,
+                query_calls: 0,
+                embedded_passages: Vec::new(),
+                query_embedding: Some(vec![1.0, 0.0]),
+            }
+        }
     }
 
     impl SemanticEmbedder for FakeEmbedder {
@@ -254,11 +299,11 @@ mod tests {
 
         fn embed_query(&mut self, query: &str) -> Result<Option<Vec<f32>>> {
             self.query_calls += 1;
-            Ok(Some(if query.contains("beta") {
-                vec![0.0, 1.0]
+            Ok(if query.contains("beta") {
+                Some(vec![0.0, 1.0])
             } else {
-                vec![1.0, 0.0]
-            }))
+                self.query_embedding.clone()
+            })
         }
     }
 
@@ -351,11 +396,7 @@ mod tests {
         let mut cache = empty_embedding_cache(ChunkConfig::default());
         cache_request_passages(&mut cache, &request);
         let mut state = SemanticIndexState::with_cache(ChunkConfig::default(), cache);
-        let mut embedder = FakeEmbedder {
-            passage_calls: 0,
-            query_calls: 0,
-            embedded_passages: Vec::new(),
-        };
+        let mut embedder = FakeEmbedder::new();
 
         let response = state
             .refresh_or_prewarm(&request, &mut embedder, |_| {}, |_| {})
@@ -398,11 +439,7 @@ mod tests {
         let mut cache = empty_embedding_cache(ChunkConfig::default());
         cache_request_passages(&mut cache, &index_request(&query, &candidates));
         let mut state = SemanticIndexState::with_cache(ChunkConfig::default(), cache);
-        let mut embedder = FakeEmbedder {
-            passage_calls: 0,
-            query_calls: 0,
-            embedded_passages: Vec::new(),
-        };
+        let mut embedder = FakeEmbedder::new();
 
         state
             .refresh_or_prewarm(
@@ -439,11 +476,7 @@ mod tests {
         let mut cache = empty_embedding_cache(ChunkConfig::default());
         cache_request_passages(&mut cache, &index_request(&query, &candidates));
         let mut state = SemanticIndexState::with_cache(ChunkConfig::default(), cache);
-        let mut embedder = FakeEmbedder {
-            passage_calls: 0,
-            query_calls: 0,
-            embedded_passages: Vec::new(),
-        };
+        let mut embedder = FakeEmbedder::new();
 
         state
             .refresh_or_prewarm(
@@ -492,11 +525,7 @@ mod tests {
         let mut cache = empty_embedding_cache(ChunkConfig::default());
         cache_request_passages(&mut cache, &request);
         let mut state = SemanticIndexState::with_cache(ChunkConfig::default(), cache);
-        let mut embedder = FakeEmbedder {
-            passage_calls: 0,
-            query_calls: 0,
-            embedded_passages: Vec::new(),
-        };
+        let mut embedder = FakeEmbedder::new();
 
         let response = state
             .refresh_or_prewarm(&request, &mut embedder, |_| {}, |_| {})
@@ -525,11 +554,7 @@ mod tests {
         let request = index_request(&query, &candidates);
         let cache = empty_embedding_cache(ChunkConfig::default());
         let mut state = SemanticIndexState::with_cache(ChunkConfig::default(), cache);
-        let mut embedder = FakeEmbedder {
-            passage_calls: 0,
-            query_calls: 0,
-            embedded_passages: Vec::new(),
-        };
+        let mut embedder = FakeEmbedder::new();
         let mut save_calls = 0;
         let mut progress = Vec::new();
 
@@ -580,11 +605,7 @@ mod tests {
             vec![1.0, 0.0],
         );
         let mut state = SemanticIndexState::with_cache(ChunkConfig::default(), cache);
-        let mut embedder = FakeEmbedder {
-            passage_calls: 0,
-            query_calls: 0,
-            embedded_passages: Vec::new(),
-        };
+        let mut embedder = FakeEmbedder::new();
         let mut progress = Vec::new();
 
         let response = state
@@ -616,6 +637,62 @@ mod tests {
     }
 
     #[test]
+    fn refresh_passages_can_skip_per_batch_cache_saves() {
+        let conversations = vec![conversation(
+            "/projects/project-a/session-a.jsonl",
+            vec!["visible alpha"],
+        )];
+        let (query, candidates) = request("alpha", conversations, vec![0]);
+        let request = index_request(&query, &candidates);
+        let cache = empty_embedding_cache(ChunkConfig::default());
+        let mut state = SemanticIndexState::with_cache(ChunkConfig::default(), cache);
+        let mut embedder = FakeEmbedder::new();
+
+        let response = state
+            .refresh_passages(&request, &mut embedder, |_| {}, |_| {})
+            .expect("refresh succeeds");
+
+        assert_eq!(response.indexed_chunk_count, 1);
+        assert_eq!(response.progress, SemanticIndexProgress::CacheReady);
+        assert_eq!(embedder.passage_calls, 1);
+        assert_eq!(embedder.query_calls, 0);
+        assert_eq!(
+            cache_miss_count(
+                &semantic_chunks(&request, ChunkConfig::default()),
+                &state.cache
+            ),
+            0
+        );
+    }
+
+    #[test]
+    fn rank_refreshed_index_reports_missing_query_embedding() {
+        let conversations = vec![conversation(
+            "/projects/project-a/session-a.jsonl",
+            vec!["visible alpha"],
+        )];
+        let (query, candidates) = request("alpha", conversations, vec![0]);
+        let request = index_request(&query, &candidates);
+        let cache = empty_embedding_cache(ChunkConfig::default());
+        let mut state = SemanticIndexState::with_cache(ChunkConfig::default(), cache);
+        let mut embedder = FakeEmbedder::new();
+        state
+            .refresh_passages(&request, &mut embedder, |_| {}, |_| {})
+            .expect("refresh succeeds");
+        embedder.query_embedding = None;
+
+        let response = state
+            .rank_refreshed(&request, &mut embedder, |_| {})
+            .expect("rank succeeds");
+
+        assert!(response.hits.is_empty());
+        assert!(!response.query_embedding_returned);
+        assert_eq!(response.indexed_chunk_count, 1);
+        assert_eq!(embedder.passage_calls, 1);
+        assert_eq!(embedder.query_calls, 1);
+    }
+
+    #[test]
     fn prewarm_request_builds_cache_without_ranking_query() {
         let conversations = vec![conversation(
             "/projects/project-a/session-a.jsonl",
@@ -629,11 +706,7 @@ mod tests {
         };
         let cache = empty_embedding_cache(ChunkConfig::default());
         let mut state = SemanticIndexState::with_cache(ChunkConfig::default(), cache);
-        let mut embedder = FakeEmbedder {
-            passage_calls: 0,
-            query_calls: 0,
-            embedded_passages: Vec::new(),
-        };
+        let mut embedder = FakeEmbedder::new();
 
         let response = state
             .refresh_or_prewarm(&request, &mut embedder, |_| {}, |_| {})
@@ -664,11 +737,7 @@ mod tests {
         let mut cache = empty_embedding_cache(ChunkConfig::default());
         cache_request_passages(&mut cache, &request);
         let mut state = SemanticIndexState::with_cache(ChunkConfig::default(), cache);
-        let mut embedder = FakeEmbedder {
-            passage_calls: 0,
-            query_calls: 0,
-            embedded_passages: Vec::new(),
-        };
+        let mut embedder = FakeEmbedder::new();
 
         let response = state
             .refresh_or_prewarm(&request, &mut embedder, |_| {}, |_| {})
@@ -696,11 +765,7 @@ mod tests {
         let mut cache = empty_embedding_cache(ChunkConfig::default());
         cache_request_passages(&mut cache, &request);
         let mut state = SemanticIndexState::with_cache(ChunkConfig::default(), cache);
-        let mut embedder = FakeEmbedder {
-            passage_calls: 0,
-            query_calls: 0,
-            embedded_passages: Vec::new(),
-        };
+        let mut embedder = FakeEmbedder::new();
         state
             .refresh_or_prewarm(&request, &mut embedder, |_| {}, |_| {})
             .expect("first rank succeeds");
@@ -736,11 +801,7 @@ mod tests {
         let mut cache = empty_embedding_cache(ChunkConfig::default());
         cache_request_passages(&mut cache, &populated_request);
         let mut state = SemanticIndexState::with_cache(ChunkConfig::default(), cache);
-        let mut embedder = FakeEmbedder {
-            passage_calls: 0,
-            query_calls: 0,
-            embedded_passages: Vec::new(),
-        };
+        let mut embedder = FakeEmbedder::new();
         state
             .refresh_or_prewarm(&populated_request, &mut embedder, |_| {}, |_| {})
             .expect("populated index succeeds");
@@ -763,11 +824,7 @@ mod tests {
         let request = index_request(&query, &candidates);
         let cache = empty_embedding_cache(ChunkConfig::default());
         let mut state = SemanticIndexState::with_cache(ChunkConfig::default(), cache);
-        let mut embedder = FakeEmbedder {
-            passage_calls: 0,
-            query_calls: 0,
-            embedded_passages: Vec::new(),
-        };
+        let mut embedder = FakeEmbedder::new();
 
         let response = state
             .refresh_or_prewarm(&request, &mut embedder, |_| {}, |_| {})

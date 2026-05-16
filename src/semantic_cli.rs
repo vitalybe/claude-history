@@ -28,13 +28,12 @@ pub fn run(query: &str, conversations: &[Conversation], top: usize, local: bool)
     }
 
     let mut embedder = FastembedEmbedder::new()?;
-    let response =
-        state.refresh_or_prewarm(&request, &mut embedder, |_| {}, write_embedding_cache)?;
-    write_embedding_cache(&state.cache);
+    let (refresh, response) =
+        refresh_and_rank_interactive(&request, &mut state, &mut embedder, write_embedding_cache)?;
 
     eprintln!(
         "Semantic search: searching {} cached chunk(s) from {} recent conversation(s) with fastembed {MODEL_NAME}",
-        response.indexed_chunk_count,
+        refresh.indexed_chunk_count,
         selected.len()
     );
 
@@ -283,6 +282,21 @@ fn truncate_debug(text: &str, max_chars: usize) -> String {
     out
 }
 
+fn refresh_and_rank_interactive(
+    request: &crate::semantic::index::SemanticIndexRequest<'_>,
+    state: &mut crate::semantic::index::SemanticIndexState,
+    embedder: &mut dyn crate::semantic::embed::SemanticEmbedder,
+    mut save_cache: impl FnMut(&crate::semantic::types::EmbeddingCache),
+) -> Result<(
+    crate::semantic::index::SemanticIndexResponse,
+    crate::semantic::index::SemanticIndexResponse,
+)> {
+    let refresh = state.refresh_passages(request, embedder, |_| {}, |_| {})?;
+    save_cache(&state.cache);
+    let response = state.rank_refreshed(request, embedder, |_| {})?;
+    Ok((refresh, response))
+}
+
 fn semantic_index_candidates(
     selected: &[&Conversation],
 ) -> Vec<crate::semantic::index::SemanticIndexCandidate> {
@@ -337,8 +351,48 @@ fn no_conversations_message(local: bool) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::semantic::embed::SemanticEmbedder;
+    use crate::semantic::types::{ChunkConfig, EmbeddingCache};
     use chrono::Local;
     use std::path::PathBuf;
+
+    struct FakeEmbedder {
+        passage_calls: usize,
+        query_calls: usize,
+        query_embedding: Option<Vec<f32>>,
+    }
+
+    impl FakeEmbedder {
+        fn new(query_embedding: Option<Vec<f32>>) -> Self {
+            Self {
+                passage_calls: 0,
+                query_calls: 0,
+                query_embedding,
+            }
+        }
+    }
+
+    impl SemanticEmbedder for FakeEmbedder {
+        fn embed_passages(&mut self, passages: &[String]) -> Result<Vec<Vec<f32>>> {
+            self.passage_calls += 1;
+            Ok(passages
+                .iter()
+                .map(|passage| match passage.as_str() {
+                    "visible beta" => vec![0.0, 1.0],
+                    _ => vec![1.0, 0.0],
+                })
+                .collect())
+        }
+
+        fn embed_query(&mut self, query: &str) -> Result<Option<Vec<f32>>> {
+            self.query_calls += 1;
+            Ok(if query.contains("beta") {
+                Some(vec![0.0, 1.0])
+            } else {
+                self.query_embedding.clone()
+            })
+        }
+    }
 
     fn test_conversation(path: &str, title: &str, semantic_turns: Vec<String>) -> Conversation {
         Conversation {
@@ -362,6 +416,42 @@ mod tests {
             total_tokens: 0,
             duration_minutes: None,
         }
+    }
+
+    #[test]
+    fn interactive_refresh_writes_cache_once_before_query_ranking() {
+        let conversations = vec![test_conversation(
+            "/projects/project-a/session-1.jsonl",
+            "one",
+            vec!["visible alpha".to_string()],
+        )];
+        let selected = vec![&conversations[0]];
+        let candidates = semantic_index_candidates(&selected);
+        let query = "alpha".to_string();
+        let request = crate::semantic::index::SemanticIndexRequest {
+            query: &query,
+            candidates: &candidates,
+            prewarm: false,
+        };
+        let cache = crate::semantic::cache::empty_embedding_cache(ChunkConfig::default());
+        let mut state =
+            crate::semantic::index::SemanticIndexState::with_cache(ChunkConfig::default(), cache);
+        let mut embedder = FakeEmbedder::new(None);
+        let mut saved_entry_counts = Vec::new();
+
+        let (refresh, response) = refresh_and_rank_interactive(
+            &request,
+            &mut state,
+            &mut embedder,
+            |cache: &EmbeddingCache| saved_entry_counts.push(cache.entries.len()),
+        )
+        .expect("interactive refresh and rank succeeds");
+
+        assert_eq!(refresh.indexed_chunk_count, 1);
+        assert_eq!(saved_entry_counts, vec![1]);
+        assert!(!response.query_embedding_returned);
+        assert_eq!(embedder.passage_calls, 1);
+        assert_eq!(embedder.query_calls, 1);
     }
 
     #[test]
