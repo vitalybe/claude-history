@@ -200,6 +200,8 @@ struct SemanticSearchState {
     available: bool,
     pending_generation: Option<u64>,
     pending_status: Option<SemanticProgress>,
+    prewarm_generation: Option<u64>,
+    prewarm_status: Option<SemanticProgress>,
     last_status: SemanticProgress,
     error: Option<String>,
     results: HashMap<usize, SemanticResultMetadata>,
@@ -672,6 +674,8 @@ impl App {
         self.search_in_flight = false;
         self.semantic_search.pending_generation = None;
         self.semantic_search.pending_status = None;
+        self.semantic_search.prewarm_generation = None;
+        self.semantic_search.prewarm_status = None;
         self.semantic_search.last_status = SemanticProgress::Idle;
         self.semantic_search.error = None;
         self.semantic_search.results.clear();
@@ -747,7 +751,13 @@ impl App {
         let query = self.query.trim().to_string();
 
         if query.is_empty() {
+            let prewarm_generation = self.semantic_search.prewarm_generation;
+            let prewarm_status = self.semantic_search.prewarm_status.clone();
             self.invalidate_search_generation();
+            if self.list_search_mode == ListSearchMode::Semantic {
+                self.semantic_search.prewarm_generation = prewarm_generation;
+                self.semantic_search.prewarm_status = prewarm_status;
+            }
             self.semantic_search.error = None;
             self.semantic_search.results.clear();
             self.update_filter();
@@ -783,6 +793,10 @@ impl App {
         self.search_in_flight = false;
         self.semantic_search.pending_generation = Some(self.search_generation);
         self.semantic_search.pending_status = Some(SemanticProgress::InitializingModel);
+        if prewarm {
+            self.semantic_search.prewarm_generation = Some(self.search_generation);
+            self.semantic_search.prewarm_status = Some(SemanticProgress::InitializingModel);
+        }
         self.semantic_search.last_status = SemanticProgress::Idle;
         self.semantic_search.error = None;
         self.semantic_search.results.clear();
@@ -830,29 +844,49 @@ impl App {
                         generation,
                         progress,
                     } => {
-                        if generation == active_generation
-                            && self.list_search_mode == ListSearchMode::Semantic
-                        {
-                            self.semantic_search.pending_status = Some(progress);
-                            applied = true;
+                        if self.list_search_mode == ListSearchMode::Semantic {
+                            if Some(generation) == self.semantic_search.prewarm_generation {
+                                self.semantic_search.prewarm_status = Some(progress.clone());
+                                self.semantic_search.pending_status = Some(progress);
+                                applied = true;
+                            } else if generation == active_generation {
+                                self.semantic_search.pending_status = Some(progress);
+                                applied = true;
+                            }
                         }
                     }
                     SemanticSearchMessage::Complete(response) => {
-                        if response.generation == active_generation
-                            && self.list_search_mode == ListSearchMode::Semantic
-                        {
-                            self.semantic_search.pending_generation = None;
-                            self.semantic_search.pending_status = None;
-                            self.semantic_search.last_status = response.progress;
-                            self.semantic_search.error = response.error;
-                            self.semantic_search.results = response.metadata;
-                            if response.prewarm && !self.query.trim().is_empty() {
-                                self.dispatch_semantic_search(self.query.trim().to_string(), false);
-                            } else if !response.prewarm {
+                        if self.list_search_mode == ListSearchMode::Semantic {
+                            if response.prewarm
+                                && Some(response.generation)
+                                    == self.semantic_search.prewarm_generation
+                            {
+                                self.semantic_search.prewarm_generation = None;
+                                self.semantic_search.prewarm_status = None;
+                                if response.generation == active_generation {
+                                    self.semantic_search.pending_generation = None;
+                                    self.semantic_search.pending_status = None;
+                                    self.semantic_search.last_status = response.progress;
+                                    self.semantic_search.error = response.error;
+                                    self.semantic_search.results = response.metadata;
+                                    if !self.query.trim().is_empty() {
+                                        self.dispatch_semantic_search(
+                                            self.query.trim().to_string(),
+                                            false,
+                                        );
+                                    }
+                                }
+                                applied = true;
+                            } else if response.generation == active_generation {
+                                self.semantic_search.pending_generation = None;
+                                self.semantic_search.pending_status = None;
+                                self.semantic_search.last_status = response.progress;
+                                self.semantic_search.error = response.error;
+                                self.semantic_search.results = response.metadata;
                                 let filtered = self.filter_indices(response.filtered);
                                 self.apply_filtered(filtered);
+                                applied = true;
                             }
-                            applied = true;
                         }
                     }
                 }
@@ -1122,7 +1156,12 @@ impl App {
         {
             return None;
         }
-        let status = self.semantic_search.pending_status.as_ref()?;
+        let status = match self.semantic_search.prewarm_status.as_ref() {
+            Some(SemanticProgress::Embedding { .. }) => {
+                self.semantic_search.prewarm_status.as_ref()
+            }
+            _ => self.semantic_search.pending_status.as_ref(),
+        }?;
         match status {
             SemanticProgress::InitializingModel => Some("sem preparing embeddings".to_string()),
             SemanticProgress::Embedding { completed, total } => {
@@ -3891,6 +3930,40 @@ mod tests {
             Some("sem embedding 50%  1/2 chunks")
         );
         assert_eq!(app.semantic_search.pending_generation, Some(7));
+    }
+
+    #[test]
+    fn clearing_query_preserves_in_flight_prewarm_progress() {
+        let mut app = app_with_options(
+            vec![conversation(
+                Some("Visible"),
+                "-tmp-visible",
+                "22222222-2222-4222-8222-222222222222",
+                "needle",
+            )],
+            vec![],
+            TuiSearchOptions {
+                semantic_enabled: true,
+                ..Default::default()
+            },
+        );
+        app.list_search_mode = ListSearchMode::Semantic;
+        app.search_generation = 10;
+        app.semantic_search.pending_generation = Some(10);
+        app.semantic_search.prewarm_generation = Some(9);
+        app.semantic_search.prewarm_status = Some(SemanticProgress::Embedding {
+            completed: 3,
+            total: 10,
+        });
+        app.query = "needle".to_string();
+
+        app.query.clear();
+        app.dispatch_search();
+
+        assert_eq!(
+            app.semantic_activity_status_text().as_deref(),
+            Some("sem embedding 30%  3/10 chunks")
+        );
     }
 
     #[test]
