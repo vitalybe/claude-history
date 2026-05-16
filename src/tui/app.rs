@@ -49,6 +49,8 @@ pub enum DialogMode {
     YankMenu { selected: usize },
     /// Help overlay showing keyboard shortcuts
     Help { scroll: usize },
+    /// Semantic result debug details
+    SemanticDebug,
     /// Rename the selected conversation
     Rename { input: String, cursor: usize },
 }
@@ -1064,6 +1066,11 @@ impl App {
         &self.dialog_mode
     }
 
+    #[cfg(test)]
+    pub fn set_dialog_mode_for_test(&mut self, dialog_mode: DialogMode) {
+        self.dialog_mode = dialog_mode;
+    }
+
     pub fn app_mode(&self) -> &AppMode {
         &self.app_mode
     }
@@ -1124,7 +1131,14 @@ impl App {
     ) {
         self.search_generation = generation;
         self.semantic_search.pending_generation = Some(generation);
+        self.semantic_search.prewarm_generation = None;
+        self.semantic_search.prewarm_status = None;
         self.semantic_search.worker_rx = Some(worker_rx);
+    }
+
+    #[cfg(test)]
+    pub fn set_semantic_prewarm_generation_for_test(&mut self, generation: u64) {
+        self.semantic_search.prewarm_generation = Some(generation);
     }
 
     pub fn semantic_result_metadata(
@@ -1132,6 +1146,15 @@ impl App {
         conversation_index: usize,
     ) -> Option<&SemanticResultMetadata> {
         self.semantic_search.results.get(&conversation_index)
+    }
+
+    pub fn semantic_result_metadata_for_selection(&self) -> Option<&SemanticResultMetadata> {
+        if self.list_search_mode != ListSearchMode::Semantic {
+            return None;
+        }
+        let selected = self.selected?;
+        let conversation_index = *self.filtered.get(selected)?;
+        self.semantic_result_metadata(conversation_index)
     }
 
     pub fn semantic_status_text(&self) -> Option<String> {
@@ -1685,8 +1708,21 @@ impl App {
                 return self.handle_menu_key(code);
             }
             DialogMode::Help { .. } => return self.handle_help_key(code, viewport_height),
+            DialogMode::SemanticDebug => {
+                self.dialog_mode = DialogMode::None;
+                return None;
+            }
             DialogMode::Rename { .. } => return self.handle_rename_key(code, modifiers),
             DialogMode::None => {}
+        }
+
+        if self.list_search_mode == ListSearchMode::Semantic
+            && self.semantic_result_metadata_for_selection().is_some()
+            && matches!(code, KeyCode::Char('s'))
+            && modifiers.contains(KeyModifiers::CONTROL)
+        {
+            self.dialog_mode = DialogMode::SemanticDebug;
+            return None;
         }
 
         // Delegate based on app mode

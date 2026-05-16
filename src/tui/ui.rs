@@ -164,6 +164,7 @@ fn render_list_mode(frame: &mut Frame, app: &App) {
             app.keys(),
             *scroll,
         ),
+        DialogMode::SemanticDebug => render_semantic_debug_popup(frame, app),
         DialogMode::Rename { input, cursor } => render_rename_dialog(frame, input, *cursor),
         _ => {}
     }
@@ -195,11 +196,6 @@ fn render_list_status_bar(frame: &mut Frame, app: &App, area: Rect) {
     // Dimmed styles for unavailable shortcuts during loading
     let dim_key_style = Style::default().fg(rgb(th().dim_key));
     let dim_label_style = Style::default().fg(rgb(th().dim_label));
-
-    if let Some(metadata) = selected_semantic_metadata(app) {
-        render_semantic_status_bar(frame, metadata, area);
-        return;
-    }
 
     if let Some(status) = app.semantic_activity_status_text() {
         render_activity_status(frame, &status, area);
@@ -269,15 +265,6 @@ fn render_list_status_bar(frame: &mut Frame, app: &App, area: Rect) {
     frame.render_widget(status, area);
 }
 
-fn selected_semantic_metadata(app: &App) -> Option<&SemanticResultMetadata> {
-    if app.list_search_mode() != ListSearchMode::Semantic {
-        return None;
-    }
-    let selected = app.selected()?;
-    let conversation_index = *app.filtered().get(selected)?;
-    app.semantic_result_metadata(conversation_index)
-}
-
 fn semantic_rationale_label(metadata: &SemanticResultMetadata) -> &'static str {
     match metadata.explanation.rationale_kind {
         crate::semantic::types::SemanticRationaleKind::SemanticOnly => "semantic",
@@ -290,20 +277,93 @@ fn semantic_row_metadata(metadata: &SemanticResultMetadata) -> String {
     format!("{:.2}", metadata.score_breakdown.hybrid)
 }
 
-fn render_semantic_status_bar(frame: &mut Frame, metadata: &SemanticResultMetadata, area: Rect) {
-    let details = format!(
-        "sem {:.2}  lex {:.2}  {}",
-        metadata.score_breakdown.semantic,
-        metadata.score_breakdown.lexical,
-        semantic_rationale_label(metadata)
-    );
-    let display = simple_truncate(&details, area.width.saturating_sub(2) as usize);
-    let line = Line::from(vec![
-        Span::raw("  "),
-        Span::styled(display, Style::default().fg(rgb(th().text_muted))),
-    ]);
-    let status = Paragraph::new(line).style(Style::default().bg(rgb(th().status_bar_bg)));
-    frame.render_widget(status, area);
+fn render_semantic_debug_popup(frame: &mut Frame, app: &App) {
+    let Some(metadata) = app.semantic_result_metadata_for_selection() else {
+        return;
+    };
+    let area = frame.area();
+    let popup = centered_modal_area(area, 68, 10);
+    frame.render_widget(Clear, popup);
+    let background = Block::default().style(Style::default().bg(rgb(th().overlay_bg)));
+    frame.render_widget(background, popup);
+    let block = Block::default()
+        .title(" Semantic result ")
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(rgb(th().accent)));
+    let inner = block.inner(popup);
+    frame.render_widget(block, popup);
+    if inner.is_empty() {
+        return;
+    }
+
+    let score = &metadata.score_breakdown;
+    let explanation = &metadata.explanation;
+    let lines = vec![
+        Line::from(vec![
+            Span::styled(" hybrid ", Style::default().fg(rgb(th().text_muted))),
+            Span::styled(
+                format!("{:.2}", score.hybrid),
+                Style::default().fg(rgb(th().accent)).bold(),
+            ),
+            Span::styled("  semantic ", Style::default().fg(rgb(th().text_muted))),
+            Span::styled(
+                format!("{:.2}", score.semantic),
+                Style::default().fg(rgb(th().text_primary)),
+            ),
+            Span::styled("  lexical ", Style::default().fg(rgb(th().text_muted))),
+            Span::styled(
+                format!("{:.2}", score.lexical),
+                Style::default().fg(rgb(th().text_primary)),
+            ),
+        ]),
+        Line::from(vec![
+            Span::styled(" rationale ", Style::default().fg(rgb(th().text_muted))),
+            Span::styled(
+                semantic_rationale_label(metadata),
+                Style::default().fg(rgb(th().text_primary)),
+            ),
+            Span::styled("  quality ", Style::default().fg(rgb(th().text_muted))),
+            Span::styled(
+                explanation.quality_label,
+                Style::default().fg(rgb(th().text_primary)),
+            ),
+        ]),
+        Line::from(vec![
+            Span::styled(" chunk ", Style::default().fg(rgb(th().text_muted))),
+            Span::styled(
+                format!(
+                    "{} #{}",
+                    explanation.chunk.session, explanation.chunk.chunk_index
+                ),
+                Style::default().fg(rgb(th().text_primary)),
+            ),
+        ]),
+        Line::from(vec![
+            Span::styled(" terms ", Style::default().fg(rgb(th().text_muted))),
+            Span::styled(
+                if explanation.matched_terms.is_empty() {
+                    "(none)".to_string()
+                } else {
+                    explanation.matched_terms.join(", ")
+                },
+                Style::default().fg(rgb(th().text_primary)),
+            ),
+        ]),
+        Line::from(vec![
+            Span::styled(" preview ", Style::default().fg(rgb(th().text_muted))),
+            Span::styled(
+                simple_truncate(
+                    &sanitize_preview(&explanation.evidence_preview),
+                    inner.width.saturating_sub(10) as usize,
+                ),
+                Style::default().fg(rgb(th().preview)),
+            ),
+        ]),
+        Line::from(""),
+        Line::styled(" Esc close", Style::default().fg(rgb(th().text_muted))),
+    ];
+    frame.render_widget(Paragraph::new(lines), inner);
 }
 
 /// Check if the header (with summary) fits on a single line given terminal width
@@ -440,6 +500,7 @@ fn render_view_mode(frame: &mut Frame, app: &App, state: &ViewState) {
                 *scroll,
             );
         }
+        DialogMode::SemanticDebug => render_semantic_debug_popup(frame, app),
         DialogMode::Rename { input, cursor } => render_rename_dialog(frame, input, *cursor),
         DialogMode::None => {}
     }
@@ -1281,6 +1342,7 @@ fn render_help_overlay(
         ];
         if semantic_available {
             shortcuts.insert(9, ("Ctrl+T".into(), "Toggle semantic search"));
+            shortcuts.insert(10, ("Ctrl+S".into(), "Semantic details"));
         }
         shortcuts
     };
@@ -2681,6 +2743,7 @@ mod tests {
         let (response_tx, response_rx) = mpsc::channel();
         app.set_query_for_test(query);
         app.set_semantic_receiver_for_test(7, response_rx);
+        app.set_semantic_prewarm_generation_for_test(7);
         response_tx
             .send(SemanticSearchMessage::Progress {
                 generation: 7,
@@ -2912,7 +2975,7 @@ mod tests {
     }
 
     #[test]
-    fn semantic_status_bar_shows_selected_score_breakdown_and_rationale() {
+    fn semantic_status_bar_keeps_hotkeys_when_result_metadata_exists() {
         let mut app = App::new_with_options(
             vec![test_conversation(), test_conversation()],
             ToolDisplayMode::Truncated,
@@ -2957,9 +3020,11 @@ mod tests {
             .unwrap();
 
         let line = row_text(&terminal, 0);
-        assert!(line.contains("sem 0.98"), "{line:?}");
-        assert!(line.contains("lex 0.25"), "{line:?}");
-        assert!(line.contains("lex boost"), "{line:?}");
+        assert!(line.contains("Enter"), "{line:?}");
+        assert!(line.contains("semantic·sem"), "{line:?}");
+        assert!(!line.contains("sem 0.98"), "{line:?}");
+        assert!(!line.contains("lex 0.25"), "{line:?}");
+        assert!(!line.contains("lex boost"), "{line:?}");
     }
 
     #[test]
@@ -2984,36 +3049,35 @@ mod tests {
     }
 
     #[test]
-    fn semantic_status_bar_renders_exact_rationale_labels() {
-        for (rationale, label) in [
-            (SemanticRationaleKind::SemanticOnly, "semantic"),
-            (SemanticRationaleKind::LexicalBoosted, "lex boost"),
-            (SemanticRationaleKind::WeakMatch, "weak"),
-        ] {
-            let mut app = semantic_app();
-            app.set_query_for_test("sentinel");
-            complete_semantic_search(
-                &mut app,
-                test_semantic_metadata_with_scores(
-                    "semantic evidence only",
-                    SemanticScoreBreakdown {
-                        hybrid: 1.0,
-                        semantic: 0.9,
-                        lexical: 0.1,
-                    },
-                    rationale,
-                ),
-            );
-            let backend = TestBackend::new(80, 2);
-            let mut terminal = Terminal::new(backend).unwrap();
+    fn semantic_debug_popup_renders_score_details() {
+        let mut app = semantic_app();
+        app.set_query_for_test("sentinel");
+        complete_semantic_search(
+            &mut app,
+            test_semantic_metadata_with_scores(
+                "semantic evidence only",
+                SemanticScoreBreakdown {
+                    hybrid: 1.23,
+                    semantic: 0.9,
+                    lexical: 0.1,
+                },
+                SemanticRationaleKind::LexicalBoosted,
+            ),
+        );
+        app.set_dialog_mode_for_test(DialogMode::SemanticDebug);
+        let backend = TestBackend::new(80, 12);
+        let mut terminal = Terminal::new(backend).unwrap();
 
-            terminal
-                .draw(|frame| render_list_status_bar(frame, &app, frame.area()))
-                .unwrap();
+        terminal
+            .draw(|frame| render_list_mode(frame, &app))
+            .unwrap();
 
-            let line = row_text(&terminal, 0);
-            assert!(line.contains(label), "{label:?} not in {line:?}");
-        }
+        let contents = terminal_contents(&terminal);
+        assert!(contents.contains("Semantic result"), "{contents:?}");
+        assert!(contents.contains("1.23"), "{contents:?}");
+        assert!(contents.contains("0.90"), "{contents:?}");
+        assert!(contents.contains("lex boost"), "{contents:?}");
+        assert!(contents.contains("semantic evidence only"), "{contents:?}");
     }
 
     #[test]
