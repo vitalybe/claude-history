@@ -123,6 +123,20 @@ impl SemanticIndexState {
         if cancellation.is_cancelled() {
             return Err(AppError::SemanticSearchCancelled);
         }
+        if self.signature_matches(request) {
+            progress(SemanticIndexProgress::CacheReady);
+            return Ok(SemanticIndexResponse {
+                hits: Vec::new(),
+                indexed_chunk_count: self.embedded_chunks.len(),
+                query_embedding_returned: true,
+                progress: if self.embedded_chunks.is_empty() {
+                    SemanticIndexProgress::EmptyCorpus
+                } else {
+                    SemanticIndexProgress::CacheReady
+                },
+                prewarm: request.prewarm,
+            });
+        }
         let next_signature = semantic_index_signature(request, self.chunk_config);
         if self.signature.as_ref() != Some(&next_signature) {
             let chunks = full_corpus_chunks(request, self.chunk_config);
@@ -1193,7 +1207,7 @@ mod tests {
             )
             .expect("first corpus ranks");
         let updated = vec![
-            conversation("/projects/project-a/session-a.jsonl", vec!["visible alpha"]),
+            conversation("/projects/project-a/session-a.jsonl", vec!["visible delta"]),
             conversation("/projects/project-a/session-b.jsonl", vec!["visible beta"]),
             conversation("/projects/project-a/session-c.jsonl", vec!["visible gamma"]),
         ];
@@ -1220,6 +1234,7 @@ mod tests {
         assert_eq!(
             embedder.embedded_passages,
             vec![vec![
+                "visible delta".to_string(),
                 "visible beta".to_string(),
                 "visible gamma".to_string()
             ]]
