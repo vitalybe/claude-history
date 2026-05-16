@@ -1447,7 +1447,7 @@ fn render_list(frame: &mut Frame, app: &App, area: Rect) {
                 });
 
             let semantic_metadata = app.semantic_result_metadata(conv_idx);
-            let semantic_meta_part = (semantic_mode && width >= 100)
+            let semantic_meta_part = (semantic_mode && width >= 70)
                 .then(|| semantic_metadata.map(semantic_row_metadata))
                 .flatten();
             let semantic_meta_len = semantic_meta_part
@@ -2811,7 +2811,7 @@ mod tests {
                 SemanticRationaleKind::LexicalBoosted,
             ),
         );
-        let backend = TestBackend::new(100, 8);
+        let backend = TestBackend::new(70, 8);
         let mut terminal = Terminal::new(backend).unwrap();
 
         terminal
@@ -2840,7 +2840,7 @@ mod tests {
                 SemanticRationaleKind::LexicalBoosted,
             ),
         );
-        let backend = TestBackend::new(80, 8);
+        let backend = TestBackend::new(69, 8);
         let mut terminal = Terminal::new(backend).unwrap();
 
         terminal
