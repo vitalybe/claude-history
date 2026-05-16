@@ -2696,7 +2696,7 @@ mod tests {
     }
 
     #[test]
-    fn search_bar_separates_semantic_status_at_narrow_width() {
+    fn search_bar_hides_transient_semantic_status_at_narrow_width() {
         let app = semantic_searching_app("你好世界widequery", SemanticProgress::Ranking);
         let width = 24;
         let backend = TestBackend::new(width, 4);
@@ -2708,7 +2708,9 @@ mod tests {
 
         let line = row_text(&terminal, 0);
         assert_eq!(line.chars().count(), width as usize);
-        assert!(line.contains("sem"), "{line:?}");
+        assert!(!line.contains("sem ranking"), "{line:?}");
+        assert!(!line.contains("sem model"), "{line:?}");
+        assert!(!line.contains("sem cache"), "{line:?}");
         assert!(line.contains("1/1"), "{line:?}");
         assert_cursor_inside(&mut terminal, width);
     }

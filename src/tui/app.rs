@@ -1087,16 +1087,16 @@ impl App {
             .pending_status
             .as_ref()
             .unwrap_or(&self.semantic_search.last_status);
-        Some(match status {
-            SemanticProgress::Idle => "sem ready".to_string(),
-            SemanticProgress::InitializingModel => "sem model".to_string(),
-            SemanticProgress::CacheReady => "sem cache".to_string(),
-            SemanticProgress::MissingCache { count } => format!("sem cache missing {count}"),
-            SemanticProgress::Ranking => "sem ranking".to_string(),
-            SemanticProgress::Complete => "sem done".to_string(),
-            SemanticProgress::EmptyCorpus => "sem no text".to_string(),
-            SemanticProgress::Failed => "sem failed".to_string(),
-        })
+        match status {
+            SemanticProgress::Idle
+            | SemanticProgress::InitializingModel
+            | SemanticProgress::CacheReady
+            | SemanticProgress::Ranking
+            | SemanticProgress::Complete => None,
+            SemanticProgress::MissingCache { count } => Some(format!("sem cache missing {count}")),
+            SemanticProgress::EmptyCorpus => Some("sem no text".to_string()),
+            SemanticProgress::Failed => Some("sem failed".to_string()),
+        }
     }
 
     pub fn has_project_context(&self) -> bool {
