@@ -400,7 +400,7 @@ impl App {
             searchable: Arc::new(searchable.clone()),
         });
 
-        let mut app = Self {
+        Self {
             conversations_snapshot: Arc::new(conversations.clone()),
             conversations,
             searchable,
@@ -433,9 +433,7 @@ impl App {
                 available: search_options.semantic_enabled,
                 ..Default::default()
             },
-        };
-        app.prewarm_semantic_cache();
-        app
+        }
     }
 
     /// Create a new app in loading state
@@ -1163,7 +1161,11 @@ impl App {
         {
             return None;
         }
-        let status = self.semantic_search.prewarm_status.as_ref()?;
+        let status = self
+            .semantic_search
+            .prewarm_status
+            .as_ref()
+            .or(self.semantic_search.pending_status.as_ref())?;
         match status {
             SemanticProgress::InitializingModel => Some("sem preparing embeddings".to_string()),
             SemanticProgress::Embedding { completed, total } => {

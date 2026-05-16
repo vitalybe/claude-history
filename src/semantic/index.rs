@@ -132,7 +132,6 @@ impl SemanticIndexState {
         } else {
             progress(SemanticIndexProgress::CacheReady);
         }
-        save_cache(&self.cache);
 
         if self.embedded_chunks.is_empty() || request.prewarm {
             return Ok(SemanticIndexResponse {
@@ -547,7 +546,7 @@ mod tests {
         assert_eq!(response.progress, SemanticIndexProgress::Complete);
         assert_eq!(embedder.passage_calls, 1);
         assert_eq!(embedder.query_calls, 1);
-        assert_eq!(save_calls, 2);
+        assert_eq!(save_calls, 1);
         assert_eq!(
             cache_miss_count(
                 &semantic_chunks(&request, ChunkConfig::default()),
