@@ -801,7 +801,9 @@ impl App {
         }
         self.semantic_search.last_status = SemanticProgress::Idle;
         self.semantic_search.error = None;
-        self.semantic_search.results.clear();
+        if prewarm {
+            self.semantic_search.results.clear();
+        }
         let candidates = self.semantic_candidates();
         self.ensure_semantic_worker();
         if let Some(tx) = &self.semantic_search.worker_tx {
@@ -3773,6 +3775,35 @@ mod tests {
             request.candidates[0].conversation.semantic_turns,
             vec!["needle"]
         );
+    }
+
+    #[test]
+    fn semantic_query_keeps_existing_metadata_while_pending() {
+        let mut app = app_with_options(
+            vec![conversation(
+                Some("Visible"),
+                "-tmp-visible",
+                "22222222-2222-4222-8222-222222222222",
+                "needle",
+            )],
+            vec![],
+            TuiSearchOptions {
+                semantic_enabled: true,
+                ..Default::default()
+            },
+        );
+        app.list_search_mode = ListSearchMode::Semantic;
+        app.semantic_search.results = HashMap::from([(0, test_semantic_metadata(0, "old"))]);
+        let (request_tx, request_rx) = mpsc::channel();
+        let (_response_tx, response_rx) = mpsc::channel();
+        app.semantic_search.worker_tx = Some(request_tx);
+        app.semantic_search.worker_rx = Some(response_rx);
+
+        app.query = "needle".to_string();
+        app.dispatch_search();
+
+        let _ = request_rx.try_recv().expect("semantic request");
+        assert!(app.semantic_search.results.contains_key(&0));
     }
 
     #[test]
