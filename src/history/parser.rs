@@ -11,6 +11,7 @@ use crate::claude::{
 use crate::cli::DebugLevel;
 use crate::debug;
 use crate::error::Result;
+use crate::semantic::filter::{SemanticTurnRole, filter_turn};
 use crate::tui::search::normalize_for_search;
 use chrono::{DateTime, Local};
 use std::collections::{HashMap, VecDeque};
@@ -139,6 +140,7 @@ pub(crate) fn process_conversation_reader<R: BufRead>(
 
                         // Check for skill invocations first - extract clean preview
                         // (e.g. "/consult how to do X?" from command XML tags)
+                        let semantic_input = preview_text.clone();
                         let effective_preview =
                             if let Some(skill_preview) = extract_skill_preview(&preview_text) {
                                 skill_preview
@@ -163,7 +165,10 @@ pub(crate) fn process_conversation_reader<R: BufRead>(
                         if is_warmup {
                             skip_next_assistant = true;
                         } else if !effective_preview.is_empty() {
-                            semantic_turns.push(effective_preview.clone());
+                            if let Some(turn) = filter_turn(SemanticTurnRole::User, &semantic_input)
+                            {
+                                semantic_turns.push(turn);
+                            }
                             message_count += 1;
                             preview_parts.push(effective_preview);
                             seen_real_user_message = true;
@@ -215,7 +220,11 @@ pub(crate) fn process_conversation_reader<R: BufRead>(
                         if skip_next_assistant {
                             skip_next_assistant = false;
                         } else if seen_real_user_message && !preview_text.is_empty() {
-                            semantic_turns.push(preview_text.clone());
+                            if let Some(turn) =
+                                filter_turn(SemanticTurnRole::Assistant, &preview_text)
+                            {
+                                semantic_turns.push(turn);
+                            }
                             // Only add assistant messages to preview after we've seen a real user message
                             message_count += 1;
                             preview_parts.push(preview_text);
@@ -366,10 +375,7 @@ pub(crate) fn process_conversation_reader<R: BufRead>(
         preview_first,
         preview_last,
         full_text,
-        semantic_turns: semantic_turns
-            .into_iter()
-            .filter_map(|turn| semantic_embedding_turn(&turn))
-            .collect(),
+        semantic_turns,
         search_text_lower,
         project_name: None,
         project_path: None,
@@ -473,61 +479,6 @@ pub(crate) fn is_clear_only_conversation(user_messages: &[String]) -> bool {
     }
 
     saw_caveat && saw_command && saw_stdout
-}
-
-fn semantic_embedding_turn(turn: &str) -> Option<String> {
-    let without_code = strip_markdown_code_fences(turn);
-    let normalized = normalize_whitespace(&without_code);
-    if normalized.is_empty() || is_low_value_semantic_turn(&normalized) {
-        None
-    } else {
-        Some(normalized)
-    }
-}
-
-fn strip_markdown_code_fences(text: &str) -> String {
-    let mut output = Vec::new();
-    let mut in_fence = false;
-
-    for line in text.lines() {
-        if line.trim_start().starts_with("```") {
-            in_fence = !in_fence;
-            continue;
-        }
-        if !in_fence {
-            output.push(line);
-        }
-    }
-
-    output.join("\n")
-}
-
-fn is_low_value_semantic_turn(turn: &str) -> bool {
-    let trimmed = turn.trim();
-    if is_clear_metadata_message(trimmed) {
-        return true;
-    }
-    if trimmed.starts_with('/') {
-        return true;
-    }
-    if trimmed.contains("<system-reminder>")
-        || trimmed.contains("</system-reminder>")
-        || trimmed.contains("<local-command-caveat>")
-        || trimmed.contains("</local-command-caveat>")
-        || trimmed.contains("<local-command-stdout>")
-        || trimmed.contains("</local-command-stdout>")
-    {
-        return true;
-    }
-    if trimmed.contains("<command-message>")
-        || trimmed.contains("</command-message>")
-        || trimmed.contains("<command-name>")
-        || trimmed.contains("</command-name>")
-    {
-        return true;
-    }
-
-    false
 }
 
 /// Normalize whitespace in a string
@@ -1478,6 +1429,7 @@ mod tests {
             vec![
                 "Find conversations about semantic search",
                 "Relevant answer",
+                "improve semantic input",
                 "After command real question",
                 "After command real answer"
             ]
@@ -1535,6 +1487,36 @@ mod tests {
         assert!(semantic.contains("Semantic cache stores dialogue."));
         assert!(semantic.contains("Use generated embeddings."));
         assert!(!semantic.contains("let secret"));
+        assert!(!semantic.contains("```"));
+    }
+
+    #[test]
+    fn inline_markdown_code_fences_remain_lexical_only() {
+        let content = [
+            user_msg("Design the preview pane", None),
+            serde_json::json!({
+                "type": "assistant",
+                "timestamp": "2024-01-01T00:00:00Z",
+                "message": {
+                    "role": "assistant",
+                    "content": [{
+                        "type": "text",
+                        "text": "The idea is a responsive detail pane. ```text ╭─ Search ─╮ │ pasted UI mockup │ ╰──────────╯ ``` It should help users recognize conversations."
+                    }]
+                }
+            })
+            .to_string(),
+        ]
+        .join("\n");
+
+        let conv = parse_jsonl(&content).unwrap().unwrap();
+        let semantic = conv.semantic_turns.join(" ");
+
+        assert!(conv.full_text.contains("pasted UI mockup"));
+        assert!(semantic.contains("responsive detail pane"));
+        assert!(semantic.contains("recognize conversations"));
+        assert!(!semantic.contains("pasted UI mockup"));
+        assert!(!semantic.contains("╭─ Search"));
         assert!(!semantic.contains("```"));
     }
 

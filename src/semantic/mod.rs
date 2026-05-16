@@ -3,6 +3,7 @@ pub mod chunk;
 pub mod embed;
 pub mod evidence;
 pub mod fastembed;
+pub mod filter;
 pub mod index;
 pub mod output;
 pub mod rank;
