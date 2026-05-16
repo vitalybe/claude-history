@@ -1425,32 +1425,6 @@ fn render_list(frame: &mut Frame, app: &App, area: Rect) {
                 Style::default().fg(rgb(th().border))
             };
 
-            // Build left part: indicator + project + optional custom title + optional summary
-            let raw_project_part = conv
-                .project_name
-                .as_ref()
-                .map(|name| name.to_string())
-                .unwrap_or_default();
-            let project_part = if width < 90 {
-                simple_truncate(&raw_project_part, (width / 3).clamp(12, 20))
-            } else {
-                raw_project_part
-            };
-
-            // Build custom title part (truncated if very long)
-            let custom_title_part = conv
-                .custom_title
-                .as_ref()
-                .filter(|s| !s.is_empty())
-                .map(|s| {
-                    let max_title = 40;
-                    if s.chars().count() > max_title {
-                        format!(" · {}…", s.chars().take(max_title - 1).collect::<String>())
-                    } else {
-                        format!(" · {}", s)
-                    }
-                });
-
             let semantic_metadata = app.semantic_result_metadata(conv_idx);
             let semantic_meta_part = (semantic_mode && width >= 70)
                 .then(|| semantic_metadata.map(semantic_row_metadata))
@@ -1470,12 +1444,38 @@ fn render_list(frame: &mut Frame, app: &App, area: Rect) {
                 + 3
                 + UnicodeWidthStr::width(timestamp.as_str());
             let indicator_len = UnicodeWidthStr::width(indicator);
+            let min_padding = 2;
+            let left_budget = width.saturating_sub(indicator_len + right_len + min_padding);
+
+            // Build left part: indicator + project + optional custom title + optional summary
+            let raw_project_part = conv
+                .project_name
+                .as_ref()
+                .map(|name| name.to_string())
+                .unwrap_or_default();
+            let has_title_or_summary = conv.custom_title.as_ref().is_some_and(|s| !s.is_empty())
+                || conv.summary.as_ref().is_some_and(|s| !s.is_empty());
+            let raw_project_width = UnicodeWidthStr::width(raw_project_part.as_str());
+            let reserved_left_detail = if width < 90 && has_title_or_summary {
+                (left_budget / 3).clamp(10, 24)
+            } else {
+                0
+            };
+            let project_budget =
+                raw_project_width.min(left_budget.saturating_sub(reserved_left_detail));
+            let project_part = simple_truncate(&raw_project_part, project_budget);
             let project_len = UnicodeWidthStr::width(project_part.as_str());
+
+            let title_budget = left_budget.saturating_sub(project_len + 3).min(40);
+            let custom_title_part = conv
+                .custom_title
+                .as_ref()
+                .filter(|s| !s.is_empty() && title_budget > 4)
+                .map(|s| format!(" · {}", simple_truncate(s, title_budget)));
             let custom_title_len = custom_title_part
                 .as_ref()
                 .map(|s| UnicodeWidthStr::width(s.as_str()))
                 .unwrap_or(0);
-            let min_padding = 2;
 
             let available_for_summary = width.saturating_sub(
                 indicator_len + project_len + custom_title_len + right_len + min_padding + 4,
@@ -2651,6 +2651,8 @@ mod tests {
     fn app_with_project_name(project_name: &str) -> App {
         let mut conversation = test_conversation();
         conversation.project_name = Some(project_name.to_string());
+        conversation.custom_title = Some("semantic status title".to_string());
+        conversation.summary = Some("semantic status summary".to_string());
         App::new(
             vec![conversation],
             ToolDisplayMode::Truncated,
@@ -2805,9 +2807,12 @@ mod tests {
             .unwrap();
 
         let first_row = row_text(&terminal, 0);
-        assert!(first_row.contains("claude-history/drop…"), "{first_row:?}");
         assert!(
-            !first_row.contains("drop-semantic-feature-gate"),
+            first_row.contains("claude-history/drop-semantic-…"),
+            "{first_row:?}"
+        );
+        assert!(
+            !first_row.contains("claude-history/drop-semantic-feature-gate"),
             "{first_row:?}"
         );
     }
