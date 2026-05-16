@@ -1426,11 +1426,16 @@ fn render_list(frame: &mut Frame, app: &App, area: Rect) {
             };
 
             // Build left part: indicator + project + optional custom title + optional summary
-            let project_part = conv
+            let raw_project_part = conv
                 .project_name
                 .as_ref()
                 .map(|name| name.to_string())
                 .unwrap_or_default();
+            let project_part = if width < 90 {
+                simple_truncate(&raw_project_part, (width / 3).clamp(12, 20))
+            } else {
+                raw_project_part
+            };
 
             // Build custom title part (truncated if very long)
             let custom_title_part = conv
@@ -2643,6 +2648,18 @@ mod tests {
         )
     }
 
+    fn app_with_project_name(project_name: &str) -> App {
+        let mut conversation = test_conversation();
+        conversation.project_name = Some(project_name.to_string());
+        App::new(
+            vec![conversation],
+            ToolDisplayMode::Truncated,
+            false,
+            KeyBindings::default(),
+            vec![],
+        )
+    }
+
     fn semantic_searching_app(query: &str, progress: SemanticProgress) -> App {
         let mut app = semantic_app();
         let (response_tx, response_rx) = mpsc::channel();
@@ -2775,6 +2792,24 @@ mod tests {
             }))
             .unwrap();
         app.receive_search_results();
+    }
+
+    #[test]
+    fn list_truncates_long_project_names_on_narrow_rows() {
+        let app = app_with_project_name("claude-history/drop-semantic-feature-gate");
+        let backend = TestBackend::new(70, 8);
+        let mut terminal = Terminal::new(backend).unwrap();
+
+        terminal
+            .draw(|frame| render_list(frame, &app, frame.area()))
+            .unwrap();
+
+        let first_row = row_text(&terminal, 0);
+        assert!(first_row.contains("claude-history/drop…"), "{first_row:?}");
+        assert!(
+            !first_row.contains("drop-semantic-feature-gate"),
+            "{first_row:?}"
+        );
     }
 
     #[test]
