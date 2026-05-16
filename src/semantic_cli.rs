@@ -18,7 +18,9 @@ pub fn run(query: &str, conversations: &[Conversation], top: usize, local: bool)
     let candidates = semantic_index_candidates(&selected);
     let request = SemanticIndexRequest {
         query,
-        candidates: &candidates,
+        full_corpus: &candidates,
+        scope: &candidates,
+        corpus_version: 1,
         prewarm: false,
     };
     let mut state = SemanticIndexState::new();
@@ -87,7 +89,9 @@ pub fn generate_cache(conversations: &[Conversation], local: bool) -> Result<()>
     let candidates = semantic_index_candidates(&selected);
     let request = SemanticIndexRequest {
         query: "",
-        candidates: &candidates,
+        full_corpus: &candidates,
+        scope: &candidates,
+        corpus_version: 1,
         prewarm: true,
     };
     let mut state = SemanticIndexState::new();
@@ -444,7 +448,9 @@ mod tests {
         let query = "alpha".to_string();
         let request = crate::semantic::index::SemanticIndexRequest {
             query: &query,
-            candidates: &candidates,
+            full_corpus: &candidates,
+            scope: &candidates,
+            corpus_version: 1,
             prewarm: false,
         };
         let cache = crate::semantic::cache::empty_embedding_cache(ChunkConfig::default());
@@ -480,7 +486,9 @@ mod tests {
         let query = "alpha".to_string();
         let request = crate::semantic::index::SemanticIndexRequest {
             query: &query,
-            candidates: &candidates,
+            full_corpus: &candidates,
+            scope: &candidates,
+            corpus_version: 1,
             prewarm: false,
         };
         let cache = crate::semantic::cache::empty_embedding_cache(ChunkConfig::default());

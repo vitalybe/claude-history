@@ -145,6 +145,7 @@ mod tests {
             conversation_index,
             session: session.to_string(),
             chunk_index,
+            key: format!("{session}:{chunk_index}"),
             text: text.to_string(),
             embedding,
         }

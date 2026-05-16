@@ -106,10 +106,13 @@ fn run_semantic_worker(
         }
 
         cancellation = SemanticCancellationToken::new();
-        let candidates = worker.semantic_candidates();
+        let full_corpus = worker.full_corpus_candidates();
+        let scope = worker.semantic_candidates();
         let index_request = SemanticIndexRequest {
             query: &request.query,
-            candidates: &candidates,
+            full_corpus: &full_corpus,
+            scope: &scope,
+            corpus_version: request.corpus_version,
             prewarm: request.prewarm,
         };
         let response = match state.has_chunks(&index_request, &cancellation) {
@@ -252,6 +255,17 @@ impl SemanticWorkerState {
         } else {
             Some(VersionState::Stale)
         }
+    }
+
+    fn full_corpus_candidates(&self) -> Vec<SemanticIndexCandidate> {
+        self.corpus
+            .iter()
+            .enumerate()
+            .map(|(index, conversation)| SemanticIndexCandidate {
+                index,
+                conversation: conversation.clone(),
+            })
+            .collect()
     }
 
     fn semantic_candidates(&self) -> Vec<SemanticIndexCandidate> {
@@ -491,7 +505,7 @@ mod tests {
     }
 
     #[test]
-    fn worker_builds_candidates_from_current_scope() {
+    fn worker_builds_distinct_full_corpus_and_scoped_candidates() {
         let mut worker = SemanticWorkerState::default();
         let cancellation = SemanticCancellationToken::new();
         worker.apply_command(
@@ -513,8 +527,12 @@ mod tests {
             &cancellation,
         );
 
+        let full_corpus = worker.full_corpus_candidates();
         let candidates = worker.semantic_candidates();
 
+        assert_eq!(full_corpus.len(), 2);
+        assert_eq!(full_corpus[0].index, 0);
+        assert_eq!(full_corpus[1].index, 1);
         assert_eq!(candidates.len(), 1);
         assert_eq!(candidates[0].index, 1);
         assert_eq!(candidates[0].conversation.semantic_turns, vec!["visible"]);

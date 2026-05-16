@@ -63,6 +63,7 @@ pub struct EmbeddedChunk {
     pub conversation_index: usize,
     pub session: String,
     pub chunk_index: usize,
+    pub key: String,
     pub text: String,
     pub embedding: Vec<f32>,
 }

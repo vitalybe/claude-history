@@ -38,6 +38,7 @@ pub fn embed_chunks_with_progress_and_save(
                 conversation_index: chunk.conversation_index,
                 session: chunk.session,
                 chunk_index: chunk.chunk_index,
+                key: chunk.key,
                 text: entry.text.clone(),
                 embedding: entry.embedding.clone(),
             });
@@ -60,8 +61,9 @@ pub fn embed_chunks_with_progress_and_save(
 
         for (chunk, embedding) in batch.iter().cloned().zip(embeddings) {
             let metadata = chunk.metadata.unwrap_or_default();
+            let key = chunk.key;
             cache.entries.insert(
-                chunk.key,
+                key.clone(),
                 CachedChunk {
                     file_size: metadata.file_size,
                     mtime_secs: metadata.mtime_secs,
@@ -74,6 +76,7 @@ pub fn embed_chunks_with_progress_and_save(
                 conversation_index: chunk.conversation_index,
                 session: chunk.session,
                 chunk_index: chunk.chunk_index,
+                key,
                 text: chunk.text,
                 embedding,
             });
@@ -108,6 +111,7 @@ pub fn cached_chunks(
                 conversation_index: chunk.conversation_index,
                 session: chunk.session,
                 chunk_index: chunk.chunk_index,
+                key: chunk.key,
                 text: entry.text.clone(),
                 embedding: entry.embedding.clone(),
             });

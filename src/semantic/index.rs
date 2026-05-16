@@ -10,6 +10,7 @@ use crate::semantic::types::{
     ChunkConfig, EmbeddedChunk, EmbeddingCache, SemanticCancellationToken, SemanticChunk,
     SemanticHit,
 };
+use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -21,7 +22,9 @@ pub struct SemanticIndexCandidate {
 
 pub struct SemanticIndexRequest<'a> {
     pub query: &'a str,
-    pub candidates: &'a [SemanticIndexCandidate],
+    pub full_corpus: &'a [SemanticIndexCandidate],
+    pub scope: &'a [SemanticIndexCandidate],
+    pub corpus_version: u64,
     pub prewarm: bool,
 }
 
@@ -44,6 +47,7 @@ pub enum SemanticIndexProgress {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SemanticIndexSignature {
+    corpus_version: u64,
     chunk_config: ChunkConfig,
     conversations: Vec<ConversationSignature>,
 }
@@ -55,9 +59,14 @@ struct ConversationSignature {
     semantic_turns: Vec<String>,
 }
 
+#[derive(Clone)]
+struct ResidentChunk {
+    embedded: EmbeddedChunk,
+}
+
 pub struct SemanticIndexState {
     signature: Option<SemanticIndexSignature>,
-    embedded_chunks: Vec<EmbeddedChunk>,
+    embedded_chunks: Vec<ResidentChunk>,
     pub cache: EmbeddingCache,
     pub chunk_config: ChunkConfig,
 }
@@ -84,11 +93,10 @@ impl SemanticIndexState {
         if cancellation.is_cancelled() {
             return Err(AppError::SemanticSearchCancelled);
         }
-        let next_signature = semantic_index_signature(request, self.chunk_config);
-        if self.signature.as_ref() == Some(&next_signature) {
+        if self.signature_matches(request) {
             return Ok(!self.embedded_chunks.is_empty());
         }
-        Ok(!semantic_chunks(request, self.chunk_config).is_empty())
+        Ok(!full_corpus_chunks(request, self.chunk_config).is_empty())
     }
 
     pub fn clear_empty(
@@ -117,7 +125,7 @@ impl SemanticIndexState {
         }
         let next_signature = semantic_index_signature(request, self.chunk_config);
         if self.signature.as_ref() != Some(&next_signature) {
-            let chunks = semantic_chunks(request, self.chunk_config);
+            let chunks = full_corpus_chunks(request, self.chunk_config);
 
             if chunks.is_empty() {
                 self.signature = Some(next_signature);
@@ -140,7 +148,7 @@ impl SemanticIndexState {
             } else {
                 SemanticIndexProgress::CacheReady
             });
-            self.embedded_chunks = embed_chunks_with_progress_and_save(
+            let embedded_chunks = embed_chunks_with_progress_and_save(
                 embedder,
                 chunks,
                 &mut self.cache,
@@ -149,7 +157,11 @@ impl SemanticIndexState {
                     progress(SemanticIndexProgress::Embedding { completed, total });
                 },
                 &mut save_cache,
-            )?;
+            )?
+            .into_iter()
+            .map(|embedded| ResidentChunk { embedded })
+            .collect();
+            self.embedded_chunks = embedded_chunks;
             self.signature = Some(next_signature);
         } else {
             progress(SemanticIndexProgress::CacheReady);
@@ -178,12 +190,13 @@ impl SemanticIndexState {
         if cancellation.is_cancelled() {
             return Err(AppError::SemanticSearchCancelled);
         }
-        if self.embedded_chunks.is_empty() || request.prewarm {
+        let scoped_chunks = self.scoped_embedded_chunks(request, cancellation)?;
+        if scoped_chunks.is_empty() || request.prewarm {
             return Ok(SemanticIndexResponse {
                 hits: Vec::new(),
                 indexed_chunk_count: self.embedded_chunks.len(),
                 query_embedding_returned: true,
-                progress: if self.embedded_chunks.is_empty() {
+                progress: if scoped_chunks.is_empty() {
                     SemanticIndexProgress::EmptyCorpus
                 } else {
                     SemanticIndexProgress::CacheReady
@@ -206,7 +219,7 @@ impl SemanticIndexState {
         let hits = rank_chunks(
             request.query,
             &query_embedding,
-            &self.embedded_chunks,
+            &scoped_chunks,
             cancellation,
         )?;
         let progress = if hits.is_empty() {
@@ -257,13 +270,57 @@ impl Default for SemanticIndexState {
     }
 }
 
+impl SemanticIndexState {
+    fn signature_matches(&self, request: &SemanticIndexRequest<'_>) -> bool {
+        self.signature
+            .as_ref()
+            .is_some_and(|signature| signature.corpus_version == request.corpus_version)
+    }
+
+    fn scoped_embedded_chunks(
+        &self,
+        request: &SemanticIndexRequest<'_>,
+        cancellation: &SemanticCancellationToken,
+    ) -> Result<Vec<EmbeddedChunk>> {
+        let scope = request
+            .scope
+            .iter()
+            .map(|candidate| candidate.index)
+            .collect::<HashSet<_>>();
+        let mut chunks = Vec::new();
+        for chunk in &self.embedded_chunks {
+            if cancellation.is_cancelled() {
+                return Err(AppError::SemanticSearchCancelled);
+            }
+            if scope.contains(&chunk.embedded.conversation_index) {
+                chunks.push(chunk.embedded.clone());
+            }
+        }
+        Ok(chunks)
+    }
+}
+
+#[cfg(test)]
 fn semantic_chunks(
     request: &SemanticIndexRequest<'_>,
     chunk_config: ChunkConfig,
 ) -> Vec<SemanticChunk> {
+    candidate_chunks(request.scope, chunk_config)
+}
+
+fn full_corpus_chunks(
+    request: &SemanticIndexRequest<'_>,
+    chunk_config: ChunkConfig,
+) -> Vec<SemanticChunk> {
+    candidate_chunks(request.full_corpus, chunk_config)
+}
+
+fn candidate_chunks(
+    candidates: &[SemanticIndexCandidate],
+    chunk_config: ChunkConfig,
+) -> Vec<SemanticChunk> {
     build_chunks_with_indices(
-        request
-            .candidates
+        candidates
             .iter()
             .map(|candidate| (candidate.index, candidate.conversation.as_ref())),
         chunk_config,
@@ -275,7 +332,7 @@ fn semantic_index_signature(
     chunk_config: ChunkConfig,
 ) -> SemanticIndexSignature {
     let conversations = request
-        .candidates
+        .full_corpus
         .iter()
         .map(|candidate| ConversationSignature {
             index: candidate.index,
@@ -285,6 +342,7 @@ fn semantic_index_signature(
         .collect();
 
     SemanticIndexSignature {
+        corpus_version: request.corpus_version,
         chunk_config,
         conversations,
     }
@@ -389,7 +447,9 @@ mod tests {
     ) -> SemanticIndexRequest<'a> {
         SemanticIndexRequest {
             query,
-            candidates,
+            full_corpus: candidates,
+            scope: candidates,
+            corpus_version: 1,
             prewarm: false,
         }
     }
@@ -407,8 +467,20 @@ mod tests {
         );
     }
 
+    fn candidates_from(conversations: &[Conversation]) -> Vec<SemanticIndexCandidate> {
+        conversations
+            .iter()
+            .cloned()
+            .enumerate()
+            .map(|(index, conversation)| SemanticIndexCandidate {
+                index,
+                conversation: Arc::new(conversation),
+            })
+            .collect()
+    }
+
     fn cache_request_passages(cache: &mut EmbeddingCache, request: &SemanticIndexRequest<'_>) {
-        for chunk in semantic_chunks(request, ChunkConfig::default()) {
+        for chunk in full_corpus_chunks(request, ChunkConfig::default()) {
             let embedding = match chunk.text.as_str() {
                 "visible beta" => vec![0.0, 1.0],
                 "visible alpha" => vec![1.0, 0.0],
@@ -773,7 +845,9 @@ mod tests {
         let (query, candidates) = request("", conversations, vec![0]);
         let request = SemanticIndexRequest {
             query: &query,
-            candidates: &candidates,
+            full_corpus: &candidates,
+            scope: &candidates,
+            corpus_version: 1,
             prewarm: true,
         };
         let cache = empty_embedding_cache(ChunkConfig::default());
@@ -877,6 +951,332 @@ mod tests {
                 .collect::<Vec<_>>(),
             (0..LEGACY_LIMIT + 25).collect::<Vec<_>>()
         );
+    }
+
+    #[test]
+    fn warm_full_corpus_reuses_embeddings_across_scope_toggles() {
+        let conversations = vec![
+            conversation("/projects/project-a/session-a.jsonl", vec!["visible alpha"]),
+            conversation("/projects/project-a/session-b.jsonl", vec!["visible beta"]),
+        ];
+        let all = (0..conversations.len())
+            .map(|index| SemanticIndexCandidate {
+                index,
+                conversation: Arc::new(conversations[index].clone()),
+            })
+            .collect::<Vec<_>>();
+        let alpha_scope = vec![all[0].clone()];
+        let beta_scope = vec![all[1].clone()];
+        let mut cache = empty_embedding_cache(ChunkConfig::default());
+        let alpha_query = "alpha".to_string();
+        let alpha_request = SemanticIndexRequest {
+            query: &alpha_query,
+            full_corpus: &all,
+            scope: &alpha_scope,
+            corpus_version: 1,
+            prewarm: false,
+        };
+        cache_request_passages(&mut cache, &alpha_request);
+        let mut state = SemanticIndexState::with_cache(ChunkConfig::default(), cache);
+        let mut embedder = FakeEmbedder::new();
+
+        let alpha = state
+            .refresh_or_prewarm(
+                &alpha_request,
+                &mut embedder,
+                &SemanticCancellationToken::new(),
+                |_| {},
+                |_| {},
+            )
+            .expect("alpha scope ranks");
+        let beta_query = "beta".to_string();
+        let beta_request = SemanticIndexRequest {
+            query: &beta_query,
+            full_corpus: &all,
+            scope: &beta_scope,
+            corpus_version: 1,
+            prewarm: false,
+        };
+        let beta = state
+            .refresh_or_prewarm(
+                &beta_request,
+                &mut embedder,
+                &SemanticCancellationToken::new(),
+                |_| {},
+                |_| {},
+            )
+            .expect("beta scope ranks");
+
+        assert_eq!(embedder.passage_calls, 0);
+        assert_eq!(embedder.query_calls, 2);
+        assert_eq!(alpha.indexed_chunk_count, 2);
+        assert_eq!(beta.indexed_chunk_count, 2);
+        assert_eq!(alpha.hits[0].conversation_index, 0);
+        assert_eq!(beta.hits[0].conversation_index, 1);
+    }
+
+    #[test]
+    fn empty_scope_reuses_warm_corpus_without_query_embedding() {
+        let conversations = vec![conversation(
+            "/projects/project-a/session-a.jsonl",
+            vec!["visible alpha"],
+        )];
+        let (query, candidates) = request("alpha", conversations, vec![0]);
+        let populated = index_request(&query, &candidates);
+        let mut cache = empty_embedding_cache(ChunkConfig::default());
+        cache_request_passages(&mut cache, &populated);
+        let mut state = SemanticIndexState::with_cache(ChunkConfig::default(), cache);
+        let mut embedder = FakeEmbedder::new();
+        state
+            .refresh_or_prewarm(
+                &populated,
+                &mut embedder,
+                &SemanticCancellationToken::new(),
+                |_| {},
+                |_| {},
+            )
+            .expect("warm corpus");
+        let empty_request = SemanticIndexRequest {
+            query: &query,
+            full_corpus: &candidates,
+            scope: &[],
+            corpus_version: 1,
+            prewarm: false,
+        };
+
+        let response = state
+            .refresh_or_prewarm(
+                &empty_request,
+                &mut embedder,
+                &SemanticCancellationToken::new(),
+                |_| {},
+                |_| {},
+            )
+            .expect("empty scope returns");
+
+        assert!(response.hits.is_empty());
+        assert_eq!(response.indexed_chunk_count, 1);
+        assert_eq!(response.progress, SemanticIndexProgress::EmptyCorpus);
+        assert_eq!(embedder.passage_calls, 0);
+        assert_eq!(embedder.query_calls, 1);
+    }
+
+    #[test]
+    fn persistent_scoped_ranking_matches_request_scoped_ranking() {
+        let conversations = vec![
+            conversation("/projects/project-a/session-a.jsonl", vec!["visible alpha"]),
+            conversation("/projects/project-a/session-b.jsonl", vec!["visible beta"]),
+            conversation("/projects/project-a/session-c.jsonl", vec!["visible gamma"]),
+        ];
+        let all = candidates_from(&conversations);
+        let scope = vec![all[1].clone(), all[0].clone()];
+        let query = "beta".to_string();
+        let persistent_request = SemanticIndexRequest {
+            query: &query,
+            full_corpus: &all,
+            scope: &scope,
+            corpus_version: 1,
+            prewarm: false,
+        };
+        let scoped_request = index_request(&query, &scope);
+        let mut persistent_cache = empty_embedding_cache(ChunkConfig::default());
+        cache_request_passages(&mut persistent_cache, &persistent_request);
+        let mut scoped_cache = empty_embedding_cache(ChunkConfig::default());
+        cache_request_passages(&mut scoped_cache, &scoped_request);
+        let mut persistent_state =
+            SemanticIndexState::with_cache(ChunkConfig::default(), persistent_cache);
+        let mut scoped_state = SemanticIndexState::with_cache(ChunkConfig::default(), scoped_cache);
+        let mut persistent_embedder = FakeEmbedder::new();
+        let mut scoped_embedder = FakeEmbedder::new();
+
+        let persistent = persistent_state
+            .refresh_or_prewarm(
+                &persistent_request,
+                &mut persistent_embedder,
+                &SemanticCancellationToken::new(),
+                |_| {},
+                |_| {},
+            )
+            .expect("persistent rank succeeds");
+        let scoped = scoped_state
+            .refresh_or_prewarm(
+                &scoped_request,
+                &mut scoped_embedder,
+                &SemanticCancellationToken::new(),
+                |_| {},
+                |_| {},
+            )
+            .expect("scoped rank succeeds");
+
+        assert_eq!(persistent.hits, scoped.hits);
+    }
+
+    #[test]
+    fn corpus_reorder_updates_hit_indices_without_reembedding() {
+        let first = vec![
+            conversation("/projects/project-a/session-a.jsonl", vec!["visible alpha"]),
+            conversation("/projects/project-a/session-b.jsonl", vec!["visible beta"]),
+        ];
+        let first_all = candidates_from(&first);
+        let query = "alpha".to_string();
+        let first_request = SemanticIndexRequest {
+            query: &query,
+            full_corpus: &first_all,
+            scope: &first_all,
+            corpus_version: 1,
+            prewarm: false,
+        };
+        let mut cache = empty_embedding_cache(ChunkConfig::default());
+        cache_request_passages(&mut cache, &first_request);
+        let mut state = SemanticIndexState::with_cache(ChunkConfig::default(), cache);
+        let mut embedder = FakeEmbedder::new();
+        state
+            .refresh_or_prewarm(
+                &first_request,
+                &mut embedder,
+                &SemanticCancellationToken::new(),
+                |_| {},
+                |_| {},
+            )
+            .expect("first corpus ranks");
+        let reordered = vec![first[1].clone(), first[0].clone()];
+        let reordered_all = candidates_from(&reordered);
+        let reordered_request = SemanticIndexRequest {
+            query: &query,
+            full_corpus: &reordered_all,
+            scope: &reordered_all,
+            corpus_version: 2,
+            prewarm: false,
+        };
+
+        let response = state
+            .refresh_or_prewarm(
+                &reordered_request,
+                &mut embedder,
+                &SemanticCancellationToken::new(),
+                |_| {},
+                |_| {},
+            )
+            .expect("reordered corpus ranks");
+
+        assert_eq!(embedder.passage_calls, 0);
+        assert_eq!(response.hits[0].conversation_index, 1);
+        assert_eq!(response.hits[0].session, "session-a");
+    }
+
+    #[test]
+    fn changed_and_new_conversations_embed_without_reembedding_unchanged() {
+        let first = vec![conversation(
+            "/projects/project-a/session-a.jsonl",
+            vec!["visible alpha"],
+        )];
+        let first_all = candidates_from(&first);
+        let query = "alpha".to_string();
+        let first_request = SemanticIndexRequest {
+            query: &query,
+            full_corpus: &first_all,
+            scope: &first_all,
+            corpus_version: 1,
+            prewarm: false,
+        };
+        let mut cache = empty_embedding_cache(ChunkConfig::default());
+        cache_request_passages(&mut cache, &first_request);
+        let mut state = SemanticIndexState::with_cache(ChunkConfig::default(), cache);
+        let mut embedder = FakeEmbedder::new();
+        state
+            .refresh_or_prewarm(
+                &first_request,
+                &mut embedder,
+                &SemanticCancellationToken::new(),
+                |_| {},
+                |_| {},
+            )
+            .expect("first corpus ranks");
+        let updated = vec![
+            conversation("/projects/project-a/session-a.jsonl", vec!["visible alpha"]),
+            conversation("/projects/project-a/session-b.jsonl", vec!["visible beta"]),
+            conversation("/projects/project-a/session-c.jsonl", vec!["visible gamma"]),
+        ];
+        let updated_all = candidates_from(&updated);
+        let updated_request = SemanticIndexRequest {
+            query: &query,
+            full_corpus: &updated_all,
+            scope: &updated_all,
+            corpus_version: 2,
+            prewarm: false,
+        };
+
+        state
+            .refresh_or_prewarm(
+                &updated_request,
+                &mut embedder,
+                &SemanticCancellationToken::new(),
+                |_| {},
+                |_| {},
+            )
+            .expect("updated corpus ranks");
+
+        assert_eq!(embedder.passage_calls, 1);
+        assert_eq!(
+            embedder.embedded_passages,
+            vec![vec![
+                "visible beta".to_string(),
+                "visible gamma".to_string()
+            ]]
+        );
+    }
+
+    #[test]
+    fn empty_and_removed_conversations_are_excluded_after_corpus_update() {
+        let first = vec![
+            conversation("/projects/project-a/session-a.jsonl", vec!["visible alpha"]),
+            conversation("/projects/project-a/session-b.jsonl", vec!["visible beta"]),
+        ];
+        let first_all = candidates_from(&first);
+        let query = "alpha".to_string();
+        let first_request = SemanticIndexRequest {
+            query: &query,
+            full_corpus: &first_all,
+            scope: &first_all,
+            corpus_version: 1,
+            prewarm: false,
+        };
+        let mut cache = empty_embedding_cache(ChunkConfig::default());
+        cache_request_passages(&mut cache, &first_request);
+        let mut state = SemanticIndexState::with_cache(ChunkConfig::default(), cache);
+        let mut embedder = FakeEmbedder::new();
+        state
+            .refresh_or_prewarm(
+                &first_request,
+                &mut embedder,
+                &SemanticCancellationToken::new(),
+                |_| {},
+                |_| {},
+            )
+            .expect("first corpus ranks");
+        let updated = vec![conversation("/projects/project-a/session-a.jsonl", vec![])];
+        let updated_all = candidates_from(&updated);
+        let updated_request = SemanticIndexRequest {
+            query: &query,
+            full_corpus: &updated_all,
+            scope: &updated_all,
+            corpus_version: 2,
+            prewarm: false,
+        };
+
+        let response = state
+            .refresh_or_prewarm(
+                &updated_request,
+                &mut embedder,
+                &SemanticCancellationToken::new(),
+                |_| {},
+                |_| {},
+            )
+            .expect("empty corpus update succeeds");
+
+        assert!(response.hits.is_empty());
+        assert_eq!(response.indexed_chunk_count, 0);
+        assert_eq!(embedder.passage_calls, 0);
     }
 
     #[test]
