@@ -9,12 +9,16 @@ pub struct FastembedEmbedder {
 }
 
 impl FastembedEmbedder {
-    pub fn new(cache_dir: PathBuf) -> Result<Self> {
-        Self::new_with_download_progress(cache_dir, true)
+    pub fn new() -> Result<Self> {
+        Self::new_with_download_progress(crate::semantic::cache::model_cache_dir(), true)
     }
 
-    pub fn new_quiet(cache_dir: PathBuf) -> Result<Self> {
-        Self::new_with_download_progress(cache_dir, false)
+    pub fn new_quiet() -> Result<Self> {
+        Self::new_with_download_progress(crate::semantic::cache::model_cache_dir(), false)
+    }
+
+    pub fn cache_dir() -> PathBuf {
+        crate::semantic::cache::model_cache_dir()
     }
 
     fn new_with_download_progress(

@@ -2,7 +2,7 @@ use crate::error::{AppError, Result};
 use crate::history::Conversation;
 
 pub fn run(query: &str, conversations: &[Conversation], top: usize, local: bool) -> Result<()> {
-    use crate::semantic::cache::{model_cache_dir, write_embedding_cache};
+    use crate::semantic::cache::write_embedding_cache;
     use crate::semantic::fastembed::FastembedEmbedder;
     use crate::semantic::index::{SemanticIndexRequest, SemanticIndexState};
     use crate::semantic::output::format_hit;
@@ -27,7 +27,7 @@ pub fn run(query: &str, conversations: &[Conversation], top: usize, local: bool)
         return Ok(());
     }
 
-    let mut embedder = FastembedEmbedder::new(model_cache_dir())?;
+    let mut embedder = FastembedEmbedder::new()?;
     let response =
         state.refresh_or_prewarm(&request, &mut embedder, |_| {}, write_embedding_cache)?;
     write_embedding_cache(&state.cache);
@@ -65,7 +65,7 @@ pub fn clear_cache() -> Result<()> {
 }
 
 pub fn generate_cache(conversations: &[Conversation], local: bool) -> Result<()> {
-    use crate::semantic::cache::{model_cache_dir, write_embedding_cache};
+    use crate::semantic::cache::write_embedding_cache;
     use crate::semantic::chunk::build_chunks;
     use crate::semantic::fastembed::FastembedEmbedder;
     use crate::semantic::index::{SemanticIndexProgress, SemanticIndexRequest, SemanticIndexState};
@@ -95,7 +95,7 @@ pub fn generate_cache(conversations: &[Conversation], local: bool) -> Result<()>
         selected.len()
     );
 
-    let mut embedder = FastembedEmbedder::new(model_cache_dir())?;
+    let mut embedder = FastembedEmbedder::new()?;
     let response = state.refresh_or_prewarm(
         &request,
         &mut embedder,
@@ -123,7 +123,7 @@ pub fn generate_cache(conversations: &[Conversation], local: bool) -> Result<()>
 pub fn debug_search(query: &str, conversations: &[Conversation], local: bool) -> Result<()> {
     use crate::semantic::cache::{
         cache_entry_matches, cache_miss_count, cached_chunks, embedding_cache_file_path,
-        model_cache_dir, read_embedding_cache,
+        read_embedding_cache,
     };
     use crate::semantic::chunk::build_chunks;
     use crate::semantic::embed::SemanticEmbedder;
@@ -140,7 +140,7 @@ pub fn debug_search(query: &str, conversations: &[Conversation], local: bool) ->
     );
     eprintln!(
         "Semantic debug: model cache: {}",
-        model_cache_dir().display()
+        FastembedEmbedder::cache_dir().display()
     );
     match embedding_cache_file_path() {
         Some(path) => eprintln!("Semantic debug: embedding cache: {}", path.display()),
@@ -252,7 +252,7 @@ pub fn debug_search(query: &str, conversations: &[Conversation], local: bool) ->
         return Ok(());
     }
 
-    let mut embedder = FastembedEmbedder::new(model_cache_dir())?;
+    let mut embedder = FastembedEmbedder::new()?;
     let Some(query_embedding) = embedder.embed_query(query)? else {
         eprintln!("Semantic debug: no query embedding returned.");
         return Ok(());

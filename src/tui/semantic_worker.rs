@@ -1,5 +1,5 @@
 use crate::error::Result;
-use crate::semantic::cache::{model_cache_dir, write_embedding_cache};
+use crate::semantic::cache::write_embedding_cache;
 use crate::semantic::fastembed::FastembedEmbedder;
 use crate::semantic::index::{
     SemanticIndexCandidate, SemanticIndexProgress, SemanticIndexRequest, SemanticIndexResponse,
@@ -62,7 +62,7 @@ pub fn spawn_semantic_worker() -> (
                             generation: request.generation,
                             progress: SemanticProgress::InitializingModel,
                         });
-                        embedder = match FastembedEmbedder::new_quiet(model_cache_dir()) {
+                        embedder = match FastembedEmbedder::new_quiet() {
                             Ok(embedder) => Some(embedder),
                             Err(error) => {
                                 let _ = res_tx.send(SemanticSearchMessage::Complete(
