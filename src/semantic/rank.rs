@@ -1,3 +1,4 @@
+use crate::error::{AppError, Result};
 use crate::semantic::evidence::{evidence_preview, matched_terms};
 use crate::semantic::types::{
     EmbeddedChunk, SemanticChunkIdentity, SemanticExplanation, SemanticHit, SemanticQuality,
@@ -10,9 +11,13 @@ pub fn rank_chunks(
     query: &str,
     query_embedding: &[f32],
     chunks: &[EmbeddedChunk],
-) -> Vec<SemanticHit> {
+    cancellation: &crate::semantic::types::SemanticCancellationToken,
+) -> Result<Vec<SemanticHit>> {
     let mut best_by_conversation: HashMap<usize, SemanticHit> = HashMap::new();
     for chunk in chunks {
+        if cancellation.is_cancelled() {
+            return Err(AppError::SemanticSearchCancelled);
+        }
         let semantic_score = cosine(query_embedding, &chunk.embedding);
         let lexical_score = lexical_overlap(query, &chunk.text);
         let score_breakdown = SemanticScoreBreakdown {
@@ -45,7 +50,7 @@ pub fn rank_chunks(
 
     let mut hits: Vec<_> = best_by_conversation.into_values().collect();
     hits.sort_by(compare_hits);
-    hits
+    Ok(hits)
 }
 
 fn compare_hits(a: &SemanticHit, b: &SemanticHit) -> Ordering {
@@ -127,6 +132,7 @@ fn lexical_overlap(query: &str, text: &str) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::semantic::types::SemanticCancellationToken;
 
     fn embedded(
         session: &str,
@@ -152,7 +158,13 @@ mod tests {
             embedded("session-b", 1, 0, "rust", vec![0.5, 0.5]),
         ];
 
-        let hits = rank_chunks("rust cache", &[1.0, 0.0], &chunks);
+        let hits = rank_chunks(
+            "rust cache",
+            &[1.0, 0.0],
+            &chunks,
+            &SemanticCancellationToken::new(),
+        )
+        .unwrap();
 
         assert_eq!(hits.len(), 2);
         assert_eq!(hits[0].session, "session-a");
@@ -168,7 +180,13 @@ mod tests {
             embedded("session-b", 1, 0, "same words", vec![1.0, 0.0]),
         ];
 
-        let hits = rank_chunks("same words", &[0.0, 1.0], &chunks);
+        let hits = rank_chunks(
+            "same words",
+            &[0.0, 1.0],
+            &chunks,
+            &SemanticCancellationToken::new(),
+        )
+        .unwrap();
 
         assert_eq!(hits[0].session, "session-a");
         assert_eq!(hits[0].semantic_score, 1.0);
@@ -181,7 +199,13 @@ mod tests {
             embedded("session-b", 1, 0, "same words", vec![1.0, 0.0]),
         ];
 
-        let hits = rank_chunks("   ", &[0.0, 1.0], &chunks);
+        let hits = rank_chunks(
+            "   ",
+            &[0.0, 1.0],
+            &chunks,
+            &SemanticCancellationToken::new(),
+        )
+        .unwrap();
 
         assert_eq!(hits[0].session, "session-a");
         assert!(hits.iter().all(|hit| hit.lexical_score == 0.0));
@@ -197,7 +221,13 @@ mod tests {
             vec![1.0, 0.0],
         )];
 
-        let hits = rank_chunks("unrelated", &[1.0, 0.0], &chunks);
+        let hits = rank_chunks(
+            "unrelated",
+            &[1.0, 0.0],
+            &chunks,
+            &SemanticCancellationToken::new(),
+        )
+        .unwrap();
         let explanation = &hits[0].explanation;
 
         assert_eq!(hits[0].lexical_score, 0.0);
@@ -215,7 +245,13 @@ mod tests {
             embedded("session-b", 1, 0, "rust cache", vec![1.0, 0.0]),
         ];
 
-        let hits = rank_chunks("rust cache", &[1.0, 0.0], &chunks);
+        let hits = rank_chunks(
+            "rust cache",
+            &[1.0, 0.0],
+            &chunks,
+            &SemanticCancellationToken::new(),
+        )
+        .unwrap();
 
         assert_eq!(hits[0].session, "session-b");
         assert!(hits[0].lexical_score > hits[1].lexical_score);
@@ -233,7 +269,13 @@ mod tests {
             embedded("session", 1, 0, "same words", vec![1.0, 0.0]),
         ];
 
-        let hits = rank_chunks("same words", &[1.0, 0.0], &chunks);
+        let hits = rank_chunks(
+            "same words",
+            &[1.0, 0.0],
+            &chunks,
+            &SemanticCancellationToken::new(),
+        )
+        .unwrap();
 
         assert_eq!(hits.len(), 2);
         assert_eq!(hits[0].conversation_index, 0);
@@ -248,7 +290,13 @@ mod tests {
             embedded("session-a", 0, 0, "same words", vec![1.0, 0.0]),
         ];
 
-        let hits = rank_chunks("same words", &[1.0, 0.0], &chunks);
+        let hits = rank_chunks(
+            "same words",
+            &[1.0, 0.0],
+            &chunks,
+            &SemanticCancellationToken::new(),
+        )
+        .unwrap();
 
         assert_eq!(hits[0].conversation_index, 0);
         assert_eq!(hits[0].chunk_index, 0);
@@ -259,7 +307,13 @@ mod tests {
     fn score_breakdown_mirrors_compatibility_fields() {
         let chunks = vec![embedded("session-a", 0, 0, "rust cache", vec![1.0, 0.0])];
 
-        let hits = rank_chunks("rust cache", &[1.0, 0.0], &chunks);
+        let hits = rank_chunks(
+            "rust cache",
+            &[1.0, 0.0],
+            &chunks,
+            &SemanticCancellationToken::new(),
+        )
+        .unwrap();
         let hit = &hits[0];
 
         assert_eq!(hit.score_breakdown.hybrid, hit.hybrid_score);
@@ -278,7 +332,13 @@ mod tests {
             vec![1.0, 0.0],
         )];
 
-        let hits = rank_chunks("rust audio-generation audio", &[1.0, 0.0], &chunks);
+        let hits = rank_chunks(
+            "rust audio-generation audio",
+            &[1.0, 0.0],
+            &chunks,
+            &SemanticCancellationToken::new(),
+        )
+        .unwrap();
 
         assert_eq!(
             hits[0].explanation.matched_terms,
@@ -300,7 +360,13 @@ mod tests {
             vec![1.0, 0.0],
         )];
 
-        let hits = rank_chunks("検索 日本語", &[1.0, 0.0], &chunks);
+        let hits = rank_chunks(
+            "検索 日本語",
+            &[1.0, 0.0],
+            &chunks,
+            &SemanticCancellationToken::new(),
+        )
+        .unwrap();
 
         assert_eq!(
             hits[0].explanation.matched_terms,
@@ -315,7 +381,13 @@ mod tests {
         assert_eq!(quality_for_score(0.35), SemanticQuality::Fair);
         assert_eq!(quality_for_score(0.349), SemanticQuality::Weak);
         let chunks = vec![embedded("session-a", 0, 0, "semantic text", vec![1.0, 0.0])];
-        let hits = rank_chunks("semantic", &[1.0, 0.0], &chunks);
+        let hits = rank_chunks(
+            "semantic",
+            &[1.0, 0.0],
+            &chunks,
+            &SemanticCancellationToken::new(),
+        )
+        .unwrap();
 
         assert_eq!(hits[0].explanation.quality_label, "strong");
         assert_eq!(SemanticQuality::Good.label(), "good");
@@ -357,7 +429,13 @@ mod tests {
             vec![1.0, 0.0],
         )];
 
-        let hits = rank_chunks("alpha", &[1.0, 0.0], &chunks);
+        let hits = rank_chunks(
+            "alpha",
+            &[1.0, 0.0],
+            &chunks,
+            &SemanticCancellationToken::new(),
+        )
+        .unwrap();
 
         assert_eq!(hits[0].explanation.evidence_preview, "alpha Vec<T> x < y");
         assert_eq!(hits[0].snippet, "alpha Vec<T> x < y");

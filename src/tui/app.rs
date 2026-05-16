@@ -7,7 +7,7 @@ use crate::history::{
 use crate::semantic::types::{SemanticExplanation, SemanticScoreBreakdown};
 use crate::tui::search::{self, SearchableConversation, normalize_for_search};
 use crate::tui::semantic_worker::{
-    SemanticSearchCandidate, SemanticSearchMessage, SemanticSearchRequest, spawn_semantic_worker,
+    SemanticSearchMessage, SemanticWorkerCommand, spawn_semantic_worker,
 };
 use crate::tui::ui;
 use crate::tui::viewer::{
@@ -193,7 +193,7 @@ struct SemanticSearchState {
     last_status: SemanticProgress,
     error: Option<String>,
     results: HashMap<usize, SemanticResultMetadata>,
-    worker_tx: Option<mpsc::Sender<SemanticSearchRequest>>,
+    worker_tx: Option<mpsc::Sender<SemanticWorkerCommand>>,
     worker_rx: Option<mpsc::Receiver<SemanticSearchMessage>>,
 }
 
@@ -307,6 +307,14 @@ pub struct App {
     conversations_snapshot: Arc<Vec<Conversation>>,
     /// Shared semantic conversation snapshot for background workers
     semantic_conversations_snapshot: Arc<Vec<Arc<Conversation>>>,
+    /// Version of the semantic corpus snapshot
+    semantic_corpus_version: u64,
+    /// Version of the semantic scope snapshot
+    semantic_scope_version: u64,
+    /// Last corpus version sent to the semantic worker
+    semantic_sent_corpus_version: u64,
+    /// Last scope signature sent to the semantic worker
+    semantic_sent_scope_signature: Option<(u64, Arc<Vec<usize>>)>,
     /// Precomputed search data
     searchable: Vec<SearchableConversation>,
     /// Indices into conversations, sorted by current score
@@ -414,6 +422,10 @@ impl App {
         Self {
             conversations_snapshot,
             semantic_conversations_snapshot,
+            semantic_corpus_version: 1,
+            semantic_scope_version: 0,
+            semantic_sent_corpus_version: 0,
+            semantic_sent_scope_signature: None,
             conversations,
             searchable,
             filtered,
@@ -465,6 +477,10 @@ impl App {
             conversations: Vec::new(),
             conversations_snapshot: Arc::new(Vec::new()),
             semantic_conversations_snapshot: Arc::new(Vec::new()),
+            semantic_corpus_version: 1,
+            semantic_scope_version: 0,
+            semantic_sent_corpus_version: 0,
+            semantic_sent_scope_signature: None,
             searchable: Vec::new(),
             filtered: Vec::new(),
             selected: None,
@@ -533,6 +549,10 @@ impl App {
                     .map(Arc::new)
                     .collect::<Vec<_>>(),
             ),
+            semantic_corpus_version: 1,
+            semantic_scope_version: 0,
+            semantic_sent_corpus_version: 0,
+            semantic_sent_scope_signature: None,
             conversations,
             searchable: Vec::new(),
             filtered,
@@ -706,6 +726,8 @@ impl App {
             let (tx, rx) = spawn_semantic_worker();
             self.semantic_search.worker_tx = Some(tx);
             self.semantic_search.worker_rx = Some(rx);
+            self.semantic_sent_corpus_version = 0;
+            self.semantic_sent_scope_signature = None;
         }
     }
 
@@ -717,18 +739,64 @@ impl App {
                 .map(Arc::new)
                 .collect::<Vec<_>>(),
         );
+        self.semantic_corpus_version += 1;
+        self.semantic_sent_scope_signature = None;
     }
 
-    fn semantic_candidates(&self) -> Arc<Vec<SemanticSearchCandidate>> {
-        Arc::new(
-            self.filter_indices(0..self.conversations.len())
-                .into_iter()
-                .map(|index| SemanticSearchCandidate {
-                    index,
-                    conversation: self.semantic_conversations_snapshot[index].clone(),
-                })
-                .collect(),
-        )
+    fn semantic_scope_indices(&self) -> Arc<Vec<usize>> {
+        Arc::new(self.filter_indices(0..self.conversations.len()))
+    }
+
+    fn reset_semantic_worker(&mut self) {
+        let (tx, rx) = spawn_semantic_worker();
+        self.semantic_search.worker_tx = Some(tx);
+        self.semantic_search.worker_rx = Some(rx);
+        self.semantic_sent_corpus_version = 0;
+        self.semantic_sent_scope_signature = None;
+    }
+
+    fn send_semantic_command(&mut self, command: SemanticWorkerCommand) -> bool {
+        self.ensure_semantic_worker();
+        self.semantic_search
+            .worker_tx
+            .as_ref()
+            .is_some_and(|tx| tx.send(command).is_ok())
+    }
+
+    fn send_semantic_state(&mut self) -> Option<(u64, u64)> {
+        if self.semantic_sent_corpus_version != self.semantic_corpus_version {
+            if !self.send_semantic_command(SemanticWorkerCommand::UpdateCorpus {
+                corpus_version: self.semantic_corpus_version,
+                conversations: self.semantic_conversations_snapshot.clone(),
+            }) {
+                return None;
+            }
+            self.semantic_sent_corpus_version = self.semantic_corpus_version;
+            self.semantic_sent_scope_signature = None;
+        }
+
+        let scope = self.semantic_scope_indices();
+        let current_signature = (self.semantic_corpus_version, scope.clone());
+        let scope_changed =
+            self.semantic_sent_scope_signature
+                .as_ref()
+                .is_none_or(|(corpus_version, previous)| {
+                    *corpus_version != self.semantic_corpus_version
+                        || previous.as_ref() != scope.as_ref()
+                });
+        if scope_changed {
+            self.semantic_scope_version += 1;
+            if !self.send_semantic_command(SemanticWorkerCommand::UpdateScope {
+                corpus_version: self.semantic_corpus_version,
+                scope_version: self.semantic_scope_version,
+                indices: scope,
+            }) {
+                return None;
+            }
+            self.semantic_sent_scope_signature = Some(current_signature);
+        }
+
+        Some((self.semantic_corpus_version, self.semantic_scope_version))
     }
 
     /// Update filtered results based on current query
@@ -817,15 +885,42 @@ impl App {
         if prewarm {
             self.semantic_search.results.clear();
         }
-        let candidates = self.semantic_candidates();
-        self.ensure_semantic_worker();
-        if let Some(tx) = &self.semantic_search.worker_tx {
-            let _ = tx.send(SemanticSearchRequest {
-                generation: self.search_generation,
+        let (corpus_version, scope_version) = match self.send_semantic_state() {
+            Some(versions) => versions,
+            None => {
+                self.reset_semantic_worker();
+                let Some(versions) = self.send_semantic_state() else {
+                    self.semantic_search.error = Some("semantic worker unavailable".to_string());
+                    self.semantic_search.pending_status = Some(SemanticProgress::Failed);
+                    return;
+                };
+                versions
+            }
+        };
+        let generation = self.search_generation;
+        if !self.send_semantic_command(SemanticWorkerCommand::Search {
+            generation,
+            query: query.clone(),
+            corpus_version,
+            scope_version,
+            prewarm,
+        }) {
+            self.reset_semantic_worker();
+            let Some((corpus_version, scope_version)) = self.send_semantic_state() else {
+                self.semantic_search.error = Some("semantic worker unavailable".to_string());
+                self.semantic_search.pending_status = Some(SemanticProgress::Failed);
+                return;
+            };
+            if !self.send_semantic_command(SemanticWorkerCommand::Search {
+                generation,
                 query,
-                candidates,
+                corpus_version,
+                scope_version,
                 prewarm,
-            });
+            }) {
+                self.semantic_search.error = Some("semantic worker unavailable".to_string());
+                self.semantic_search.pending_status = Some(SemanticProgress::Failed);
+            }
         }
     }
 
@@ -3689,6 +3784,48 @@ mod tests {
         assert_eq!(app.semantic_search.pending_generation, Some(3));
     }
 
+    fn drain_semantic_commands(
+        rx: &mpsc::Receiver<SemanticWorkerCommand>,
+    ) -> Vec<SemanticWorkerCommand> {
+        let mut commands = Vec::new();
+        while let Ok(command) = rx.try_recv() {
+            commands.push(command);
+        }
+        commands
+    }
+
+    fn last_semantic_search(
+        commands: &[SemanticWorkerCommand],
+    ) -> Option<(u64, &str, u64, u64, bool)> {
+        commands.iter().rev().find_map(|command| match command {
+            SemanticWorkerCommand::Search {
+                generation,
+                query,
+                corpus_version,
+                scope_version,
+                prewarm,
+            } => Some((
+                *generation,
+                query.as_str(),
+                *corpus_version,
+                *scope_version,
+                *prewarm,
+            )),
+            _ => None,
+        })
+    }
+
+    fn last_semantic_scope(commands: &[SemanticWorkerCommand]) -> Option<(u64, u64, Vec<usize>)> {
+        commands.iter().rev().find_map(|command| match command {
+            SemanticWorkerCommand::UpdateScope {
+                corpus_version,
+                scope_version,
+                indices,
+            } => Some((*corpus_version, *scope_version, indices.as_ref().clone())),
+            _ => None,
+        })
+    }
+
     #[test]
     fn semantic_nonempty_query_dispatches_worker_request() {
         let mut app = app_with_options(
@@ -3712,21 +3849,19 @@ mod tests {
         app.query = "needle".to_string();
         app.dispatch_search();
 
-        let request = request_rx.try_recv().expect("semantic request");
+        let commands = drain_semantic_commands(&request_rx);
+        let request = last_semantic_search(&commands).expect("semantic search");
         assert_eq!(app.list_search_mode(), ListSearchMode::Semantic);
         assert!(app.semantic_search_available());
-        assert_eq!(
-            app.semantic_search.pending_generation,
-            Some(request.generation)
+        assert_eq!(app.semantic_search.pending_generation, Some(request.0));
+        assert_eq!(request.1, "needle");
+        assert!(!request.4);
+        assert!(
+            commands
+                .iter()
+                .any(|command| matches!(command, SemanticWorkerCommand::UpdateCorpus { .. }))
         );
-        assert_eq!(request.query, "needle");
-        assert!(!request.prewarm);
-        assert_eq!(request.candidates.len(), 1);
-        assert_eq!(request.candidates[0].index, 0);
-        assert_eq!(
-            request.candidates[0].conversation.semantic_turns,
-            vec!["needle"]
-        );
+        assert_eq!(last_semantic_scope(&commands).unwrap().2, vec![0]);
         assert_eq!(app.semantic_search_error(), None);
     }
 
@@ -3752,14 +3887,12 @@ mod tests {
 
         app.handle_key(KeyCode::Char('n'), KeyModifiers::NONE, 10);
 
-        let request = request_rx.try_recv().expect("semantic request");
+        let commands = drain_semantic_commands(&request_rx);
+        let request = last_semantic_search(&commands).expect("semantic search");
         assert_eq!(app.query(), "n");
         assert_eq!(app.cursor_pos(), 1);
         assert_eq!(app.search_generation(), previous_generation + 1);
-        assert_eq!(
-            app.semantic_search.pending_generation,
-            Some(request.generation)
-        );
+        assert_eq!(app.semantic_search.pending_generation, Some(request.0));
         assert_eq!(
             app.semantic_search.pending_status,
             Some(SemanticProgress::InitializingModel)
@@ -3768,8 +3901,8 @@ mod tests {
             app.semantic_activity_status_text().as_deref(),
             Some("sem preparing embeddings")
         );
-        assert_eq!(request.query, "n");
-        assert!(!request.prewarm);
+        assert_eq!(request.1, "n");
+        assert!(!request.4);
     }
 
     #[test]
@@ -3799,12 +3932,15 @@ mod tests {
 
         app.dispatch_search();
 
-        let request = request_rx.try_recv().expect("semantic request");
-        assert_eq!(request.candidates.len(), 1);
-        assert_eq!(
-            request.candidates[0].conversation.semantic_turns,
-            vec!["needle"]
-        );
+        let commands = drain_semantic_commands(&request_rx);
+        let corpus = commands
+            .iter()
+            .find_map(|command| match command {
+                SemanticWorkerCommand::UpdateCorpus { conversations, .. } => Some(conversations),
+                _ => None,
+            })
+            .expect("semantic corpus");
+        assert_eq!(corpus[0].semantic_turns, vec!["needle"]);
     }
 
     #[test]
@@ -3834,14 +3970,20 @@ mod tests {
 
         app.handle_key(KeyCode::Char('n'), KeyModifiers::NONE, 10);
 
-        let request = request_rx.try_recv().expect("semantic request");
-        assert_eq!(request.candidates.len(), 150);
-        for candidate in request.candidates.iter() {
-            assert!(Arc::ptr_eq(
-                &candidate.conversation,
-                &snapshot[candidate.index]
-            ));
+        let commands = drain_semantic_commands(&request_rx);
+        let corpus = commands
+            .iter()
+            .find_map(|command| match command {
+                SemanticWorkerCommand::UpdateCorpus { conversations, .. } => Some(conversations),
+                _ => None,
+            })
+            .expect("semantic corpus");
+        assert_eq!(corpus.len(), 150);
+        for (index, conversation) in corpus.iter().enumerate() {
+            assert!(Arc::ptr_eq(conversation, &snapshot[index]));
         }
+        let request = last_semantic_search(&commands).expect("semantic search");
+        assert_eq!(request.1, "n");
     }
 
     #[test]
@@ -3867,14 +4009,12 @@ mod tests {
 
         app.prewarm_semantic_cache();
 
-        let request = request_rx.try_recv().expect("semantic prewarm request");
-        assert_eq!(request.query, "");
-        assert!(request.prewarm);
-        assert_eq!(request.candidates.len(), 1);
-        assert_eq!(
-            app.semantic_search.pending_generation,
-            Some(request.generation)
-        );
+        let commands = drain_semantic_commands(&request_rx);
+        let request = last_semantic_search(&commands).expect("semantic prewarm request");
+        assert_eq!(request.1, "");
+        assert!(request.4);
+        assert_eq!(last_semantic_scope(&commands).unwrap().2, vec![0]);
+        assert_eq!(app.semantic_search.pending_generation, Some(request.0));
     }
 
     #[test]
@@ -3901,13 +4041,16 @@ mod tests {
         app.query = "needle".to_string();
         app.dispatch_search();
 
-        let request = request_rx.try_recv().expect("semantic request");
-        assert_eq!(request.candidates.len(), 1);
-        assert_eq!(request.candidates[0].index, 0);
-        assert_eq!(
-            request.candidates[0].conversation.semantic_turns,
-            vec!["needle"]
-        );
+        let commands = drain_semantic_commands(&request_rx);
+        let corpus = commands
+            .iter()
+            .find_map(|command| match command {
+                SemanticWorkerCommand::UpdateCorpus { conversations, .. } => Some(conversations),
+                _ => None,
+            })
+            .expect("semantic corpus");
+        assert_eq!(corpus.len(), 1);
+        assert_eq!(corpus[0].semantic_turns, vec!["needle"]);
     }
 
     #[test]
@@ -3935,12 +4078,13 @@ mod tests {
         app.query = "needle".to_string();
         app.dispatch_search();
 
-        let _ = request_rx.try_recv().expect("semantic request");
+        let commands = drain_semantic_commands(&request_rx);
+        assert!(last_semantic_search(&commands).is_some());
         assert!(app.semantic_search.results.contains_key(&0));
     }
 
     #[test]
-    fn semantic_candidates_apply_scope() {
+    fn semantic_scope_indices_apply_scope() {
         let mut app = app_with_options(
             vec![
                 conversation(
@@ -3970,10 +4114,8 @@ mod tests {
         app.current_project_dir_name = Some("-tmp-visible".to_string());
         app.workspace_filter = true;
 
-        let candidates = app.semantic_candidates();
-        assert_eq!(candidates.len(), 1);
-        assert_eq!(candidates[0].index, 1);
-        assert_eq!(candidates[0].conversation.semantic_turns, vec!["visible"]);
+        let indices = app.semantic_scope_indices();
+        assert_eq!(indices.as_ref(), &vec![1]);
     }
 
     #[test]
@@ -4257,9 +4399,9 @@ mod tests {
                 ..Default::default()
             },
         );
-        let (_request_tx, request_rx) = mpsc::channel();
+        let (request_tx, _request_rx) = mpsc::channel();
         let (response_tx, response_rx) = mpsc::channel();
-        app.semantic_search.worker_tx = Some(_request_tx);
+        app.semantic_search.worker_tx = Some(request_tx);
         app.semantic_search.worker_rx = Some(response_rx);
         app.list_search_mode = ListSearchMode::Semantic;
         app.search_generation = 9;
@@ -4269,7 +4411,6 @@ mod tests {
             total: 10,
         });
         app.query = "needle".to_string();
-        drop(request_rx);
 
         app.dispatch_search();
         let real_generation = app.search_generation();
@@ -4449,13 +4590,9 @@ mod tests {
 
         app.toggle_workspace_filter();
 
-        let request = request_rx.try_recv().expect("semantic request");
-        assert_eq!(request.candidates.len(), 1);
-        assert_eq!(request.candidates[0].index, 0);
-        assert_eq!(
-            request.candidates[0].conversation.semantic_turns,
-            vec!["needle"]
-        );
+        let commands = drain_semantic_commands(&request_rx);
+        assert_eq!(last_semantic_scope(&commands).unwrap().2, vec![0]);
+        assert_eq!(last_semantic_search(&commands).unwrap().1, "needle");
         assert_eq!(filtered_projects(&app), vec![Some("Visible")]);
         assert_eq!(app.selected(), Some(0));
         assert_eq!(app.semantic_search_error(), None);

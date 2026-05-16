@@ -1,4 +1,4 @@
-use crate::error::Result;
+use crate::error::{AppError, Result};
 use crate::semantic::embed::SemanticEmbedder;
 use crate::semantic::types::{
     CACHE_SCHEMA_VERSION, CachedChunk, ChunkConfig, DEFAULT_EMBEDDING_BATCH_SIZE, EmbeddedChunk,
@@ -12,15 +12,22 @@ pub fn embed_chunks_with_progress_and_save(
     embedder: &mut dyn SemanticEmbedder,
     chunks: Vec<SemanticChunk>,
     cache: &mut EmbeddingCache,
+    cancellation: &crate::semantic::types::SemanticCancellationToken,
     mut progress: impl FnMut(usize, usize),
     mut save: impl FnMut(&EmbeddingCache),
 ) -> Result<Vec<EmbeddedChunk>> {
+    if cancellation.is_cancelled() {
+        return Err(AppError::SemanticSearchCancelled);
+    }
     prune_stale_entries(cache, &chunks);
 
     let mut embedded = Vec::with_capacity(chunks.len());
     let mut misses = Vec::new();
 
     for chunk in chunks {
+        if cancellation.is_cancelled() {
+            return Err(AppError::SemanticSearchCancelled);
+        }
         let cached = cache
             .entries
             .get(&chunk.key)
@@ -42,6 +49,9 @@ pub fn embed_chunks_with_progress_and_save(
     let total_misses = misses.len();
     let mut completed = 0;
     for batch in misses.chunks(DEFAULT_EMBEDDING_BATCH_SIZE) {
+        if cancellation.is_cancelled() {
+            return Err(AppError::SemanticSearchCancelled);
+        }
         let texts = batch
             .iter()
             .map(|chunk| chunk.text.clone())
@@ -79,11 +89,15 @@ pub fn embed_chunks_with_progress_and_save(
 pub fn cached_chunks(
     chunks: Vec<SemanticChunk>,
     cache: &EmbeddingCache,
-) -> (Vec<EmbeddedChunk>, usize) {
+    cancellation: &crate::semantic::types::SemanticCancellationToken,
+) -> Result<(Vec<EmbeddedChunk>, usize)> {
     let mut embedded = Vec::with_capacity(chunks.len());
     let mut misses = 0;
 
     for chunk in chunks {
+        if cancellation.is_cancelled() {
+            return Err(AppError::SemanticSearchCancelled);
+        }
         let cached = cache
             .entries
             .get(&chunk.key)
@@ -102,7 +116,7 @@ pub fn cached_chunks(
         }
     }
 
-    (embedded, misses)
+    Ok((embedded, misses))
 }
 
 pub fn cache_miss_count(chunks: &[SemanticChunk], cache: &EmbeddingCache) -> usize {
@@ -244,7 +258,7 @@ fn semantic_cache_dir_in(home: PathBuf) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::semantic::types::FileMetadata;
+    use crate::semantic::types::{FileMetadata, SemanticCancellationToken};
 
     struct FakeEmbedder {
         calls: usize,
@@ -310,6 +324,7 @@ mod tests {
             &mut embedder,
             vec![chunk("session:0", "cached text")],
             &mut cache,
+            &SemanticCancellationToken::new(),
             |_, _| {},
             |_| {},
         )
@@ -330,6 +345,7 @@ mod tests {
             &mut embedder,
             vec![chunk("session:0", "new text")],
             &mut cache,
+            &SemanticCancellationToken::new(),
             |_, _| {},
             |_| {},
         )
@@ -354,6 +370,7 @@ mod tests {
             &mut embedder,
             vec![chunk("session:0", "new text")],
             &mut cache,
+            &SemanticCancellationToken::new(),
             |_, _| {},
             |_| {},
         )
@@ -381,6 +398,7 @@ mod tests {
             &mut embedder,
             vec![current],
             &mut cache,
+            &SemanticCancellationToken::new(),
             |_, _| {},
             |_| {},
         )
@@ -411,6 +429,7 @@ mod tests {
             &mut embedder,
             vec![chunk("session:0", "current")],
             &mut cache,
+            &SemanticCancellationToken::new(),
             |_, _| {},
             |_| {},
         )
@@ -515,7 +534,8 @@ mod tests {
             chunk("session:2", "uncached text"),
         ];
 
-        let (_, cached_chunk_misses) = cached_chunks(chunks.clone(), &cache);
+        let (_, cached_chunk_misses) =
+            cached_chunks(chunks.clone(), &cache, &SemanticCancellationToken::new()).unwrap();
 
         assert_eq!(cache_miss_count(&chunks, &cache), cached_chunk_misses);
         assert_eq!(cache_miss_count(&chunks, &cache), 2);

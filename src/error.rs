@@ -28,6 +28,9 @@ pub enum AppError {
 
     #[error("Update error: {0}")]
     UpdateError(String),
+
+    #[error("Semantic search cancelled")]
+    SemanticSearchCancelled,
 }
 
 pub type Result<T> = std::result::Result<T, AppError>;

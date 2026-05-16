@@ -1,5 +1,9 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, Ordering},
+};
 
 pub const DEFAULT_CHUNK_TARGET_CHARS: usize = 2_400;
 pub const DEFAULT_CHUNK_OVERLAP_CHARS: usize = 300;
@@ -7,6 +11,25 @@ pub const DEFAULT_CHUNK_CONTEXT_TURNS: usize = 1;
 pub const DEFAULT_EMBEDDING_BATCH_SIZE: usize = 32;
 pub const CACHE_SCHEMA_VERSION: u32 = 2;
 pub const MODEL_NAME: &str = "BGESmallENV15";
+
+#[derive(Clone, Debug, Default)]
+pub struct SemanticCancellationToken {
+    cancelled: Arc<AtomicBool>,
+}
+
+impl SemanticCancellationToken {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn cancel(&self) {
+        self.cancelled.store(true, Ordering::Relaxed);
+    }
+
+    pub fn is_cancelled(&self) -> bool {
+        self.cancelled.load(Ordering::Relaxed)
+    }
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ChunkConfig {

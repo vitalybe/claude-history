@@ -1,5 +1,6 @@
 use crate::error::{AppError, Result};
 use crate::history::Conversation;
+use crate::semantic::types::SemanticCancellationToken;
 
 pub fn run(query: &str, conversations: &[Conversation], top: usize, local: bool) -> Result<()> {
     use crate::semantic::cache::write_embedding_cache;
@@ -21,8 +22,9 @@ pub fn run(query: &str, conversations: &[Conversation], top: usize, local: bool)
         prewarm: false,
     };
     let mut state = SemanticIndexState::new();
-    if !state.has_chunks(&request) {
-        state.clear_empty(&request);
+    let cancellation = SemanticCancellationToken::new();
+    if !state.has_chunks(&request, &cancellation)? {
+        state.clear_empty(&request, &cancellation)?;
         eprintln!("No visible dialogue text available for semantic search.");
         return Ok(());
     }
@@ -98,6 +100,7 @@ pub fn generate_cache(conversations: &[Conversation], local: bool) -> Result<()>
     let response = state.refresh_or_prewarm(
         &request,
         &mut embedder,
+        &SemanticCancellationToken::new(),
         |progress| {
             if let SemanticIndexProgress::Embedding { completed, total } = progress
                 && total > 0
@@ -129,7 +132,7 @@ pub fn debug_search(query: &str, conversations: &[Conversation], local: bool) ->
     use crate::semantic::fastembed::FastembedEmbedder;
     use crate::semantic::output::format_hit;
     use crate::semantic::rank::rank_chunks;
-    use crate::semantic::types::{ChunkConfig, MODEL_NAME};
+    use crate::semantic::types::{ChunkConfig, MODEL_NAME, SemanticCancellationToken};
     use std::collections::HashMap;
 
     let selected = select_conversations(conversations, local)?;
@@ -245,7 +248,7 @@ pub fn debug_search(query: &str, conversations: &[Conversation], local: bool) ->
         );
     }
 
-    let (embedded_chunks, _) = cached_chunks(chunks, &cache);
+    let (embedded_chunks, _) = cached_chunks(chunks, &cache, &SemanticCancellationToken::new())?;
     if embedded_chunks.is_empty() {
         eprintln!("Semantic debug: no cached chunks available for ranking.");
         return Ok(());
@@ -256,7 +259,12 @@ pub fn debug_search(query: &str, conversations: &[Conversation], local: bool) ->
         eprintln!("Semantic debug: no query embedding returned.");
         return Ok(());
     };
-    let hits = rank_chunks(query, &query_embedding, &embedded_chunks);
+    let hits = rank_chunks(
+        query,
+        &query_embedding,
+        &embedded_chunks,
+        &SemanticCancellationToken::new(),
+    )?;
     eprintln!(
         "Semantic debug: ranked {} cached chunk(s) with fastembed {MODEL_NAME}.",
         embedded_chunks.len()
@@ -291,9 +299,10 @@ fn refresh_and_rank_interactive(
     crate::semantic::index::SemanticIndexResponse,
     crate::semantic::index::SemanticIndexResponse,
 )> {
-    let refresh = state.refresh_passages(request, embedder, |_| {}, |_| {})?;
+    let cancellation = SemanticCancellationToken::new();
+    let refresh = state.refresh_passages(request, embedder, &cancellation, |_| {}, |_| {})?;
     save_cache(&state.cache);
-    let response = state.rank_refreshed(request, embedder, |_| {})?;
+    let response = state.rank_refreshed(request, embedder, &cancellation, |_| {})?;
     Ok((refresh, response))
 }
 
