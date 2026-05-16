@@ -776,6 +776,9 @@ impl App {
         if prewarm {
             self.semantic_search.prewarm_generation = Some(self.search_generation);
             self.semantic_search.prewarm_status = Some(SemanticProgress::InitializingModel);
+        } else {
+            self.semantic_search.prewarm_generation = None;
+            self.semantic_search.prewarm_status = None;
         }
         self.semantic_search.last_status = SemanticProgress::Idle;
         self.semantic_search.error = None;
@@ -4089,6 +4092,59 @@ mod tests {
         });
 
         assert!(app.has_search_work_in_flight());
+    }
+
+    #[test]
+    fn semantic_prewarm_superseded_by_real_query_clears_stale_activity() {
+        let mut app = app_with_options(
+            vec![conversation(
+                Some("Visible"),
+                "-tmp-visible",
+                "22222222-2222-4222-8222-222222222222",
+                "needle",
+            )],
+            vec![],
+            TuiSearchOptions {
+                semantic_enabled: true,
+                ..Default::default()
+            },
+        );
+        let (_request_tx, request_rx) = mpsc::channel();
+        let (response_tx, response_rx) = mpsc::channel();
+        app.semantic_search.worker_tx = Some(_request_tx);
+        app.semantic_search.worker_rx = Some(response_rx);
+        app.list_search_mode = ListSearchMode::Semantic;
+        app.search_generation = 9;
+        app.semantic_search.prewarm_generation = Some(9);
+        app.semantic_search.prewarm_status = Some(SemanticProgress::Embedding {
+            completed: 3,
+            total: 10,
+        });
+        app.query = "needle".to_string();
+        drop(request_rx);
+
+        app.dispatch_search();
+        let real_generation = app.search_generation();
+
+        assert_eq!(app.semantic_search.prewarm_generation, None);
+        assert_eq!(app.semantic_search.prewarm_status, None);
+
+        response_tx
+            .send(SemanticSearchMessage::Complete(
+                crate::tui::semantic_worker::SemanticSearchResponse {
+                    generation: real_generation,
+                    filtered: vec![0],
+                    metadata: HashMap::new(),
+                    error: None,
+                    progress: SemanticProgress::Complete,
+                    prewarm: false,
+                },
+            ))
+            .unwrap();
+
+        assert!(app.receive_search_results());
+        assert!(!app.has_search_work_in_flight());
+        assert_eq!(app.semantic_activity_status_text(), None);
     }
 
     #[test]
