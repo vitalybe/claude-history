@@ -1156,12 +1156,11 @@ impl App {
         {
             return None;
         }
-        let status = match self.semantic_search.prewarm_status.as_ref() {
-            Some(SemanticProgress::Embedding { .. }) => {
-                self.semantic_search.prewarm_status.as_ref()
-            }
-            _ => self.semantic_search.pending_status.as_ref(),
-        }?;
+        let status = self
+            .semantic_search
+            .prewarm_status
+            .as_ref()
+            .or(self.semantic_search.pending_status.as_ref())?;
         match status {
             SemanticProgress::InitializingModel => Some("sem preparing embeddings".to_string()),
             SemanticProgress::Embedding { completed, total } => {
@@ -3930,6 +3929,37 @@ mod tests {
             Some("sem embedding 50%  1/2 chunks")
         );
         assert_eq!(app.semantic_search.pending_generation, Some(7));
+    }
+
+    #[test]
+    fn clearing_query_preserves_in_flight_prewarm_preparing_status() {
+        let mut app = app_with_options(
+            vec![conversation(
+                Some("Visible"),
+                "-tmp-visible",
+                "22222222-2222-4222-8222-222222222222",
+                "needle",
+            )],
+            vec![],
+            TuiSearchOptions {
+                semantic_enabled: true,
+                ..Default::default()
+            },
+        );
+        app.list_search_mode = ListSearchMode::Semantic;
+        app.search_generation = 10;
+        app.semantic_search.pending_generation = Some(10);
+        app.semantic_search.prewarm_generation = Some(9);
+        app.semantic_search.prewarm_status = Some(SemanticProgress::InitializingModel);
+        app.query = "needle".to_string();
+
+        app.query.clear();
+        app.dispatch_search();
+
+        assert_eq!(
+            app.semantic_activity_status_text().as_deref(),
+            Some("sem preparing embeddings")
+        );
     }
 
     #[test]
