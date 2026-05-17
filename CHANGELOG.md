@@ -1,3 +1,9 @@
+## v0.1.59 (2026-05-17)
+
+- Updated release packaging to publish only Apple Silicon macOS and glibc-based
+  x86_64 Linux builds because semantic search depends on ONNX Runtime, whose
+  prebuilt binaries do not support Intel macOS or musl Linux
+
 ## v0.1.58 (2026-05-17)
 
 - Added experimental semantic search for finding conversations by meaning
