@@ -25,6 +25,7 @@ pub struct ConfigFile {
 pub struct TuiConfig {
     #[serde(default)]
     pub exclude_projects: Vec<String>,
+    pub semantic_search: Option<bool>,
 }
 
 #[cfg(test)]
@@ -57,6 +58,19 @@ exclude_projects = ["Hidden", "hidden", " spaced "]
             config.tui.unwrap().exclude_projects,
             vec!["Hidden", "hidden", " spaced "]
         );
+    }
+
+    #[test]
+    fn tui_semantic_search_parses_default_mode() {
+        let config: ConfigFile = toml::from_str(
+            r#"
+[tui]
+semantic_search = true
+"#,
+        )
+        .unwrap();
+
+        assert_eq!(config.tui.unwrap().semantic_search, Some(true));
     }
 
     #[test]

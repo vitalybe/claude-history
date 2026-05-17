@@ -13,6 +13,10 @@ scrolling, search, and export capabilities.
 Run it from the project directory you work on with Claude Code and it will
 discover the matching transcript folder automatically.
 
+> [!TIP]
+> **New:** experimental semantic search is now available. See
+> [Semantic search](#semantic-search) for details.
+
 [Install](#install) · [Features](#features) · [Usage](#usage) ·
 [Configuration](#configuration) · [Changelog](CHANGELOG.md)
 
@@ -92,6 +96,7 @@ preview.
 | `F2`                    | Rename selected session         |
 | `Ctrl+X`                | Delete conversation             |
 | `Tab`                   | Toggle all / workspace scope    |
+| `Ctrl+T`                | Toggle lexical / semantic search |
 | `?`                     | Show keyboard shortcuts         |
 | `Esc`                   | Clear search input, or quit     |
 | `Ctrl+C`                | Quit                            |
@@ -162,6 +167,22 @@ Search uses fuzzy word matching with the following features:
 Results are ranked by relevance using field-aware scoring: matches in the
 title, project name, and summary are weighted higher than body text. Within
 equally relevant results, recent conversations rank first.
+
+### Semantic search
+
+Semantic search ranks conversations by meaning instead of exact word matches. It
+embeds recent conversation chunks locally, combines semantic similarity with
+lexical signals, and shows the best matching evidence preview for each result.
+The first semantic search may download the local model and generate embeddings,
+which can take a while for large histories.
+
+Press `Ctrl+T` in the conversation list to switch between lexical and semantic
+search. To start in semantic mode by default, set:
+
+```toml
+[tui]
+semantic_search = true
+```
 
 ### Direct file input
 
@@ -429,6 +450,9 @@ pager = true
 # Hide exact project names from TUI browse/search lists
 # exclude_projects = ["project-name", "repo/worktree"]
 
+# Start list search in semantic mode instead of lexical mode
+semantic_search = false
+
 EOF
 ```
 
@@ -472,6 +496,8 @@ are key combinations like `"ctrl+r"`, `"alt+f"`, or `"f2"`.
   rows like `"repo/feature"`. Excluded conversations remain on disk and can
   still be opened by pasting their full UUID or by passing the JSONL file path
   directly.
+- `semantic_search` (boolean): Start list search in semantic mode instead of
+  lexical mode (default: false). Press `Ctrl+T` in the TUI to switch modes.
 
 ### Overriding config
 

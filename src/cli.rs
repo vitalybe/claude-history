@@ -177,7 +177,7 @@ pub struct Args {
         value_name = "QUERY",
         value_parser = non_empty_string,
         hide = true,
-        conflicts_with_all = ["show_dir", "resume", "show_path", "show_id", "plain", "render", "delete", "input_file", "debug_search", "semantic_search", "semantic", "generate_semantic_cache", "clear_semantic_cache"]
+        conflicts_with_all = ["show_dir", "resume", "show_path", "show_id", "plain", "render", "delete", "input_file", "debug_search", "semantic_search", "generate_semantic_cache", "clear_semantic_cache"]
     )]
     pub debug_semantic_search: Option<String>,
 
@@ -202,15 +202,11 @@ pub struct Args {
     )]
     pub semantic_top: usize,
 
-    /// Use semantic search mode inside the TUI
-    #[arg(long = "semantic", hide = true)]
-    pub semantic: bool,
-
     /// Generate the semantic embedding cache and exit
     #[arg(
         long = "generate-semantic-cache",
         hide = true,
-        conflicts_with_all = ["show_dir", "resume", "show_path", "show_id", "plain", "render", "delete", "input_file", "debug_search", "semantic_search", "semantic", "clear_semantic_cache"]
+        conflicts_with_all = ["show_dir", "resume", "show_path", "show_id", "plain", "render", "delete", "input_file", "debug_search", "semantic_search", "clear_semantic_cache"]
     )]
     pub generate_semantic_cache: bool,
 
@@ -218,7 +214,7 @@ pub struct Args {
     #[arg(
         long = "clear-semantic-cache",
         hide = true,
-        conflicts_with_all = ["show_dir", "resume", "show_path", "show_id", "plain", "render", "delete", "input_file", "debug_search", "semantic_search", "semantic", "generate_semantic_cache", "debug_semantic_search"]
+        conflicts_with_all = ["show_dir", "resume", "show_path", "show_id", "plain", "render", "delete", "input_file", "debug_search", "semantic_search", "generate_semantic_cache", "debug_semantic_search"]
     )]
     pub clear_semantic_cache: bool,
 
@@ -292,7 +288,6 @@ mod tests {
 
         assert!(!help.contains("--semantic-search"));
         assert!(!help.contains("--semantic-top"));
-        assert!(!help.contains("--semantic"));
         assert!(!help.contains("--generate-semantic-cache"));
         assert!(!help.contains("--clear-semantic-cache"));
         assert!(!help.contains("--debug-semantic-search"));
@@ -307,13 +302,6 @@ mod tests {
     }
 
     #[test]
-    fn semantic_flag_is_parseable() {
-        let args = Args::try_parse_from(["claude-history", "--semantic"]).unwrap();
-
-        assert!(args.semantic);
-    }
-
-    #[test]
     fn generate_semantic_cache_flag_is_parseable() {
         let args = Args::try_parse_from(["claude-history", "--generate-semantic-cache"]).unwrap();
 
@@ -325,5 +313,13 @@ mod tests {
         let args = Args::try_parse_from(["claude-history", "--clear-semantic-cache"]).unwrap();
 
         assert!(args.clear_semantic_cache);
+    }
+
+    #[test]
+    fn semantic_flag_is_removed() {
+        let err = Args::try_parse_from(["claude-history", "--semantic"])
+            .expect_err("removed flag should fail");
+
+        assert!(err.to_string().contains("unexpected argument '--semantic'"));
     }
 }

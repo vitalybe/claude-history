@@ -127,7 +127,7 @@ pub enum ViewSearchMode {
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct TuiSearchOptions {
-    pub semantic_enabled: bool,
+    pub semantic_search_default: bool,
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -448,13 +448,13 @@ impl App {
             search_rx,
             search_generation: 0,
             search_in_flight: false,
-            list_search_mode: if search_options.semantic_enabled {
+            list_search_mode: if search_options.semantic_search_default {
                 ListSearchMode::Semantic
             } else {
                 ListSearchMode::Lexical
             },
             semantic_search: SemanticSearchState {
-                available: search_options.semantic_enabled,
+                available: true,
                 ..Default::default()
             },
         }
@@ -502,13 +502,13 @@ impl App {
             search_rx,
             search_generation: 0,
             search_in_flight: false,
-            list_search_mode: if search_options.semantic_enabled {
+            list_search_mode: if search_options.semantic_search_default {
                 ListSearchMode::Semantic
             } else {
                 ListSearchMode::Lexical
             },
             semantic_search: SemanticSearchState {
-                available: search_options.semantic_enabled,
+                available: true,
                 ..Default::default()
             },
         }
@@ -3370,11 +3370,11 @@ mod tests {
     }
 
     #[test]
-    fn default_app_uses_lexical_search_without_semantic_state() {
+    fn default_app_uses_lexical_search_with_semantic_available() {
         let app = app(vec![], vec![]);
 
         assert_eq!(app.list_search_mode(), ListSearchMode::Lexical);
-        assert!(!app.semantic_search_available());
+        assert!(app.semantic_search_available());
         assert_eq!(app.semantic_search.pending_generation, None);
         assert_eq!(app.semantic_search_error(), None);
         assert!(app.semantic_search.results.is_empty());
@@ -3383,12 +3383,12 @@ mod tests {
     }
 
     #[test]
-    fn semantic_launch_uses_semantic_mode() {
+    fn semantic_search_default_uses_semantic_mode() {
         let app = app_with_options(
             vec![],
             vec![],
             TuiSearchOptions {
-                semantic_enabled: true,
+                semantic_search_default: true,
                 ..Default::default()
             },
         );
@@ -3400,14 +3400,14 @@ mod tests {
     }
 
     #[test]
-    fn semantic_mode_toggle_requires_opt_in() {
+    fn semantic_mode_toggle_switches_from_default_lexical() {
         let mut app = app(vec![], vec![]);
         let generation = app.search_generation();
 
         app.toggle_list_search_mode();
 
-        assert_eq!(app.list_search_mode(), ListSearchMode::Lexical);
-        assert_eq!(app.search_generation(), generation);
+        assert_eq!(app.list_search_mode(), ListSearchMode::Semantic);
+        assert!(app.search_generation() > generation);
     }
 
     #[test]
@@ -3416,7 +3416,7 @@ mod tests {
             vec![],
             vec![],
             TuiSearchOptions {
-                semantic_enabled: true,
+                semantic_search_default: true,
                 ..Default::default()
             },
         );
@@ -3569,7 +3569,7 @@ mod tests {
             )],
             vec![],
             TuiSearchOptions {
-                semantic_enabled: true,
+                semantic_search_default: true,
                 ..Default::default()
             },
         );
@@ -3604,7 +3604,7 @@ mod tests {
             )],
             vec![],
             TuiSearchOptions {
-                semantic_enabled: true,
+                semantic_search_default: true,
                 ..Default::default()
             },
         );
@@ -3660,7 +3660,7 @@ mod tests {
             )],
             vec![],
             TuiSearchOptions {
-                semantic_enabled: true,
+                semantic_search_default: true,
                 ..Default::default()
             },
         );
@@ -3707,7 +3707,7 @@ mod tests {
             )],
             vec![],
             TuiSearchOptions {
-                semantic_enabled: true,
+                semantic_search_default: true,
                 ..Default::default()
             },
         );
@@ -3751,7 +3751,7 @@ mod tests {
             )],
             vec![],
             TuiSearchOptions {
-                semantic_enabled: true,
+                semantic_search_default: true,
                 ..Default::default()
             },
         );
@@ -3839,7 +3839,7 @@ mod tests {
             )],
             vec![],
             TuiSearchOptions {
-                semantic_enabled: true,
+                semantic_search_default: true,
                 ..Default::default()
             },
         );
@@ -3878,7 +3878,7 @@ mod tests {
             )],
             vec![],
             TuiSearchOptions {
-                semantic_enabled: true,
+                semantic_search_default: true,
             },
         );
         let (request_tx, request_rx) = mpsc::channel();
@@ -3911,7 +3911,7 @@ mod tests {
             None,
             vec![],
             TuiSearchOptions {
-                semantic_enabled: true,
+                semantic_search_default: true,
             },
         );
         app.append_conversations(vec![conversation(
@@ -3946,7 +3946,7 @@ mod tests {
             None,
             vec![],
             TuiSearchOptions {
-                semantic_enabled: true,
+                semantic_search_default: true,
             },
         );
         app.append_conversations(vec![conversation(
@@ -3985,7 +3985,7 @@ mod tests {
             )],
             vec![],
             TuiSearchOptions {
-                semantic_enabled: true,
+                semantic_search_default: true,
             },
         );
         let (request_tx, request_rx) = mpsc::channel();
@@ -4016,7 +4016,7 @@ mod tests {
             conversations,
             vec![],
             TuiSearchOptions {
-                semantic_enabled: true,
+                semantic_search_default: true,
             },
         );
         let snapshot = app.semantic_conversations_snapshot.clone();
@@ -4054,7 +4054,7 @@ mod tests {
             )],
             vec![],
             TuiSearchOptions {
-                semantic_enabled: true,
+                semantic_search_default: true,
                 ..Default::default()
             },
         );
@@ -4085,7 +4085,7 @@ mod tests {
             )],
             vec![],
             TuiSearchOptions {
-                semantic_enabled: true,
+                semantic_search_default: true,
                 ..Default::default()
             },
         );
@@ -4121,7 +4121,7 @@ mod tests {
             )],
             vec![],
             TuiSearchOptions {
-                semantic_enabled: true,
+                semantic_search_default: true,
                 ..Default::default()
             },
         );
@@ -4165,7 +4165,7 @@ mod tests {
             ],
             vec!["Hidden"],
             TuiSearchOptions {
-                semantic_enabled: true,
+                semantic_search_default: true,
             },
         );
         app.current_project_dir_name = Some("-tmp-visible".to_string());
@@ -4194,7 +4194,7 @@ mod tests {
             ],
             vec![],
             TuiSearchOptions {
-                semantic_enabled: true,
+                semantic_search_default: true,
                 ..Default::default()
             },
         );
@@ -4245,7 +4245,7 @@ mod tests {
             )],
             vec![],
             TuiSearchOptions {
-                semantic_enabled: true,
+                semantic_search_default: true,
                 ..Default::default()
             },
         );
@@ -4267,7 +4267,7 @@ mod tests {
             vec![conversation(Some("Hidden"), "-tmp-hidden", uuid, "needle")],
             vec!["Hidden"],
             TuiSearchOptions {
-                semantic_enabled: true,
+                semantic_search_default: true,
                 ..Default::default()
             },
         );
@@ -4294,7 +4294,7 @@ mod tests {
             )],
             vec![],
             TuiSearchOptions {
-                semantic_enabled: true,
+                semantic_search_default: true,
                 ..Default::default()
             },
         );
@@ -4337,7 +4337,7 @@ mod tests {
             )],
             vec![],
             TuiSearchOptions {
-                semantic_enabled: true,
+                semantic_search_default: true,
                 ..Default::default()
             },
         );
@@ -4368,7 +4368,7 @@ mod tests {
             )],
             vec![],
             TuiSearchOptions {
-                semantic_enabled: true,
+                semantic_search_default: true,
                 ..Default::default()
             },
         );
@@ -4402,7 +4402,7 @@ mod tests {
             )],
             vec![],
             TuiSearchOptions {
-                semantic_enabled: true,
+                semantic_search_default: true,
                 ..Default::default()
             },
         );
@@ -4426,7 +4426,7 @@ mod tests {
             )],
             vec![],
             TuiSearchOptions {
-                semantic_enabled: true,
+                semantic_search_default: true,
                 ..Default::default()
             },
         );
@@ -4452,7 +4452,7 @@ mod tests {
             )],
             vec![],
             TuiSearchOptions {
-                semantic_enabled: true,
+                semantic_search_default: true,
                 ..Default::default()
             },
         );
@@ -4504,7 +4504,7 @@ mod tests {
             )],
             vec![],
             TuiSearchOptions {
-                semantic_enabled: true,
+                semantic_search_default: true,
                 ..Default::default()
             },
         );
@@ -4547,7 +4547,7 @@ mod tests {
             )],
             vec![],
             TuiSearchOptions {
-                semantic_enabled: true,
+                semantic_search_default: true,
                 ..Default::default()
             },
         );
@@ -4572,19 +4572,10 @@ mod tests {
             vec![],
             vec![],
             TuiSearchOptions {
-                semantic_enabled: true,
+                semantic_search_default: true,
                 ..Default::default()
             },
         );
-
-        app.handle_key(KeyCode::Char('t'), KeyModifiers::CONTROL, 10);
-
-        assert_eq!(app.list_search_mode(), ListSearchMode::Lexical);
-    }
-
-    #[test]
-    fn ctrl_t_does_not_toggle_semantic_mode_when_unavailable() {
-        let mut app = app(vec![], vec![]);
 
         app.handle_key(KeyCode::Char('t'), KeyModifiers::CONTROL, 10);
 
@@ -4612,7 +4603,7 @@ mod tests {
             keys,
             vec![],
             TuiSearchOptions {
-                semantic_enabled: true,
+                semantic_search_default: true,
                 ..Default::default()
             },
         );
@@ -4634,7 +4625,7 @@ mod tests {
             )],
             vec![],
             TuiSearchOptions {
-                semantic_enabled: true,
+                semantic_search_default: true,
                 ..Default::default()
             },
         );
@@ -5005,7 +4996,7 @@ mod interaction_tests {
             KeyBindings::default(),
             vec![],
             TuiSearchOptions {
-                semantic_enabled: true,
+                semantic_search_default: true,
                 ..Default::default()
             },
         );
@@ -5068,7 +5059,7 @@ mod interaction_tests {
             KeyBindings::default(),
             vec![],
             TuiSearchOptions {
-                semantic_enabled: true,
+                semantic_search_default: true,
                 ..Default::default()
             },
         );

@@ -2718,7 +2718,7 @@ mod tests {
             KeyBindings::default(),
             vec![],
             TuiSearchOptions {
-                semantic_enabled: true,
+                semantic_search_default: true,
                 ..Default::default()
             },
         )
@@ -3001,7 +3001,7 @@ mod tests {
             KeyBindings::default(),
             vec![],
             TuiSearchOptions {
-                semantic_enabled: true,
+                semantic_search_default: true,
                 ..Default::default()
             },
         );

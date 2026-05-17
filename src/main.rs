@@ -79,7 +79,9 @@ fn run() -> Result<()> {
     let resume_config = config.resume.unwrap_or_default();
     let default_args = resume_config.default_args.as_deref().unwrap_or(&[]);
 
-    let exclude_projects = config.tui.unwrap_or_default().exclude_projects;
+    let tui_config = config.tui.unwrap_or_default();
+    let exclude_projects = tui_config.exclude_projects;
+    let semantic_search_default = tui_config.semantic_search.unwrap_or(false);
 
     // Disable colors globally when --no-color is passed
     if args.no_color {
@@ -334,7 +336,7 @@ fn run() -> Result<()> {
         current_project_dir_name,
         exclude_projects,
         tui::TuiSearchOptions {
-            semantic_enabled: args.semantic,
+            semantic_search_default,
         },
     )? {
         (tui::Action::Select(path), convs) => (convs, path),
