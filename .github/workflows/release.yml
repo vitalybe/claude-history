@@ -16,20 +16,14 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # macOS builds (use cargo directly)
           - os: macos-15
             target: aarch64-apple-darwin
             platform: darwin-arm64
             use_cross: false
-          - os: macos-15
-            target: x86_64-apple-darwin
-            platform: darwin-amd64
-            use_cross: false
-          # Linux builds (use cross with musl for static linking)
           - os: ubuntu-latest
-            target: x86_64-unknown-linux-musl
+            target: x86_64-unknown-linux-gnu
             platform: linux-amd64
-            use_cross: true
+            use_cross: false
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -101,7 +95,6 @@ jobs:
         run: |
           VERSION="${VERSION#v}"
           SHA_ARM=$(awk '{print $1}' claude-history-darwin-arm64.sha256)
-          SHA_INTEL=$(awk '{print $1}' claude-history-darwin-amd64.sha256)
           SHA_LINUX=$(awk '{print $1}' claude-history-linux-amd64.sha256)
 
           cat > tap/Formula/claude-history.rb << EOF
@@ -112,13 +105,12 @@ jobs:
             license "MIT"
 
             on_macos do
-              if Hardware::CPU.arm?
-                url "https://github.com/raine/claude-history/releases/download/v${VERSION}/claude-history-darwin-arm64.tar.gz"
-                sha256 "${SHA_ARM}"
-              else
-                url "https://github.com/raine/claude-history/releases/download/v${VERSION}/claude-history-darwin-amd64.tar.gz"
-                sha256 "${SHA_INTEL}"
+              if Hardware::CPU.intel?
+                odie "Intel macOS bottles are not available for this version"
               end
+
+              url "https://github.com/raine/claude-history/releases/download/v${VERSION}/claude-history-darwin-arm64.tar.gz"
+              sha256 "${SHA_ARM}"
             end
 
             on_linux do
