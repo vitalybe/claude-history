@@ -1,3 +1,8 @@
+## v0.1.58 (2026-05-17)
+
+- Added experimental semantic search for finding conversations by meaning
+  instead of only exact words
+
 ## v0.1.57 (2026-05-01)
 
 - Tool activity now defaults to concise summaries in the TUI viewer, making long
