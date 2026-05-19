@@ -7,6 +7,7 @@
 
   outputs = { self, nixpkgs }:
     let
+      cargoToml = builtins.fromTOML (builtins.readFile ./Cargo.toml);
       systems = [ "x86_64-linux" "aarch64-linux" "x86_64-darwin" "aarch64-darwin" ];
       forAllSystems = nixpkgs.lib.genAttrs systems;
     in
@@ -17,12 +18,14 @@
         in
         {
           default = pkgs.rustPlatform.buildRustPackage {
-            pname = "claude-history";
-            version = "0.1.51";
+            pname = cargoToml.package.name;
+            version = cargoToml.package.version;
 
             src = ./.;
 
-            cargoHash = "sha256-dIaKrngvzQDIejKq61oqp5N8xJmnOHbgZFsm+aDlk2U=";
+            cargoLock = {
+              lockFile = ./Cargo.lock;
+            };
 
             # Some tests require filesystem access not available in Nix sandbox
             doCheck = false;

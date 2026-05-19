@@ -535,7 +535,9 @@ The repository includes `just` recipes:
 $ just check
 ```
 
-This runs `cargo fmt`, `cargo clippy --fix`, and `cargo build` in parallel.
+This runs `cargo fmt`, `cargo clippy --fix`, `cargo test`, and `cargo build`.
+GitHub Actions also verifies the Nix build on pull requests, main, and release
+tags.
 
 ## Related projects
 

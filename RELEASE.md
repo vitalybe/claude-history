@@ -9,7 +9,7 @@ pipx install git+https://github.com/raine/rust-release-tools.git
 To release:
 
 ```bash
-just release-patch  # or release-minor, release-major
+just release
 ```
 
 This will:
@@ -19,9 +19,11 @@ This will:
 3. Open editor to review changelog
 4. Commit, publish to crates.io, tag, and push
 
-## Updating flake.nix
+## Updating flake.lock
 
-After a release, update the Nix flake to match the new version:
+The Nix package reads `Cargo.toml` and `Cargo.lock` directly, so version and Rust
+dependency changes do not require a manual `cargoHash` update. When you want to
+refresh the pinned nixpkgs input, run:
 
 ```bash
 ./scripts/update-flake.sh
@@ -29,11 +31,11 @@ After a release, update the Nix flake to match the new version:
 
 This will:
 
-1. Read the version from Cargo.toml and update flake.nix
-2. Recalculate the `cargoHash` for the new dependencies
-3. Update `flake.lock`
-4. Verify the build and binary
-5. Stage the changes for commit
+1. Update `flake.lock`
+2. Verify the Nix build and binary
+3. Stage the lockfile for commit
+
+GitHub Actions runs the Nix build on pull requests, main, and release tags.
 
 ## Backfilling changelog
 
