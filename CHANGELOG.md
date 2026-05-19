@@ -1,3 +1,13 @@
+## v0.1.60 (2026-05-19)
+
+- Nix installs now link ONNX Runtime from nixpkgs, so semantic search works in
+  Nix builds ([#32](https://github.com/raine/claude-history/pull/32))
+- Nix packaging now follows `Cargo.toml` and `Cargo.lock` automatically, making
+  package updates and releases less error-prone
+  ([#34](https://github.com/raine/claude-history/pull/34))
+- Release checks now verify the Nix build before publishing, reducing the chance
+  of broken Nix releases
+
 ## v0.1.59 (2026-05-17)
 
 - Updated release packaging to publish only Apple Silicon macOS and glibc-based
