@@ -27,6 +27,11 @@
               lockFile = ./Cargo.lock;
             };
 
+            buildInputs = [ pkgs.onnxruntime ];
+
+            ORT_LIB_PATH = "${pkgs.lib.getLib pkgs.onnxruntime}/lib";
+            ORT_PREFER_DYNAMIC_LINK = "1";
+
             # Some tests require filesystem access not available in Nix sandbox
             doCheck = false;
 
