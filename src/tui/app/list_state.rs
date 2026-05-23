@@ -1,11 +1,7 @@
-use super::{App, SearchCommand};
-use crate::history::{Conversation, format_short_name_from_path};
-use crate::search;
-use crate::search::query::ParsedQuery;
-use chrono::Local;
+use super::App;
+use crate::history::Conversation;
 use std::collections::HashSet;
 use std::path::PathBuf;
-use std::sync::Arc;
 
 impl App {
     pub(super) fn filter_indices<I>(&self, indices: I) -> Vec<usize>
@@ -28,88 +24,6 @@ impl App {
         } else {
             Some(0)
         };
-    }
-
-    pub(super) fn apply_uuid_filter(&mut self, query: &str) -> bool {
-        if let Some(idx) = self.find_or_load_uuid(query) {
-            self.filtered = vec![idx];
-            self.selected = Some(0);
-            true
-        } else {
-            false
-        }
-    }
-
-    pub(super) fn apply_lexical_filter(&mut self) {
-        let now = Local::now();
-        let filtered = search::search(&self.conversations, &self.searchable, &self.query, now);
-        let filtered = self.filter_indices(filtered);
-        self.apply_filtered(filtered);
-    }
-
-    pub(super) fn update_filter(&mut self) {
-        let query = self.query.trim().to_string();
-
-        if ParsedQuery::parse(&query).is_effectively_empty() {
-            self.semantic_search.error = None;
-            self.apply_lexical_filter();
-            return;
-        }
-
-        if search::is_uuid(&query) {
-            self.semantic_search.error = None;
-            self.apply_uuid_filter(&query);
-            return;
-        }
-
-        if self.list_search_mode == super::ListSearchMode::Semantic {
-            return;
-        }
-
-        self.semantic_search.error = None;
-        self.semantic_search.results.clear();
-        self.apply_lexical_filter();
-    }
-
-    pub(super) fn find_or_load_uuid(&mut self, uuid: &str) -> Option<usize> {
-        let uuid_jsonl = format!("{}.jsonl", uuid);
-        for (idx, conv) in self.conversations.iter().enumerate() {
-            if conv
-                .path
-                .file_name()
-                .is_some_and(|f| f.to_string_lossy() == uuid_jsonl)
-            {
-                return Some(idx);
-            }
-        }
-
-        let path = crate::history::find_jsonl_by_uuid(uuid).ok()??;
-        let modified = path.metadata().ok().and_then(|m| m.modified().ok());
-        let mut conv = crate::history::process_conversation_file(path, modified, None).ok()??;
-
-        let fallback_path = conv
-            .path
-            .parent()
-            .and_then(|p| p.file_name())
-            .map(|n| crate::history::path::decode_project_dir_name_to_path(&n.to_string_lossy()))
-            .unwrap_or_default();
-        let project_path = conv.cwd.clone().unwrap_or(fallback_path);
-        conv.project_name = Some(format_short_name_from_path(&project_path));
-        conv.project_path = Some(project_path);
-
-        let idx = self.conversations.len();
-        self.conversations.push(conv);
-
-        self.searchable = search::precompute_search_text(&self.conversations);
-        self.conversations_snapshot = Arc::new(self.conversations.clone());
-        self.rebuild_semantic_conversations_snapshot();
-
-        let _ = self.search_tx.send(SearchCommand::UpdateData {
-            conversations: self.conversations_snapshot.clone(),
-            searchable: Arc::new(self.searchable.clone()),
-        });
-
-        Some(idx)
     }
 
     pub(super) fn select_prev(&mut self) {
@@ -185,17 +99,6 @@ impl App {
         self.selected
             .and_then(|sel| self.filtered.get(sel))
             .copied()
-    }
-
-    pub(super) fn refresh_search_data(&mut self) {
-        self.conversations_snapshot = Arc::new(self.conversations.clone());
-        self.rebuild_semantic_conversations_snapshot();
-        self.searchable = search::precompute_search_text(&self.conversations);
-        let _ = self.search_tx.send(SearchCommand::UpdateData {
-            conversations: self.conversations_snapshot.clone(),
-            searchable: Arc::new(self.searchable.clone()),
-        });
-        self.invalidate_search_generation();
     }
 
     pub(super) fn remove_selected_from_list(&mut self) {
