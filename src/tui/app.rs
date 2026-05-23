@@ -5,7 +5,7 @@ use crate::history::{
     Conversation, LoaderMessage, format_short_name_from_path, process_conversation_file,
 };
 use crate::search::query::ParsedQuery;
-use crate::search::{self, SearchableConversation, normalize_for_search};
+use crate::search::{self, SearchableConversation};
 use crate::semantic::types::{SemanticExplanation, SemanticScoreBreakdown};
 use crate::tui::semantic_worker::{
     SemanticSearchMessage, SemanticWorkerCommand, spawn_semantic_worker,
@@ -150,14 +150,11 @@ impl ListSearchMode {
 pub const LIST_LINES_PER_ITEM: usize = 3;
 
 pub fn list_lines_per_item(mode: ListSearchMode, query: &str) -> usize {
-    let query_normalized: String = normalize_for_search(query.trim())
-        .split_whitespace()
-        .collect::<Vec<_>>()
-        .join(" ");
-    if query_normalized.is_empty() || mode == ListSearchMode::Semantic {
-        LIST_LINES_PER_ITEM
-    } else {
+    let parsed = ParsedQuery::parse(query);
+    if mode == ListSearchMode::Lexical && !parsed.literals().is_empty() {
         4
+    } else {
+        LIST_LINES_PER_ITEM
     }
 }
 
@@ -5004,6 +5001,23 @@ mod interaction_tests {
                 },
             },
         }
+    }
+
+    #[test]
+    fn list_lines_per_item_tracks_literal_context_rows() {
+        assert_eq!(list_lines_per_item(ListSearchMode::Lexical, "needle"), 3);
+        assert_eq!(
+            list_lines_per_item(ListSearchMode::Lexical, "\"needle\""),
+            4
+        );
+        assert_eq!(
+            list_lines_per_item(ListSearchMode::Lexical, "plain \"needle\""),
+            4
+        );
+        assert_eq!(
+            list_lines_per_item(ListSearchMode::Semantic, "\"needle\""),
+            3
+        );
     }
 
     #[test]

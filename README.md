@@ -72,9 +72,9 @@ $ claude-history
 ```
 
 This opens a terminal UI listing all conversations, sorted by recency. Type to
-search across all transcripts. Each item shows a preview of the conversation and
-match context is highlighted when your search matches content not visible in the
-preview.
+search across all transcripts. Each item shows a preview of the conversation.
+Quoted exact matches also show hidden context when the match is not visible in
+the preview.
 
 ### Keyboard navigation (List mode)
 
