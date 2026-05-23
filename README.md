@@ -149,20 +149,24 @@ shows the current match number and total matches while search is active.
 
 ### Search
 
-Search uses fuzzy word matching with the following features:
+Unquoted search matches words flexibly:
 
-- **Case-insensitive**: "config" matches "CONFIG"
-- **Underscore as separator**: "api key" matches "API_KEY"
-- **Prefix matching**: "auth" matches "authentication", "authorize"
-- **Word boundary**: matches start at word boundaries, so "red" won't match
-  inside "fired"
-- **Multi-word AND logic**: all query words must match, each word is highlighted
-  individually
-- **Tool output indexing**: search matches content inside tool results (bash
-  output, file contents, grep results, etc.), not just user/assistant text
-- **UUID lookup**: paste a full session UUID (e.g.
-  `e7d318b1-4274-4ee2-a341-e94893b5df49`) to jump directly to that session, even
-  if it belongs to a different project
+- `config` matches `CONFIG`
+- `api key` matches `API_KEY`
+- `auth` matches `authentication` and `authorize`
+- `red` won't match inside `fired`
+- multiple words must all match
+
+Use quotes when you need exact text. For example, `"DEPLOYMENT_TOKEN"` matches
+`DEPLOYMENT_TOKEN` but not `deployment token`. Lowercase quoted text ignores
+case, while quoted text with uppercase letters is case-sensitive.
+
+You can mix both styles: `metrics "DEPLOYMENT_TOKEN"` searches for `metrics` as
+usual, but only returns conversations that also contain `DEPLOYMENT_TOKEN`.
+
+Search also includes tool results, not just user and assistant messages. Paste a
+full session UUID to jump directly to that session. Quote the UUID to search for
+it as transcript text instead.
 
 Results are ranked by relevance using field-aware scoring: matches in the
 title, project name, and summary are weighted higher than body text. Within
@@ -175,6 +179,11 @@ embeds recent conversation chunks locally, combines semantic similarity with
 lexical signals, and shows the best matching evidence preview for each result.
 The first semantic search may download the local model and generate embeddings,
 which can take a while for large histories.
+
+Quoted text works in semantic mode too. For example,
+`deployment "DEPLOYMENT_TOKEN"` finds conversations about deployment that also
+contain the exact identifier. A quoted-only semantic search, such as
+`"DEPLOYMENT_TOKEN"`, returns exact matches newest-first.
 
 Press `Ctrl+T` in the conversation list to switch between lexical and semantic
 search. To start in semantic mode by default, set:

@@ -1,5 +1,6 @@
 use crate::config::KeyBindings;
 use crate::search::normalize_for_search;
+use crate::search::query::ParsedQuery;
 use crate::tui::app::{
     App, AppMode, DialogMode, ListSearchMode, LoadingState, SemanticResultMetadata, ViewSearchMode,
     ViewState, list_lines_per_item,
@@ -1442,10 +1443,8 @@ fn render_help_overlay(
 
 fn render_list(frame: &mut Frame, app: &App, area: Rect) {
     let width = area.width as usize;
-    let query_normalized: String = normalize_for_search(app.query().trim())
-        .split_whitespace()
-        .collect::<Vec<_>>()
-        .join(" ");
+    let highlight_query = HighlightQuery::parse(app.query());
+    let query_normalized = highlight_query.context_text();
 
     let semantic_mode = app.list_search_mode() == ListSearchMode::Semantic;
     let lines_per_item = list_lines_per_item(app.list_search_mode(), app.query());
@@ -1609,18 +1608,16 @@ fn render_list(frame: &mut Frame, app: &App, area: Rect) {
 
             // Build header with highlighted project name
             let mut header_spans = vec![Span::styled(indicator, indicator_style)];
-            header_spans.extend(highlight_text(
+            header_spans.extend(highlight_query.highlight(
                 &project_part,
-                &query_normalized,
                 project_style,
                 highlight_style,
             ));
 
             // Add custom title if present (with search highlighting)
             if let Some(ref title) = custom_title_part {
-                header_spans.extend(highlight_text(
+                header_spans.extend(highlight_query.highlight(
                     title,
-                    &query_normalized,
                     custom_title_style,
                     custom_title_highlight_style,
                 ));
@@ -1628,9 +1625,8 @@ fn render_list(frame: &mut Frame, app: &App, area: Rect) {
 
             // Add summary if present (with search highlighting)
             if let Some(ref summary) = summary_part {
-                header_spans.extend(highlight_text(
+                header_spans.extend(highlight_query.highlight(
                     summary,
-                    &query_normalized,
                     summary_style,
                     summary_highlight_style,
                 ));
@@ -1703,9 +1699,8 @@ fn render_list(frame: &mut Frame, app: &App, area: Rect) {
             // Build preview with highlighted matches
             let preview_style = Style::default().fg(rgb(th().preview));
             let mut preview_spans = vec![Span::styled(indicator, indicator_style)];
-            preview_spans.extend(highlight_text(
+            preview_spans.extend(highlight_query.highlight(
                 &truncated_preview,
-                &query_normalized,
                 preview_style,
                 highlight_style,
             ));
@@ -1726,9 +1721,8 @@ fn render_list(frame: &mut Frame, app: &App, area: Rect) {
                     let context_highlight_style = Style::default().fg(rgb(th().context_highlight));
 
                     let mut context_spans = vec![Span::styled(indicator, indicator_style)];
-                    context_spans.extend(highlight_text(
+                    context_spans.extend(highlight_query.highlight(
                         &context_text,
-                        &query_normalized,
                         context_base_style,
                         context_highlight_style,
                     ));
@@ -2583,25 +2577,131 @@ fn find_normalized_match_ranges(text: &str, query_normalized: &str) -> Vec<(usiz
     NormalizedText::new(text).find_all_ranges(query_normalized)
 }
 
+#[derive(Debug, Default)]
+struct HighlightQuery {
+    unquoted: String,
+    literals: Vec<String>,
+}
+
+impl HighlightQuery {
+    fn parse(query: &str) -> Self {
+        let parsed = ParsedQuery::parse(query);
+        Self {
+            unquoted: normalize_highlight_query(parsed.unquoted()),
+            literals: parsed
+                .literals()
+                .iter()
+                .map(|literal| literal.text().to_string())
+                .collect(),
+        }
+    }
+
+    fn context_text(&self) -> String {
+        normalize_highlight_query(
+            [self.unquoted.as_str()]
+                .into_iter()
+                .chain(self.literals.iter().map(String::as_str))
+                .collect::<Vec<_>>()
+                .join(" ")
+                .as_str(),
+        )
+    }
+
+    fn highlight(
+        &self,
+        text: &str,
+        base_style: Style,
+        highlight_style: Style,
+    ) -> Vec<Span<'static>> {
+        let mut ranges = find_normalized_match_ranges(text, &self.unquoted);
+        ranges.extend(find_literal_match_ranges(text, &self.literals));
+        highlight_ranges(text, ranges, base_style, highlight_style)
+    }
+}
+
+fn normalize_highlight_query(query: &str) -> String {
+    normalize_for_search(query)
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn find_literal_match_ranges(text: &str, literals: &[String]) -> Vec<(usize, usize)> {
+    let text_lower = text.to_lowercase();
+    literals
+        .iter()
+        .flat_map(|literal| {
+            if literal.is_empty() {
+                Vec::new()
+            } else if literal.chars().any(char::is_uppercase) {
+                find_substring_ranges(text, literal)
+            } else {
+                find_substring_ranges(&text_lower, &literal.to_lowercase())
+            }
+        })
+        .collect()
+}
+
+fn find_substring_ranges(text: &str, needle: &str) -> Vec<(usize, usize)> {
+    let mut ranges = Vec::new();
+    let mut start = 0;
+    while let Some(pos) = text[start..].find(needle) {
+        let range_start = start + pos;
+        let range_end = range_start + needle.len();
+        ranges.push((range_start, range_end));
+        start = range_end;
+    }
+    ranges
+}
+
+#[cfg(test)]
 fn highlight_text(
     text: &str,
     query: &str,
     base_style: Style,
     highlight_style: Style,
 ) -> Vec<Span<'static>> {
-    if query.is_empty() {
+    highlight_ranges(
+        text,
+        find_normalized_match_ranges(text, query),
+        base_style,
+        highlight_style,
+    )
+}
+
+fn highlight_ranges(
+    text: &str,
+    mut ranges: Vec<(usize, usize)>,
+    base_style: Style,
+    highlight_style: Style,
+) -> Vec<Span<'static>> {
+    if ranges.is_empty() {
         return vec![Span::styled(text.to_string(), base_style)];
     }
 
-    let ranges = find_normalized_match_ranges(text, query);
-    if ranges.is_empty() {
+    ranges.sort_unstable_by_key(|range| range.0);
+    let mut merged = Vec::<(usize, usize)>::new();
+    for (start, end) in ranges {
+        if start >= end || end > text.len() {
+            continue;
+        }
+        if let Some(last) = merged.last_mut()
+            && start <= last.1
+        {
+            last.1 = last.1.max(end);
+            continue;
+        }
+        merged.push((start, end));
+    }
+
+    if merged.is_empty() {
         return vec![Span::styled(text.to_string(), base_style)];
     }
 
     let mut spans = Vec::new();
     let mut pos = 0;
 
-    for (start, end) in &ranges {
+    for (start, end) in &merged {
         if *start > pos {
             spans.push(Span::styled(text[pos..*start].to_string(), base_style));
         }
@@ -3096,6 +3196,82 @@ mod tests {
         assert!(contents.contains("0.90"), "{contents:?}");
         assert!(contents.contains("lex boost"), "{contents:?}");
         assert!(contents.contains("semantic evidence only"), "{contents:?}");
+    }
+
+    #[test]
+    fn highlight_query_uses_unquoted_terms_and_literals_for_context() {
+        assert_eq!(
+            HighlightQuery::parse("alpha \"DEPLOYMENT_TOKEN\" beta").context_text(),
+            "alpha beta deployment token"
+        );
+    }
+
+    #[test]
+    fn highlight_query_preserves_unquoted_behavior() {
+        let highlight_style = Style::default().fg(Color::Yellow);
+        let query = HighlightQuery::parse("DEPLOYMENT_TOKEN");
+        let spans = query.highlight(
+            "prefix deployment token suffix",
+            Style::default(),
+            highlight_style,
+        );
+        let highlighted: Vec<_> = span_info(&spans, highlight_style)
+            .into_iter()
+            .filter(|(_, highlighted)| *highlighted)
+            .collect();
+
+        assert_eq!(highlighted, vec![("deployment token", true)]);
+    }
+
+    #[test]
+    fn quoted_list_highlighting_matches_literal_text() {
+        let highlight_style = Style::default().fg(Color::Yellow);
+        let query = HighlightQuery::parse("\"DEPLOYMENT_TOKEN\"");
+        let spans = query.highlight(
+            "prefix DEPLOYMENT_TOKEN suffix",
+            Style::default(),
+            highlight_style,
+        );
+        let highlighted: Vec<_> = span_info(&spans, highlight_style)
+            .into_iter()
+            .filter(|(_, highlighted)| *highlighted)
+            .collect();
+
+        assert_eq!(highlighted, vec![("DEPLOYMENT_TOKEN", true)]);
+    }
+
+    #[test]
+    fn quoted_list_highlighting_matches_multiword_literal_phrase() {
+        let highlight_style = Style::default().fg(Color::Yellow);
+        let query = HighlightQuery::parse("alpha \"beta gamma\"");
+        let spans = query.highlight(
+            "alpha prefix beta gamma suffix beta-only",
+            Style::default(),
+            highlight_style,
+        );
+        let highlighted: Vec<_> = span_info(&spans, highlight_style)
+            .into_iter()
+            .filter(|(_, highlighted)| *highlighted)
+            .collect();
+
+        assert_eq!(highlighted, vec![("alpha", true), ("beta gamma", true)]);
+    }
+
+    #[test]
+    fn quoted_list_highlighting_respects_smart_case() {
+        let highlight_style = Style::default().fg(Color::Yellow);
+        let query = HighlightQuery::parse("\"Beta Gamma\"");
+        let spans = query.highlight(
+            "beta gamma then Beta Gamma",
+            Style::default(),
+            highlight_style,
+        );
+        let highlighted: Vec<_> = span_info(&spans, highlight_style)
+            .into_iter()
+            .filter(|(_, highlighted)| *highlighted)
+            .collect();
+
+        assert_eq!(highlighted, vec![("Beta Gamma", true)]);
     }
 
     #[test]
