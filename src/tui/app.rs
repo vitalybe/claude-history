@@ -149,9 +149,9 @@ impl ListSearchMode {
 
 pub const LIST_LINES_PER_ITEM: usize = 3;
 
-pub fn list_lines_per_item(mode: ListSearchMode, query: &str) -> usize {
+pub fn list_lines_per_item(_mode: ListSearchMode, query: &str) -> usize {
     let parsed = ParsedQuery::parse(query);
-    if mode == ListSearchMode::Lexical && !parsed.literals().is_empty() {
+    if !parsed.literals().is_empty() {
         4
     } else {
         LIST_LINES_PER_ITEM
@@ -5016,7 +5016,7 @@ mod interaction_tests {
         );
         assert_eq!(
             list_lines_per_item(ListSearchMode::Semantic, "\"needle\""),
-            3
+            4
         );
     }
 

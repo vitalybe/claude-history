@@ -1,5 +1,6 @@
 use crate::history::Conversation;
 use rayon::prelude::*;
+use std::collections::VecDeque;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CaseMode {
@@ -110,7 +111,24 @@ pub fn exact_fallback(
 }
 
 fn contains_case_insensitive(text: &str, needle: &str) -> bool {
-    !find_case_insensitive_ranges(text, needle).is_empty()
+    let needle_chars: Vec<char> = needle.chars().flat_map(char::to_lowercase).collect();
+    if needle_chars.is_empty() {
+        return false;
+    }
+
+    let mut window = VecDeque::with_capacity(needle_chars.len());
+    for folded in text.chars().flat_map(char::to_lowercase) {
+        window.push_back(folded);
+        if window.len() > needle_chars.len() {
+            window.pop_front();
+        }
+        if window.len() == needle_chars.len()
+            && window.iter().copied().eq(needle_chars.iter().copied())
+        {
+            return true;
+        }
+    }
+    false
 }
 
 fn find_substring_ranges(text: &str, needle: &str) -> Vec<(usize, usize)> {
@@ -243,6 +261,14 @@ mod tests {
 
         assert_eq!(ranges, vec![(4, 13)]);
         assert_eq!(&text[ranges[0].0..ranges[0].1], "İSTANBUL");
+    }
+
+    #[test]
+    fn insensitive_literal_match_uses_smart_case() {
+        let literal = Literal::new("i\u{307}stanbul".to_string());
+
+        assert!(literal.matches("pre İSTANBUL post"));
+        assert!(!literal.matches("pre constantinople post"));
     }
 
     #[test]
