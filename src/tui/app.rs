@@ -4,8 +4,8 @@ use crate::error::{AppError, Result};
 use crate::history::{
     Conversation, LoaderMessage, format_short_name_from_path, process_conversation_file,
 };
+use crate::search::{self, SearchableConversation, normalize_for_search};
 use crate::semantic::types::{SemanticExplanation, SemanticScoreBreakdown};
-use crate::tui::search::{self, SearchableConversation, normalize_for_search};
 use crate::tui::semantic_worker::{
     SemanticSearchMessage, SemanticWorkerCommand, spawn_semantic_worker,
 };

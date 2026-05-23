@@ -244,7 +244,7 @@ pub fn entry_matches(entry: &CacheEntry, file_size: u64, mtime: SystemTime) -> b
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::tui::search::normalize_for_search;
+    use crate::search::normalize_for_search;
     use std::time::Duration;
 
     fn make_test_conversation() -> Conversation {

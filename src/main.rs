@@ -8,6 +8,7 @@ mod error;
 mod history;
 mod markdown;
 mod pager;
+pub mod search;
 mod semantic;
 mod semantic_cli;
 mod syntax;
@@ -149,10 +150,10 @@ fn run() -> Result<()> {
         let mut conversations = history::load_all_conversations(show_last, args.debug)?;
         conversations.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
 
-        let searchable = tui::search::precompute_search_text(&conversations);
+        let searchable = search::precompute_search_text(&conversations);
         let now = chrono::Local::now();
 
-        let query_lower = tui::search::normalize_for_search(query);
+        let query_lower = search::normalize_for_search(query);
         let query_words: Vec<&str> = query_lower.split_whitespace().collect();
         let adjacent_pairs: Vec<String> = if query_words.len() > 1 {
             query_words
@@ -189,7 +190,7 @@ fn run() -> Result<()> {
                     }
                 }
 
-                let debug = tui::search::score_text_debug(
+                let debug = search::score_text_debug(
                     s,
                     &conversations[s.index].search_text_lower,
                     &query_words,

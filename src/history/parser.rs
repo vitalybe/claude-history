@@ -11,8 +11,8 @@ use crate::claude::{
 use crate::cli::DebugLevel;
 use crate::debug;
 use crate::error::Result;
+use crate::search::normalize_for_search;
 use crate::semantic::filter::{SemanticTurnRole, filter_turn};
-use crate::tui::search::normalize_for_search;
 use chrono::{DateTime, Local};
 use std::collections::{HashMap, VecDeque};
 use std::fs::File;

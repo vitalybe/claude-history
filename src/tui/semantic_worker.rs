@@ -381,11 +381,11 @@ fn semantic_progress(progress: SemanticIndexProgress) -> SemanticProgress {
 mod tests {
     use super::*;
     use crate::history::Conversation;
+    use crate::search::normalize_for_search;
     use crate::semantic::types::{
         SemanticChunkIdentity, SemanticExplanation, SemanticQuality, SemanticRationaleKind,
         SemanticScoreBreakdown,
     };
-    use crate::tui::search::normalize_for_search;
     use chrono::Local;
     use std::path::PathBuf;
     use std::time::Duration;

@@ -1,9 +1,9 @@
 use crate::config::KeyBindings;
+use crate::search::normalize_for_search;
 use crate::tui::app::{
     App, AppMode, DialogMode, ListSearchMode, LoadingState, SemanticResultMetadata, ViewSearchMode,
     ViewState, list_lines_per_item,
 };
-use crate::tui::search::normalize_for_search;
 use crate::tui::theme::{self, Theme};
 use crate::tui::viewer::{LineStyle, RenderedLine};
 use chrono::{DateTime, Local};
