@@ -16,7 +16,7 @@ use crossterm::event::{KeyCode, KeyModifiers};
 use ratatui::prelude::*;
 #[cfg(test)]
 use std::collections::HashMap;
-use std::collections::{BTreeSet, HashSet};
+use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::mpsc;
@@ -101,7 +101,98 @@ pub struct App {
     semantic_search: SemanticSearchState,
 }
 
+struct AppParts {
+    conversations: Vec<Conversation>,
+    conversations_snapshot: Arc<Vec<Conversation>>,
+    semantic_conversations_snapshot: Arc<Vec<Arc<Conversation>>>,
+    searchable: Vec<SearchableConversation>,
+    filtered: Vec<usize>,
+    selected: Option<usize>,
+    loading_state: LoadingState,
+    app_mode: AppMode,
+    tool_display: ToolDisplayMode,
+    show_thinking: bool,
+    single_file_mode: bool,
+    keys: KeyBindings,
+    workspace_filter: bool,
+    current_project_dir_name: Option<String>,
+    excluded_projects: HashSet<String>,
+    search_tx: mpsc::Sender<SearchCommand>,
+    search_rx: mpsc::Receiver<SearchResponse>,
+    list_search_mode: ListSearchMode,
+    semantic_search: SemanticSearchState,
+}
+
 impl App {
+    fn from_parts(parts: AppParts) -> Self {
+        Self {
+            conversations_snapshot: parts.conversations_snapshot,
+            semantic_conversations_snapshot: parts.semantic_conversations_snapshot,
+            semantic_corpus_version: 1,
+            semantic_scope_version: 0,
+            semantic_sent_corpus_version: 0,
+            semantic_sent_scope_signature: None,
+            conversations: parts.conversations,
+            searchable: parts.searchable,
+            filtered: parts.filtered,
+            selected: parts.selected,
+            query: String::new(),
+            cursor_pos: 0,
+            loading_state: parts.loading_state,
+            dialog_mode: DialogMode::None,
+            app_mode: parts.app_mode,
+            status_message: None,
+            tool_display: parts.tool_display,
+            show_thinking: parts.show_thinking,
+            show_timing: false,
+            single_file_mode: parts.single_file_mode,
+            keys: parts.keys,
+            workspace_filter: parts.workspace_filter,
+            current_project_dir_name: parts.current_project_dir_name,
+            excluded_projects: parts.excluded_projects,
+            search_tx: parts.search_tx,
+            search_rx: parts.search_rx,
+            search_generation: 0,
+            search_in_flight: false,
+            list_search_mode: parts.list_search_mode,
+            semantic_search: parts.semantic_search,
+        }
+    }
+
+    fn conversation_snapshot(conversations: &[Conversation]) -> Arc<Vec<Conversation>> {
+        Arc::new(conversations.to_vec())
+    }
+
+    fn semantic_snapshot(conversations: &[Conversation]) -> Arc<Vec<Arc<Conversation>>> {
+        Arc::new(conversations.iter().cloned().map(Arc::new).collect())
+    }
+
+    fn send_initial_search_data(
+        search_tx: &mpsc::Sender<SearchCommand>,
+        conversations: Arc<Vec<Conversation>>,
+        searchable: &[SearchableConversation],
+    ) {
+        let _ = search_tx.send(SearchCommand::UpdateData {
+            conversations,
+            searchable: Arc::new(searchable.to_vec()),
+        });
+    }
+
+    fn list_search_mode_from_options(search_options: TuiSearchOptions) -> ListSearchMode {
+        if search_options.semantic_search_default {
+            ListSearchMode::Semantic
+        } else {
+            ListSearchMode::Lexical
+        }
+    }
+
+    fn semantic_search_state(available: bool) -> SemanticSearchState {
+        SemanticSearchState {
+            available,
+            ..Default::default()
+        }
+    }
+
     /// Create a new app with all conversations pre-loaded
     #[allow(dead_code)]
     pub fn new(
@@ -141,42 +232,21 @@ impl App {
         );
         let selected = if filtered.is_empty() { None } else { Some(0) };
         let (search_tx, search_rx) = spawn_search_worker();
+        let conversations_snapshot = Self::conversation_snapshot(&conversations);
 
-        let conversations_snapshot = Arc::new(conversations.clone());
-        let semantic_conversations_snapshot = Arc::new(
-            conversations
-                .iter()
-                .cloned()
-                .map(Arc::new)
-                .collect::<Vec<_>>(),
-        );
+        Self::send_initial_search_data(&search_tx, conversations_snapshot.clone(), &searchable);
 
-        // Send initial data to the worker
-        let _ = search_tx.send(SearchCommand::UpdateData {
-            conversations: conversations_snapshot.clone(),
-            searchable: Arc::new(searchable.clone()),
-        });
-
-        Self {
+        Self::from_parts(AppParts {
             conversations_snapshot,
-            semantic_conversations_snapshot,
-            semantic_corpus_version: 1,
-            semantic_scope_version: 0,
-            semantic_sent_corpus_version: 0,
-            semantic_sent_scope_signature: None,
+            semantic_conversations_snapshot: Self::semantic_snapshot(&conversations),
             conversations,
             searchable,
             filtered,
             selected,
-            query: String::new(),
-            cursor_pos: 0,
             loading_state: LoadingState::Ready,
-            dialog_mode: DialogMode::None,
             app_mode: AppMode::List,
-            status_message: None,
             tool_display,
             show_thinking,
-            show_timing: false,
             single_file_mode: false,
             keys,
             workspace_filter: false,
@@ -184,18 +254,9 @@ impl App {
             excluded_projects,
             search_tx,
             search_rx,
-            search_generation: 0,
-            search_in_flight: false,
-            list_search_mode: if search_options.semantic_search_default {
-                ListSearchMode::Semantic
-            } else {
-                ListSearchMode::Lexical
-            },
-            semantic_search: SemanticSearchState {
-                available: true,
-                ..Default::default()
-            },
-        }
+            list_search_mode: Self::list_search_mode_from_options(search_options),
+            semantic_search: Self::semantic_search_state(true),
+        })
     }
 
     /// Create a new app in loading state
@@ -208,48 +269,30 @@ impl App {
         exclude_projects: Vec<String>,
         search_options: TuiSearchOptions,
     ) -> Self {
+        let conversations = Vec::new();
         let (search_tx, search_rx) = spawn_search_worker();
-        let excluded_projects = exclude_projects.into_iter().collect();
 
-        Self {
-            conversations: Vec::new(),
-            conversations_snapshot: Arc::new(Vec::new()),
-            semantic_conversations_snapshot: Arc::new(Vec::new()),
-            semantic_corpus_version: 1,
-            semantic_scope_version: 0,
-            semantic_sent_corpus_version: 0,
-            semantic_sent_scope_signature: None,
+        Self::from_parts(AppParts {
+            conversations_snapshot: Self::conversation_snapshot(&conversations),
+            semantic_conversations_snapshot: Self::semantic_snapshot(&conversations),
+            conversations,
             searchable: Vec::new(),
             filtered: Vec::new(),
             selected: None,
-            query: String::new(),
-            cursor_pos: 0,
             loading_state: LoadingState::Loading { loaded: 0 },
-            dialog_mode: DialogMode::None,
             app_mode: AppMode::List,
-            status_message: None,
             tool_display,
             show_thinking,
-            show_timing: false,
             single_file_mode: false,
             keys,
             workspace_filter,
             current_project_dir_name,
-            excluded_projects,
+            excluded_projects: exclude_projects.into_iter().collect(),
             search_tx,
             search_rx,
-            search_generation: 0,
-            search_in_flight: false,
-            list_search_mode: if search_options.semantic_search_default {
-                ListSearchMode::Semantic
-            } else {
-                ListSearchMode::Lexical
-            },
-            semantic_search: SemanticSearchState {
-                available: true,
-                ..Default::default()
-            },
-        }
+            list_search_mode: Self::list_search_mode_from_options(search_options),
+            semantic_search: Self::semantic_search_state(true),
+        })
     }
 
     /// Create a new app for viewing a single file directly
@@ -278,51 +321,23 @@ impl App {
             selected = Some(0);
         }
 
-        Self {
-            conversations_snapshot: Arc::new(conversations.clone()),
-            semantic_conversations_snapshot: Arc::new(
-                conversations
-                    .iter()
-                    .cloned()
-                    .map(Arc::new)
-                    .collect::<Vec<_>>(),
-            ),
-            semantic_corpus_version: 1,
-            semantic_scope_version: 0,
-            semantic_sent_corpus_version: 0,
-            semantic_sent_scope_signature: None,
+        Self::from_parts(AppParts {
+            conversations_snapshot: Self::conversation_snapshot(&conversations),
+            semantic_conversations_snapshot: Self::semantic_snapshot(&conversations),
             conversations,
             searchable: Vec::new(),
             filtered,
             selected,
-            query: String::new(),
-            cursor_pos: 0,
             loading_state: LoadingState::Ready,
-            dialog_mode: DialogMode::None,
-            app_mode: AppMode::View(ViewState {
-                conversation_path: path,
-                parsed_entries: None,
-                scroll_offset: 0,
-                rendered_lines: Vec::new(),
-                total_lines: 0,
+            app_mode: AppMode::View(ViewState::initial(
+                path,
                 tool_display,
                 show_thinking,
-                show_timing: false,
-                content_width: 0,
-                search_mode: ViewSearchMode::Off,
-                search_query: String::new(),
-                search_matches: Vec::new(),
-                current_match: 0,
-                message_ranges: Vec::new(),
-                focused_message: None,
-                message_nav_active: false,
-                expanded_tool_outputs: BTreeSet::new(),
-                hovered_tool_output: None,
-            }),
-            status_message: None,
+                false,
+                0,
+            )),
             tool_display,
             show_thinking,
-            show_timing: false,
             single_file_mode: true,
             keys,
             workspace_filter: false,
@@ -330,11 +345,9 @@ impl App {
             excluded_projects: HashSet::new(),
             search_tx,
             search_rx,
-            search_generation: 0,
-            search_in_flight: false,
             list_search_mode: ListSearchMode::Lexical,
-            semantic_search: SemanticSearchState::default(),
-        }
+            semantic_search: Self::semantic_search_state(false),
+        })
     }
 
     pub fn keys(&self) -> &KeyBindings {

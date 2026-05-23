@@ -109,6 +109,37 @@ pub enum ListSearchMode {
     Semantic,
 }
 
+impl ViewState {
+    pub(super) fn initial(
+        conversation_path: PathBuf,
+        tool_display: ToolDisplayMode,
+        show_thinking: bool,
+        show_timing: bool,
+        content_width: usize,
+    ) -> Self {
+        Self {
+            conversation_path,
+            parsed_entries: None,
+            scroll_offset: 0,
+            rendered_lines: Vec::new(),
+            total_lines: 0,
+            tool_display,
+            show_thinking,
+            show_timing,
+            content_width,
+            search_mode: ViewSearchMode::Off,
+            search_query: String::new(),
+            search_matches: Vec::new(),
+            current_match: 0,
+            message_ranges: Vec::new(),
+            focused_message: None,
+            message_nav_active: false,
+            expanded_tool_outputs: BTreeSet::new(),
+            hovered_tool_output: None,
+        }
+    }
+}
+
 impl ListSearchMode {
     pub fn label(self) -> &'static str {
         match self {
