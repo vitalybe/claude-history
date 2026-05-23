@@ -1,3 +1,7 @@
+## v0.1.62 (2026-05-24)
+
+- Identifier searches with underscores now stay precise, so `api_key` matches `api_key` without also matching `api key`.
+
 ## v0.1.61 (2026-05-23)
 
 - Added quoted search for exact text, so you can find literals like tokens,
