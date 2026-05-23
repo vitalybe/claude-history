@@ -1,5 +1,7 @@
 use crate::error::{AppError, Result};
 use crate::history::Conversation;
+use crate::search::literal::{build_literal_corpus, exact_fallback, matches_all_literals};
+use crate::search::query::ParsedQuery;
 use crate::semantic::types::SemanticCancellationToken;
 
 pub fn run(query: &str, conversations: &[Conversation], top: usize, local: bool) -> Result<()> {
@@ -15,10 +17,22 @@ pub fn run(query: &str, conversations: &[Conversation], top: usize, local: bool)
         return Ok(());
     }
 
+    let parsed = ParsedQuery::parse(query);
+    if parsed.is_quoted_only() {
+        let results = exact_literal_indices(&selected, &parsed);
+        for (rank, index) in results.iter().take(top).enumerate() {
+            eprintln!("{}", format_exact_hit(rank + 1, selected[*index]));
+        }
+        if results.is_empty() {
+            eprintln!("No semantic matches found.");
+        }
+        return Ok(());
+    }
+
     let candidates = semantic_index_candidates(&selected);
     let request = SemanticIndexRequest {
-        query,
-        literal_filters: &[],
+        query: parsed.semantic_text(),
+        literal_filters: parsed.literals(),
         full_corpus: &candidates,
         scope: &candidates,
         corpus_version: 1,
@@ -141,7 +155,10 @@ pub fn debug_search(query: &str, conversations: &[Conversation], local: bool) ->
     use crate::semantic::types::{ChunkConfig, MODEL_NAME, SemanticCancellationToken};
     use std::collections::HashMap;
 
+    let parsed = ParsedQuery::parse(query);
     let selected = select_conversations(conversations, local)?;
+    eprint!("{}", format_parsed_query(&parsed));
+    eprintln!();
     eprintln!(
         "Semantic debug: selected {} conversation(s).",
         selected.len()
@@ -222,6 +239,18 @@ pub fn debug_search(query: &str, conversations: &[Conversation], local: bool) ->
         }
     }
 
+    if parsed.is_quoted_only() {
+        let results = exact_literal_indices(&selected, &parsed);
+        eprintln!("Semantic debug: exact literal matches={}.", results.len());
+        for (rank, index) in results.iter().take(20).enumerate() {
+            eprintln!("{}", format_exact_hit(rank + 1, selected[*index]));
+        }
+        if results.is_empty() {
+            eprintln!("Semantic debug: no semantic matches found.");
+        }
+        return Ok(());
+    }
+
     if chunks.is_empty() {
         eprintln!("Semantic debug: no visible dialogue text available.");
         return Ok(());
@@ -261,16 +290,20 @@ pub fn debug_search(query: &str, conversations: &[Conversation], local: bool) ->
     }
 
     let mut embedder = FastembedEmbedder::new()?;
-    let Some(query_embedding) = embedder.embed_query(query)? else {
+    let Some(query_embedding) = embedder.embed_query(parsed.semantic_text())? else {
         eprintln!("Semantic debug: no query embedding returned.");
         return Ok(());
     };
-    let hits = rank_chunks(
-        query,
-        &query_embedding,
-        &embedded_chunks,
-        &SemanticCancellationToken::new(),
-    )?;
+    let hits = filter_hits_by_literals(
+        rank_chunks(
+            parsed.semantic_text(),
+            &query_embedding,
+            &embedded_chunks,
+            &SemanticCancellationToken::new(),
+        )?,
+        &selected,
+        &parsed,
+    );
     eprintln!(
         "Semantic debug: ranked {} cached chunk(s) with fastembed {MODEL_NAME}.",
         embedded_chunks.len()
@@ -294,6 +327,66 @@ fn truncate_debug(text: &str, max_chars: usize) -> String {
     let mut out: String = text.chars().take(max_chars.saturating_sub(1)).collect();
     out.push('…');
     out
+}
+
+fn format_exact_hit(rank: usize, conversation: &Conversation) -> String {
+    let project = conversation.project_name.as_deref().unwrap_or("(none)");
+    let title = conversation
+        .custom_title
+        .as_deref()
+        .or(conversation.summary.as_deref())
+        .unwrap_or(&conversation.preview);
+    let session = conversation
+        .path
+        .file_stem()
+        .and_then(|stem| stem.to_str())
+        .unwrap_or("?");
+    format!("#{rank:2} exact | {project} | {session}\n     {title}\n")
+}
+
+fn exact_literal_indices(conversations: &[&Conversation], parsed: &ParsedQuery) -> Vec<usize> {
+    let plain_conversations = conversations
+        .iter()
+        .map(|conversation| (*conversation).clone())
+        .collect::<Vec<_>>();
+    let corpus = build_literal_corpus(&plain_conversations);
+    exact_fallback(&plain_conversations, &corpus, parsed.literals(), |_| true)
+}
+
+fn filter_hits_by_literals(
+    hits: Vec<crate::semantic::types::SemanticHit>,
+    conversations: &[&Conversation],
+    parsed: &ParsedQuery,
+) -> Vec<crate::semantic::types::SemanticHit> {
+    if parsed.literals().is_empty() {
+        return hits;
+    }
+
+    let plain_conversations = conversations
+        .iter()
+        .map(|conversation| (*conversation).clone())
+        .collect::<Vec<_>>();
+    let corpus = build_literal_corpus(&plain_conversations);
+    hits.into_iter()
+        .filter(|hit| matches_all_literals(&corpus[hit.conversation_index].text, parsed.literals()))
+        .collect()
+}
+
+fn format_parsed_query(parsed: &ParsedQuery) -> String {
+    let mut output = format!("intent: {:?}\n", parsed.unquoted());
+    if parsed.literals().is_empty() {
+        output.push_str("literals: none\n");
+    } else {
+        output.push_str("literals:\n");
+        for literal in parsed.literals() {
+            output.push_str(&format!(
+                "  {:?} ({:?})\n",
+                literal.text(),
+                literal.case_mode()
+            ));
+        }
+    }
+    output
 }
 
 fn refresh_and_rank_interactive(
@@ -613,5 +706,127 @@ mod tests {
     #[test]
     fn empty_corpus_returns_before_model_initialization() {
         run("cache", &[], 1, false).expect("empty corpus returns");
+    }
+
+    #[test]
+    fn quoted_only_exact_fallback_returns_literal_matches_newest_first() {
+        let mut older = test_conversation(
+            "/projects/project-a/session-1.jsonl",
+            "literal needle",
+            vec![],
+        );
+        older.timestamp = Local::now() - chrono::Duration::days(1);
+        let newer = test_conversation(
+            "/projects/project-a/session-2.jsonl",
+            "literal needle",
+            vec![],
+        );
+        let miss = test_conversation("/projects/project-a/session-3.jsonl", "other", vec![]);
+        let conversations = vec![older, newer, miss];
+        let selected = conversations.iter().collect::<Vec<_>>();
+        let parsed = ParsedQuery::parse("\"literal needle\"");
+
+        let results = exact_literal_indices(&selected, &parsed);
+
+        assert_eq!(results, vec![1, 0]);
+    }
+
+    #[test]
+    fn quoted_uuid_exact_fallback_is_literal_search() {
+        let uuid = "e7d318b1-4274-4ee2-a341-e94893b5df49";
+        let conversations = vec![
+            test_conversation("/projects/project-a/session-1.jsonl", uuid, vec![]),
+            test_conversation("/projects/project-a/session-2.jsonl", "other", vec![]),
+        ];
+        let selected = conversations.iter().collect::<Vec<_>>();
+        let parsed = ParsedQuery::parse(&format!("\"{uuid}\""));
+
+        let results = exact_literal_indices(&selected, &parsed);
+
+        assert_eq!(parsed.semantic_text(), "");
+        assert_eq!(results, vec![0]);
+    }
+
+    #[test]
+    fn semantic_filters_use_smart_case_literals() {
+        let conversations = vec![
+            test_conversation(
+                "/projects/project-a/session-1.jsonl",
+                "restaurant_signals lower phrase",
+                vec!["visible alpha".to_string()],
+            ),
+            test_conversation(
+                "/projects/project-a/session-2.jsonl",
+                "RESTAURANT_SIGNALS lower phrase",
+                vec!["visible alpha".to_string()],
+            ),
+        ];
+        let selected = conversations.iter().collect::<Vec<_>>();
+        let hits = vec![
+            crate::semantic::types::SemanticHit::new(
+                crate::semantic::types::SemanticScoreBreakdown {
+                    hybrid: 1.0,
+                    semantic: 1.0,
+                    lexical: 0.0,
+                },
+                crate::semantic::types::SemanticExplanation {
+                    quality: crate::semantic::types::SemanticQuality::Strong,
+                    quality_label: "strong",
+                    matched_terms: vec!["alpha".to_string()],
+                    evidence_preview: "visible alpha".to_string(),
+                    rationale_kind: crate::semantic::types::SemanticRationaleKind::SemanticOnly,
+                    chunk: crate::semantic::types::SemanticChunkIdentity {
+                        conversation_index: 0,
+                        session: "session-1".to_string(),
+                        chunk_index: 0,
+                    },
+                },
+            ),
+            crate::semantic::types::SemanticHit::new(
+                crate::semantic::types::SemanticScoreBreakdown {
+                    hybrid: 0.9,
+                    semantic: 0.9,
+                    lexical: 0.0,
+                },
+                crate::semantic::types::SemanticExplanation {
+                    quality: crate::semantic::types::SemanticQuality::Strong,
+                    quality_label: "strong",
+                    matched_terms: vec!["alpha".to_string()],
+                    evidence_preview: "visible alpha".to_string(),
+                    rationale_kind: crate::semantic::types::SemanticRationaleKind::SemanticOnly,
+                    chunk: crate::semantic::types::SemanticChunkIdentity {
+                        conversation_index: 1,
+                        session: "session-2".to_string(),
+                        chunk_index: 0,
+                    },
+                },
+            ),
+        ];
+
+        let insensitive = filter_hits_by_literals(
+            hits.clone(),
+            &selected,
+            &ParsedQuery::parse("alpha \"restaurant_signals\""),
+        );
+        let sensitive = filter_hits_by_literals(
+            hits,
+            &selected,
+            &ParsedQuery::parse("alpha \"RESTAURANT_SIGNALS\""),
+        );
+
+        assert_eq!(insensitive.len(), 2);
+        assert_eq!(sensitive.len(), 1);
+        assert_eq!(sensitive[0].conversation_index, 1);
+    }
+
+    #[test]
+    fn parsed_query_debug_output_reports_intent_and_literals() {
+        let parsed = ParsedQuery::parse("alpha \"RESTAURANT_SIGNALS\" \"lower phrase\"");
+
+        let output = format_parsed_query(&parsed);
+
+        assert!(output.contains("intent: \"alpha\""));
+        assert!(output.contains("\"RESTAURANT_SIGNALS\" (Sensitive)"));
+        assert!(output.contains("\"lower phrase\" (Insensitive)"));
     }
 }
