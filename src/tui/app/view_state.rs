@@ -76,6 +76,61 @@ impl App {
         }
     }
 
+    pub(super) fn clear_view_search(&mut self) {
+        if let AppMode::View(ref mut state) = self.app_mode {
+            state.search_mode = ViewSearchMode::Off;
+            state.search_query.clear();
+            state.search_matches.clear();
+        }
+    }
+
+    pub(super) fn clear_view_search_query(&mut self) -> bool {
+        if let AppMode::View(ref mut state) = self.app_mode
+            && !state.search_query.is_empty()
+        {
+            state.search_query.clear();
+            self.update_search_results();
+            return true;
+        }
+        false
+    }
+
+    pub(super) fn delete_view_search_word_backwards(&mut self) {
+        if let AppMode::View(ref mut state) = self.app_mode {
+            let trimmed = state.search_query.trim_end();
+            if let Some(last_space) = trimmed.rfind(|c: char| c.is_whitespace()) {
+                state.search_query.truncate(last_space + 1);
+            } else {
+                state.search_query.clear();
+            }
+        }
+        self.update_search_results();
+    }
+
+    pub(super) fn push_view_search_char(&mut self, c: char) {
+        if let AppMode::View(ref mut state) = self.app_mode {
+            state.search_query.push(c);
+        }
+        self.update_search_results();
+    }
+
+    pub(super) fn backspace_view_search(&mut self) {
+        if let AppMode::View(ref mut state) = self.app_mode {
+            state.search_query.pop();
+        }
+        self.update_search_results();
+    }
+
+    pub(super) fn commit_view_search(&mut self) {
+        if let AppMode::View(ref mut state) = self.app_mode {
+            if !state.search_matches.is_empty() {
+                state.search_mode = ViewSearchMode::Active;
+            } else {
+                state.search_mode = ViewSearchMode::Off;
+            }
+        }
+    }
+
     pub(super) fn update_search_results(&mut self) {
         if let AppMode::View(ref mut state) = self.app_mode {
             let query_lower = state.search_query.to_lowercase();

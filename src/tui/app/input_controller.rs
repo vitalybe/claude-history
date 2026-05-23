@@ -198,12 +198,10 @@ impl App {
                     state.message_nav_active = false;
                     return None;
                 }
-                if let AppMode::View(ref mut state) = self.app_mode
+                if let AppMode::View(ref state) = self.app_mode
                     && state.search_mode == ViewSearchMode::Active
                 {
-                    state.search_mode = ViewSearchMode::Off;
-                    state.search_matches.clear();
-                    state.search_query.clear();
+                    self.clear_view_search();
                     return None;
                 }
                 if self.single_file_mode {
@@ -390,64 +388,31 @@ impl App {
     ) -> Option<Action> {
         match code {
             KeyCode::Char('c') if modifiers.contains(KeyModifiers::CONTROL) => {
-                if let AppMode::View(ref mut state) = self.app_mode {
-                    state.search_mode = ViewSearchMode::Off;
-                    state.search_query.clear();
-                    state.search_matches.clear();
-                }
+                self.clear_view_search();
                 None
             }
             KeyCode::Char('u') if modifiers.contains(KeyModifiers::CONTROL) => {
-                if let AppMode::View(ref mut state) = self.app_mode
-                    && !state.search_query.is_empty()
-                {
-                    state.search_query.clear();
-                    self.update_search_results();
-                }
+                self.clear_view_search_query();
                 None
             }
             KeyCode::Char('w') if modifiers.contains(KeyModifiers::CONTROL) => {
-                if let AppMode::View(ref mut state) = self.app_mode {
-                    let trimmed = state.search_query.trim_end();
-                    if let Some(last_space) = trimmed.rfind(|c: char| c.is_whitespace()) {
-                        state.search_query.truncate(last_space + 1);
-                    } else {
-                        state.search_query.clear();
-                    }
-                }
-                self.update_search_results();
+                self.delete_view_search_word_backwards();
                 None
             }
             KeyCode::Char(c) => {
-                if let AppMode::View(ref mut state) = self.app_mode {
-                    state.search_query.push(c);
-                }
-                self.update_search_results();
+                self.push_view_search_char(c);
                 None
             }
             KeyCode::Backspace => {
-                if let AppMode::View(ref mut state) = self.app_mode {
-                    state.search_query.pop();
-                }
-                self.update_search_results();
+                self.backspace_view_search();
                 None
             }
             KeyCode::Enter => {
-                if let AppMode::View(ref mut state) = self.app_mode {
-                    if !state.search_matches.is_empty() {
-                        state.search_mode = ViewSearchMode::Active;
-                    } else {
-                        state.search_mode = ViewSearchMode::Off;
-                    }
-                }
+                self.commit_view_search();
                 None
             }
             KeyCode::Esc => {
-                if let AppMode::View(ref mut state) = self.app_mode {
-                    state.search_mode = ViewSearchMode::Off;
-                    state.search_query.clear();
-                    state.search_matches.clear();
-                }
+                self.clear_view_search();
                 None
             }
             _ => None,
