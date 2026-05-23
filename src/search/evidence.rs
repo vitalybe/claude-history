@@ -86,11 +86,19 @@ pub fn build_lexical_evidence(
 
 fn evidence_specs(parsed: &ParsedQuery) -> Vec<EvidenceSpec> {
     let unquoted = parsed.unquoted();
-    let identifier_literals = unquoted
-        .split_whitespace()
+    let unquoted_terms = unquoted.split_whitespace().collect::<Vec<_>>();
+    let identifier_literals = unquoted_terms
+        .iter()
+        .copied()
         .filter(|term| term.contains('_'))
         .map(|term| EvidenceSpec::Literal(Literal::new(term.to_string())));
-    let normalized = normalize_for_search(unquoted)
+    let normalized_query = unquoted_terms
+        .iter()
+        .copied()
+        .filter(|term| !term.contains('_'))
+        .collect::<Vec<_>>()
+        .join(" ");
+    let normalized = normalize_for_search(&normalized_query)
         .split_whitespace()
         .map(|term| EvidenceSpec::Normalized(term.to_string()))
         .collect::<Vec<_>>();

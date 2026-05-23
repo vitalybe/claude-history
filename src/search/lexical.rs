@@ -167,6 +167,16 @@ fn identifier_literals(query: &str) -> Vec<Literal> {
         .collect()
 }
 
+fn normalized_query_words(query: &str) -> String {
+    normalize_for_search(
+        &query
+            .split_whitespace()
+            .filter(|term| !term.contains('_'))
+            .collect::<Vec<_>>()
+            .join(" "),
+    )
+}
+
 fn search_debug_with_query(
     conversations: &[Conversation],
     searchable: &[SearchableConversation],
@@ -184,7 +194,7 @@ fn search_debug_with_query(
         return exact_debug_results(conversations, &corpus, parsed, now, scope);
     }
 
-    let query_lower = normalize_for_search(intent);
+    let query_lower = normalized_query_words(intent);
     let query_words: Vec<&str> = query_lower.split_whitespace().collect();
     let identifier_literals = identifier_literals(intent);
     let literal_filters = parsed
@@ -604,6 +614,10 @@ mod tests {
         let convs = vec![
             make_conv("restaurant signals normalized words only", now),
             make_conv("restaurant_signals identifier", now - Duration::hours(1)),
+            make_conv(
+                "restaurant API_SIGNALS mixed identifier",
+                now - Duration::hours(2),
+            ),
         ];
         let searchable = precompute_search_text(&convs);
 
@@ -678,11 +692,12 @@ mod tests {
     }
 
     #[test]
-    fn search_with_underscore_in_query_requires_underscore_in_text() {
+    fn search_with_underscore_in_query_requires_whole_identifier() {
         let now = Local::now();
         let convs = vec![
             make_conv("hardened runtime enabled", now),
             make_conv("hardened_runtime enabled", now - Duration::hours(1)),
+            make_conv("hardened other_runtime enabled", now - Duration::hours(2)),
         ];
         let searchable = precompute_search_text(&convs);
 

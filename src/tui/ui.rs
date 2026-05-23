@@ -2534,9 +2534,26 @@ struct HighlightQuery {
 impl HighlightQuery {
     fn parse(query: &str) -> Self {
         let parsed = ParsedQuery::parse(query);
+        let unquoted_terms = parsed.unquoted().split_whitespace().collect::<Vec<_>>();
+        let identifier_literals = unquoted_terms
+            .iter()
+            .copied()
+            .filter(|term| term.contains('_'))
+            .map(|term| Literal::new(term.to_string()))
+            .collect::<Vec<_>>();
+        let unquoted = unquoted_terms
+            .into_iter()
+            .filter(|term| !term.contains('_'))
+            .collect::<Vec<_>>()
+            .join(" ");
         Self {
-            unquoted: normalize_highlight_query(parsed.unquoted()),
-            literals: parsed.literals().to_vec(),
+            unquoted: normalize_highlight_query(&unquoted),
+            literals: parsed
+                .literals()
+                .iter()
+                .cloned()
+                .chain(identifier_literals)
+                .collect(),
         }
     }
 
@@ -3239,11 +3256,11 @@ mod tests {
     }
 
     #[test]
-    fn highlight_query_preserves_unquoted_behavior() {
+    fn highlight_query_preserves_unquoted_identifier_punctuation() {
         let highlight_style = Style::default().fg(Color::Yellow);
-        let query = HighlightQuery::parse("DEPLOYMENT_TOKEN");
+        let query = HighlightQuery::parse("deployment_token");
         let spans = query.highlight(
-            "prefix deployment token suffix",
+            "prefix deployment token suffix DEPLOYMENT_TOKEN",
             Style::default(),
             highlight_style,
         );
@@ -3252,7 +3269,7 @@ mod tests {
             .filter(|(_, highlighted)| *highlighted)
             .collect();
 
-        assert_eq!(highlighted, vec![("deployment token", true)]);
+        assert_eq!(highlighted, vec![("DEPLOYMENT_TOKEN", true)]);
     }
 
     #[test]
