@@ -807,7 +807,7 @@ impl App {
     fn update_filter(&mut self) {
         let query = self.query.trim().to_string();
 
-        if query.is_empty() {
+        if ParsedQuery::parse(&query).is_effectively_empty() {
             self.semantic_search.error = None;
             self.apply_lexical_filter();
             return;
@@ -833,7 +833,7 @@ impl App {
     fn dispatch_search(&mut self) {
         let query = self.query.trim().to_string();
 
-        if query.is_empty() {
+        if ParsedQuery::parse(&query).is_effectively_empty() {
             let prewarm_generation = self.semantic_search.prewarm_generation;
             let prewarm_status = self.semantic_search.prewarm_status.clone();
             self.invalidate_search_generation();
@@ -3611,6 +3611,32 @@ mod tests {
         );
 
         app.query.clear();
+        app.dispatch_search();
+
+        assert_eq!(app.list_search_mode(), ListSearchMode::Semantic);
+        assert_eq!(filtered_projects(&app), vec![Some("Visible")]);
+        assert_eq!(app.semantic_search_error(), None);
+        assert!(app.semantic_search.worker_tx.is_none());
+        assert!(app.semantic_search.worker_rx.is_none());
+    }
+
+    #[test]
+    fn semantic_effectively_empty_query_preserves_default_browse_behavior() {
+        let mut app = app_with_options(
+            vec![conversation(
+                Some("Visible"),
+                "-tmp-visible",
+                "22222222-2222-4222-8222-222222222222",
+                "needle",
+            )],
+            vec![],
+            TuiSearchOptions {
+                semantic_search_default: true,
+                ..Default::default()
+            },
+        );
+
+        app.set_query_for_test("\"\"");
         app.dispatch_search();
 
         assert_eq!(app.list_search_mode(), ListSearchMode::Semantic);

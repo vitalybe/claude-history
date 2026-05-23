@@ -1,6 +1,6 @@
 use crate::error::{AppError, Result};
 use crate::history::Conversation;
-use crate::search::literal::{Literal, build_literal_corpus, matches_all_literals};
+use crate::search::literal::{Literal, conversation_matches_all_literals};
 use crate::semantic::cache::{
     cache_miss_count, embed_chunks_with_progress_and_save, read_embedding_cache,
 };
@@ -350,25 +350,19 @@ fn filter_hits_by_literals(
         return hits;
     }
 
-    let corpus = build_literal_corpus(
-        &request
-            .full_corpus
-            .iter()
-            .map(|candidate| candidate.conversation.as_ref().clone())
-            .collect::<Vec<_>>(),
-    );
-    let text_by_index = request
+    let conversation_by_index = request
         .full_corpus
         .iter()
-        .zip(corpus.iter())
-        .map(|(candidate, entry)| (candidate.index, entry.text.as_str()))
+        .map(|candidate| (candidate.index, candidate.conversation.as_ref()))
         .collect::<HashMap<_, _>>();
 
     hits.into_iter()
         .filter(|hit| {
-            text_by_index
+            conversation_by_index
                 .get(&hit.conversation_index)
-                .is_some_and(|text| matches_all_literals(text, request.literal_filters))
+                .is_some_and(|conversation| {
+                    conversation_matches_all_literals(conversation, request.literal_filters)
+                })
         })
         .collect()
 }

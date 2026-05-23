@@ -8,7 +8,10 @@ use crate::semantic::index::{
     SemanticIndexCandidate, SemanticIndexProgress, SemanticIndexRequest, SemanticIndexResponse,
     SemanticIndexState,
 };
-use crate::semantic::types::SemanticCancellationToken;
+use crate::semantic::types::{
+    SemanticCancellationToken, SemanticChunkIdentity, SemanticExplanation, SemanticQuality,
+    SemanticRationaleKind, SemanticScoreBreakdown,
+};
 use crate::tui::app::{SemanticProgress, SemanticResultMetadata};
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -108,7 +111,7 @@ fn run_semantic_worker(
         }
 
         cancellation = SemanticCancellationToken::new();
-        if request.query.is_effectively_empty() {
+        if request.query.is_effectively_empty() && !request.prewarm {
             let _ = res_tx.send(SemanticSearchMessage::Complete(SemanticSearchResponse {
                 generation: request.generation,
                 filtered: Vec::new(),
@@ -164,6 +167,7 @@ fn run_semantic_worker(
                 rank_or_prewarm_semantic_request(
                     request.generation,
                     &index_request,
+                    &request.query,
                     &mut state,
                     embedder.as_mut().unwrap(),
                     &cancellation,
@@ -311,6 +315,7 @@ impl SemanticWorkerState {
 fn rank_or_prewarm_semantic_request(
     generation: u64,
     request: &SemanticIndexRequest<'_>,
+    parsed: &ParsedQuery,
     state: &mut SemanticIndexState,
     embedder: &mut FastembedEmbedder,
     cancellation: &SemanticCancellationToken,
@@ -328,27 +333,47 @@ fn rank_or_prewarm_semantic_request(
         },
         write_embedding_cache,
     )?;
-    Ok(semantic_search_response(generation, response))
+    Ok(semantic_search_response(
+        generation,
+        response,
+        request.full_corpus,
+        parsed,
+    ))
 }
 
 fn semantic_search_response(
     generation: u64,
     response: SemanticIndexResponse,
+    conversations: &[SemanticIndexCandidate],
+    parsed: &ParsedQuery,
 ) -> SemanticSearchResponse {
     let filtered = response
         .hits
         .iter()
         .map(|hit| hit.conversation_index)
         .collect::<Vec<_>>();
+    let conversation_by_index = conversations
+        .iter()
+        .map(|candidate| (candidate.index, candidate.conversation.as_ref()))
+        .collect::<HashMap<_, _>>();
     let metadata = response
         .hits
         .into_iter()
         .map(|hit| {
+            let mut explanation = hit.explanation;
+            if !conversation_matches_all_literals_in_text(
+                &explanation.evidence_preview,
+                parsed.literals(),
+            ) && let Some(conversation) = conversation_by_index.get(&hit.conversation_index)
+            {
+                explanation.evidence_preview =
+                    literal_evidence_preview(conversation, parsed, &explanation.evidence_preview);
+            }
             (
                 hit.conversation_index,
                 SemanticResultMetadata {
                     score_breakdown: hit.score_breakdown,
-                    explanation: hit.explanation,
+                    explanation,
                 },
             )
         })
@@ -395,13 +420,115 @@ fn exact_literal_semantic_response(
         scope.contains(&index)
     });
 
+    let metadata = filtered
+        .iter()
+        .filter_map(|index| {
+            conversations
+                .get(*index)
+                .map(|conversation| (*index, exact_literal_metadata(conversation, parsed)))
+        })
+        .collect();
+
     SemanticSearchResponse {
         generation,
         filtered,
-        metadata: HashMap::new(),
+        metadata,
         error: None,
         progress: SemanticProgress::Complete,
         prewarm,
+    }
+}
+
+fn conversation_matches_all_literals_in_text(
+    text: &str,
+    literals: &[crate::search::literal::Literal],
+) -> bool {
+    literals.iter().all(|literal| literal.matches(text))
+}
+
+fn literal_evidence_preview(
+    conversation: &Conversation,
+    parsed: &ParsedQuery,
+    visible_preview: &str,
+) -> String {
+    parsed
+        .literals()
+        .iter()
+        .filter(|literal| !literal.matches(visible_preview))
+        .chain(parsed.literals().iter())
+        .find_map(|literal| {
+            literal
+                .match_ranges(&conversation.full_text)
+                .first()
+                .map(|range| evidence_window(&conversation.full_text, *range))
+                .or_else(|| {
+                    conversation.project_name.as_deref().and_then(|project| {
+                        literal
+                            .match_ranges(project)
+                            .first()
+                            .map(|range| evidence_window(project, *range))
+                    })
+                })
+        })
+        .unwrap_or_else(|| conversation.preview.clone())
+}
+
+fn evidence_window(text: &str, range: (usize, usize)) -> String {
+    const CONTEXT_CHARS: usize = 80;
+    let (start, end) = range;
+    let prefix_start = text[..start]
+        .char_indices()
+        .rev()
+        .nth(CONTEXT_CHARS)
+        .map(|(index, _)| index)
+        .unwrap_or(0);
+    let suffix_end = text[end..]
+        .char_indices()
+        .nth(CONTEXT_CHARS)
+        .map(|(index, _)| end + index)
+        .unwrap_or(text.len());
+    let mut preview = String::new();
+    if prefix_start > 0 {
+        preview.push('…');
+    }
+    preview.push_str(text[prefix_start..suffix_end].trim());
+    if suffix_end < text.len() {
+        preview.push('…');
+    }
+    preview
+}
+
+fn exact_literal_metadata(
+    conversation: &Conversation,
+    parsed: &ParsedQuery,
+) -> SemanticResultMetadata {
+    SemanticResultMetadata {
+        score_breakdown: SemanticScoreBreakdown {
+            hybrid: 0.0,
+            semantic: 0.0,
+            lexical: 0.0,
+        },
+        explanation: SemanticExplanation {
+            quality: SemanticQuality::Strong,
+            quality_label: "exact",
+            matched_terms: parsed
+                .literals()
+                .iter()
+                .map(|literal| literal.text().to_string())
+                .collect(),
+            evidence_preview: literal_evidence_preview(conversation, parsed, ""),
+            rationale_kind: SemanticRationaleKind::LexicalBoosted,
+            chunk: SemanticChunkIdentity {
+                conversation_index: conversation.index,
+                session: conversation
+                    .path
+                    .file_stem()
+                    .and_then(|stem| stem.to_str())
+                    .unwrap_or("?")
+                    .to_string(),
+                chunk_index: 0,
+            },
+        },
     }
 }
 
@@ -506,6 +633,8 @@ mod tests {
                 progress: SemanticIndexProgress::Complete,
                 prewarm: false,
             },
+            &[],
+            &ParsedQuery::parse("beta"),
         );
 
         assert_eq!(response.generation, 7);
@@ -602,6 +731,50 @@ mod tests {
     }
 
     #[test]
+    fn empty_prewarm_search_builds_cache_without_idle_short_circuit() {
+        let (tx, rx) = spawn_semantic_worker();
+        tx.send(SemanticWorkerCommand::UpdateCorpus {
+            corpus_version: 1,
+            conversations: corpus(vec![conversation(
+                "/projects/project-a/session-a.jsonl",
+                vec!["visible dialogue"],
+            )]),
+        })
+        .expect("send corpus");
+        tx.send(SemanticWorkerCommand::UpdateScope {
+            corpus_version: 1,
+            scope_version: 1,
+            indices: Arc::new(vec![0]),
+        })
+        .expect("send scope");
+        tx.send(SemanticWorkerCommand::Search {
+            generation: 1,
+            query: ParsedQuery::parse("\"\""),
+            corpus_version: 1,
+            scope_version: 1,
+            prewarm: true,
+        })
+        .expect("send semantic prewarm request");
+
+        loop {
+            match rx
+                .recv_timeout(Duration::from_secs(5))
+                .expect("prewarm response")
+            {
+                SemanticSearchMessage::Progress { .. } => continue,
+                SemanticSearchMessage::Complete(response) => {
+                    assert!(response.prewarm);
+                    assert!(response.filtered.is_empty());
+                    assert!(response.metadata.is_empty());
+                    assert_eq!(response.error, None);
+                    assert_ne!(response.progress, SemanticProgress::Idle);
+                    break;
+                }
+            }
+        }
+    }
+
+    #[test]
     fn quoted_only_search_uses_literal_fallback_without_embedding() {
         let (tx, rx) = spawn_semantic_worker();
         tx.send(SemanticWorkerCommand::UpdateCorpus {
@@ -633,7 +806,12 @@ mod tests {
         match message {
             SemanticSearchMessage::Complete(response) => {
                 assert_eq!(response.filtered, vec![0]);
-                assert!(response.metadata.is_empty());
+                assert!(
+                    response.metadata[&0]
+                        .explanation
+                        .evidence_preview
+                        .contains("title sentinel")
+                );
                 assert_eq!(response.error, None);
                 assert_eq!(response.progress, SemanticProgress::Complete);
             }
@@ -678,7 +856,18 @@ mod tests {
         {
             SemanticSearchMessage::Complete(response) => {
                 assert_eq!(response.filtered, vec![1, 0]);
-                assert!(response.metadata.is_empty());
+                assert!(
+                    response.metadata[&1]
+                        .explanation
+                        .evidence_preview
+                        .contains("title sentinel")
+                );
+                assert!(
+                    response.metadata[&0]
+                        .explanation
+                        .evidence_preview
+                        .contains("title sentinel")
+                );
             }
             SemanticSearchMessage::Progress { progress, .. } => {
                 panic!("unexpected progress before literal response: {progress:?}");

@@ -1687,10 +1687,8 @@ fn render_list(frame: &mut Frame, app: &App, area: Rect) {
             let max_preview_len = width.saturating_sub(4);
             let truncated_preview = if query_normalized.is_empty() {
                 simple_truncate(&preview_text, max_preview_len)
-            } else if semantic_mode
-                && !find_normalized_match_ranges(&preview_text, &query_normalized).is_empty()
-            {
-                build_match_segments(&preview_text, &query_normalized, max_preview_len)
+            } else if semantic_mode && highlight_query.has_match(&preview_text) {
+                build_match_segments_for_query(&preview_text, &highlight_query, max_preview_len)
             } else if semantic_mode {
                 simple_truncate(&preview_text, max_preview_len)
             } else {
@@ -1709,7 +1707,11 @@ fn render_list(frame: &mut Frame, app: &App, area: Rect) {
             let preview = Line::from(preview_spans).style(selection_bg);
 
             // Check for hidden matches and build context line if needed
-            let context_line = if !semantic_mode && !query_normalized.is_empty() {
+            let context_line = if !query_normalized.is_empty()
+                && (!semantic_mode
+                    || (highlight_query.has_literals()
+                        && !highlight_query.has_all_literal_matches(&truncated_preview)))
+            {
                 let context_width = width.saturating_sub(4);
                 build_context_segments_for_query(
                     &conv.full_text,
@@ -1833,12 +1835,29 @@ fn simple_truncate(text: &str, max_width: usize) -> String {
 /// Build a display string showing context around each match, joined by "…".
 /// Operates on already-sanitized text (e.g. preview). Falls back to simple
 /// truncation when all matches already fit within max_width.
+fn build_match_segments_for_query(text: &str, query: &HighlightQuery, max_width: usize) -> String {
+    build_match_segments_with_ranges(text, query.match_ranges(text), max_width, || {
+        simple_truncate(text, max_width)
+    })
+}
+
 fn build_match_segments(text: &str, query: &str, max_width: usize) -> String {
     if query.is_empty() || max_width == 0 {
         return simple_truncate(text, max_width);
     }
 
     let ranges = find_normalized_match_ranges(text, query);
+    build_match_segments_with_ranges(text, ranges, max_width, || {
+        truncate_around_match(text, query, max_width)
+    })
+}
+
+fn build_match_segments_with_ranges(
+    text: &str,
+    ranges: Vec<(usize, usize)>,
+    max_width: usize,
+    fallback: impl Fn() -> String,
+) -> String {
     if ranges.is_empty() {
         return simple_truncate(text, max_width);
     }
@@ -1927,11 +1946,8 @@ fn build_match_segments(text: &str, query: &str, max_width: usize) -> String {
         result.push('…');
     }
 
-    if find_normalized_match_ranges(&result, query).is_empty() {
-        return truncate_around_match(text, query, max_width);
-    }
     if UnicodeWidthStr::width(result.as_str()) > max_width {
-        return truncate_around_match(&result, query, max_width);
+        return fallback();
     }
 
     result
@@ -2507,6 +2523,29 @@ impl HighlightQuery {
             .collect()
     }
 
+    fn has_match(&self, text: &str) -> bool {
+        !find_normalized_match_ranges(text, &self.unquoted).is_empty()
+            || self.has_literal_match(text)
+    }
+
+    fn has_literals(&self) -> bool {
+        !self.literals.is_empty()
+    }
+
+    fn has_literal_match(&self, text: &str) -> bool {
+        !match_literal_ranges(text, &self.literals).is_empty()
+    }
+
+    fn has_all_literal_matches(&self, text: &str) -> bool {
+        self.literals.iter().all(|literal| literal.matches(text))
+    }
+
+    fn match_ranges(&self, text: &str) -> Vec<(usize, usize)> {
+        let mut ranges = find_normalized_match_ranges(text, &self.unquoted);
+        ranges.extend(match_literal_ranges(text, &self.literals));
+        merge_match_ranges(ranges)
+    }
+
     fn normalized_context_specs(query: &str) -> Vec<ContextMatchSpec> {
         query
             .split_whitespace()
@@ -2599,20 +2638,11 @@ fn highlight_text(
     )
 }
 
-fn highlight_ranges(
-    text: &str,
-    mut ranges: Vec<(usize, usize)>,
-    base_style: Style,
-    highlight_style: Style,
-) -> Vec<Span<'static>> {
-    if ranges.is_empty() {
-        return vec![Span::styled(text.to_string(), base_style)];
-    }
-
+fn merge_match_ranges(mut ranges: Vec<(usize, usize)>) -> Vec<(usize, usize)> {
     ranges.sort_unstable_by_key(|range| range.0);
     let mut merged = Vec::<(usize, usize)>::new();
     for (start, end) in ranges {
-        if start >= end || end > text.len() {
+        if start >= end {
             continue;
         }
         if let Some(last) = merged.last_mut()
@@ -2623,6 +2653,23 @@ fn highlight_ranges(
         }
         merged.push((start, end));
     }
+    merged
+}
+
+fn highlight_ranges(
+    text: &str,
+    ranges: Vec<(usize, usize)>,
+    base_style: Style,
+    highlight_style: Style,
+) -> Vec<Span<'static>> {
+    if ranges.is_empty() {
+        return vec![Span::styled(text.to_string(), base_style)];
+    }
+
+    let merged = merge_match_ranges(ranges)
+        .into_iter()
+        .filter(|(_, end)| *end <= text.len())
+        .collect::<Vec<_>>();
 
     if merged.is_empty() {
         return vec![Span::styled(text.to_string(), base_style)];
@@ -3298,6 +3345,124 @@ mod tests {
             "{contents:?}"
         );
         assert!(!contents.contains("tool output sentinel"), "{contents:?}");
+    }
+
+    #[test]
+    fn semantic_list_shows_literal_context_when_evidence_lacks_literal() {
+        let mut conversation = test_conversation();
+        conversation.full_text =
+            "tool output sentinel includes audio_generation literal".to_string();
+        let mut app = App::new_with_options(
+            vec![conversation],
+            ToolDisplayMode::Truncated,
+            false,
+            KeyBindings::default(),
+            vec![],
+            TuiSearchOptions {
+                semantic_search_default: true,
+                ..Default::default()
+            },
+        );
+        app.set_query_for_test("semantic \"audio_generation\"");
+        let (response_tx, response_rx) = mpsc::channel();
+        app.set_semantic_receiver_for_test(7, response_rx);
+        response_tx
+            .send(SemanticSearchMessage::Complete(SemanticSearchResponse {
+                generation: 7,
+                filtered: vec![0],
+                metadata: HashMap::new(),
+                error: None,
+                progress: SemanticProgress::Complete,
+                prewarm: false,
+            }))
+            .unwrap();
+        app.receive_search_results();
+        let backend = TestBackend::new(80, 8);
+        let mut terminal = Terminal::new(backend).unwrap();
+
+        terminal
+            .draw(|frame| render_list(frame, &app, frame.area()))
+            .unwrap();
+
+        let contents = terminal_contents(&terminal);
+        assert!(
+            contents.contains("lexical preview sentinel"),
+            "{contents:?}"
+        );
+        assert!(contents.contains("audio_generation"), "{contents:?}");
+    }
+
+    #[test]
+    fn semantic_literal_preview_uses_literal_ranges() {
+        let mut app = semantic_app();
+        app.set_query_for_test("\"audio_generation\"");
+        complete_semantic_search(
+            &mut app,
+            test_semantic_metadata(
+                "normalized audio generation appears early before exact audio_generation literal",
+            ),
+        );
+        let backend = TestBackend::new(54, 8);
+        let mut terminal = Terminal::new(backend).unwrap();
+
+        terminal
+            .draw(|frame| render_list(frame, &app, frame.area()))
+            .unwrap();
+
+        let contents = terminal_contents(&terminal);
+        assert!(contents.contains("audio_generation"), "{contents:?}");
+        assert!(!contents.contains("audio generation"), "{contents:?}");
+    }
+
+    #[test]
+    fn semantic_literal_preview_merges_overlapping_ranges() {
+        let mut app = semantic_app();
+        app.set_query_for_test("audio \"audio_generation\"");
+        complete_semantic_search(
+            &mut app,
+            test_semantic_metadata("prefix audio_generation literal near the front"),
+        );
+        let backend = TestBackend::new(60, 8);
+        let mut terminal = Terminal::new(backend).unwrap();
+
+        terminal
+            .draw(|frame| render_list(frame, &app, frame.area()))
+            .unwrap();
+
+        let contents = terminal_contents(&terminal);
+        assert!(contents.contains("audio_generation"), "{contents:?}");
+    }
+
+    #[test]
+    fn semantic_literal_context_requires_all_literals_visible() {
+        let mut conversation = test_conversation();
+        conversation.full_text = "alpha_exact near preview. beta_exact hidden deeper.".to_string();
+        let mut app = App::new_with_options(
+            vec![conversation],
+            ToolDisplayMode::Truncated,
+            false,
+            KeyBindings::default(),
+            vec![],
+            TuiSearchOptions {
+                semantic_search_default: true,
+                ..Default::default()
+            },
+        );
+        app.set_query_for_test("semantic \"alpha_exact\" \"beta_exact\"");
+        complete_semantic_search(
+            &mut app,
+            test_semantic_metadata("semantic alpha_exact only"),
+        );
+        let backend = TestBackend::new(80, 8);
+        let mut terminal = Terminal::new(backend).unwrap();
+
+        terminal
+            .draw(|frame| render_list(frame, &app, frame.area()))
+            .unwrap();
+
+        let contents = terminal_contents(&terminal);
+        assert!(contents.contains("alpha_exact"), "{contents:?}");
+        assert!(contents.contains("beta_exact"), "{contents:?}");
     }
 
     #[test]

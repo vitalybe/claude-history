@@ -1,6 +1,8 @@
 use crate::error::{AppError, Result};
 use crate::history::Conversation;
-use crate::search::literal::{build_literal_corpus, exact_fallback, matches_all_literals};
+use crate::search::literal::{
+    build_literal_corpus, conversation_matches_all_literals, exact_fallback,
+};
 use crate::search::query::ParsedQuery;
 use crate::semantic::types::SemanticCancellationToken;
 
@@ -371,13 +373,14 @@ fn filter_hits_by_literals(
         return hits;
     }
 
-    let plain_conversations = conversations
-        .iter()
-        .map(|conversation| (*conversation).clone())
-        .collect::<Vec<_>>();
-    let corpus = build_literal_corpus(&plain_conversations);
     hits.into_iter()
-        .filter(|hit| matches_all_literals(&corpus[hit.conversation_index].text, parsed.literals()))
+        .filter(|hit| {
+            conversations
+                .get(hit.conversation_index)
+                .is_some_and(|conversation| {
+                    conversation_matches_all_literals(conversation, parsed.literals())
+                })
+        })
         .collect()
 }
 

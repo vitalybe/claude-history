@@ -75,6 +75,13 @@ pub fn matches_all_literals(text: &str, literals: &[Literal]) -> bool {
     literals.iter().all(|literal| literal.matches(text))
 }
 
+pub fn conversation_matches_all_literals(
+    conversation: &Conversation,
+    literals: &[Literal],
+) -> bool {
+    matches_all_literals(&literal_text(conversation), literals)
+}
+
 pub fn match_literal_ranges(text: &str, literals: &[Literal]) -> Vec<(usize, usize)> {
     literals
         .iter()
