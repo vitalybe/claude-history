@@ -101,7 +101,7 @@ impl App {
             .copied()
     }
 
-    pub(super) fn remove_selected_from_list(&mut self) {
+    pub(crate) fn remove_selected_from_list(&mut self) {
         let Some(selected) = self.selected else {
             return;
         };
