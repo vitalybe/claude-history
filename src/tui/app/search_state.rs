@@ -41,6 +41,24 @@ pub(super) struct SearchResponse {
     pub(super) filtered: Vec<usize>,
     pub(super) generation: u64,
     pub(super) mode: ListSearchMode,
+    pub(super) evidence: HashMap<usize, search::LexicalEvidence>,
+}
+
+fn build_search_evidence(
+    conversations: &[Conversation],
+    filtered: &[usize],
+    parsed: &ParsedQuery,
+) -> HashMap<usize, search::LexicalEvidence> {
+    const MAX_EVIDENCE_ROWS: usize = 200;
+
+    filtered
+        .iter()
+        .take(MAX_EVIDENCE_ROWS)
+        .filter_map(|&index| {
+            search::build_lexical_evidence(&conversations[index], parsed)
+                .map(|evidence| (index, evidence))
+        })
+        .collect()
 }
 
 pub(super) fn spawn_search_worker() -> (mpsc::Sender<SearchCommand>, mpsc::Receiver<SearchResponse>)
@@ -90,17 +108,23 @@ pub(super) fn spawn_search_worker() -> (mpsc::Sender<SearchCommand>, mpsc::Recei
                         }
 
                         let now = chrono::Local::now();
-                        let filtered = match mode {
+                        let (filtered, evidence) = match mode {
                             ListSearchMode::Lexical => {
-                                search::search(&conversations, &searchable, &query, now)
+                                let filtered =
+                                    search::search(&conversations, &searchable, &query, now);
+                                let parsed = ParsedQuery::parse(&query);
+                                let evidence =
+                                    build_search_evidence(&conversations, &filtered, &parsed);
+                                (filtered, evidence)
                             }
-                            ListSearchMode::Semantic => Vec::new(),
+                            ListSearchMode::Semantic => (Vec::new(), HashMap::new()),
                         };
 
                         let _ = res_tx.send(SearchResponse {
                             filtered,
                             generation,
                             mode,
+                            evidence,
                         });
                     }
                 }
@@ -115,6 +139,7 @@ impl App {
     pub(super) fn invalidate_search_generation(&mut self) {
         self.search_generation += 1;
         self.search_in_flight = false;
+        self.lexical_evidence.clear();
         self.semantic_search.pending_generation = None;
         self.semantic_search.pending_status = None;
         self.semantic_search.prewarm_generation = None;
@@ -314,6 +339,7 @@ impl App {
                 && response.mode == self.list_search_mode
             {
                 let filtered = self.filter_indices(response.filtered);
+                self.lexical_evidence = response.evidence;
                 self.apply_filtered(filtered);
                 self.search_in_flight = false;
                 applied = true;
@@ -424,6 +450,19 @@ impl App {
         conversation_index: usize,
     ) -> Option<&SemanticResultMetadata> {
         self.semantic_search.results.get(&conversation_index)
+    }
+
+    pub fn lexical_evidence(&self, conversation_index: usize) -> Option<&search::LexicalEvidence> {
+        self.lexical_evidence.get(&conversation_index)
+    }
+
+    #[cfg(test)]
+    pub fn set_lexical_evidence_for_test(
+        &mut self,
+        conversation_index: usize,
+        evidence: search::LexicalEvidence,
+    ) {
+        self.lexical_evidence.insert(conversation_index, evidence);
     }
 
     pub fn semantic_result_metadata_for_selection(&self) -> Option<&SemanticResultMetadata> {

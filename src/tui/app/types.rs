@@ -1,4 +1,4 @@
-use crate::search::normalize_for_search;
+use crate::search::query::ParsedQuery;
 use crate::semantic::types::{SemanticExplanation, SemanticScoreBreakdown};
 use crate::tui::viewer::{
     MessageRange, RenderableEntry, RenderedLine, ToolDisplayMode, ToolOutputId,
@@ -151,15 +151,12 @@ impl ListSearchMode {
 
 pub const LIST_LINES_PER_ITEM: usize = 3;
 
-pub fn list_lines_per_item(mode: ListSearchMode, query: &str) -> usize {
-    let query_normalized: String = normalize_for_search(query.trim())
-        .split_whitespace()
-        .collect::<Vec<_>>()
-        .join(" ");
-    if query_normalized.is_empty() || mode == ListSearchMode::Semantic {
-        LIST_LINES_PER_ITEM
-    } else {
+pub fn list_lines_per_item(_mode: ListSearchMode, query: &str) -> usize {
+    let parsed = ParsedQuery::parse(query);
+    if !parsed.literals().is_empty() {
         4
+    } else {
+        LIST_LINES_PER_ITEM
     }
 }
 

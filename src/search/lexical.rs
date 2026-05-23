@@ -1,6 +1,6 @@
 use crate::history::Conversation;
 use crate::search::literal::{
-    LiteralCorpusEntry, build_literal_corpus, exact_fallback, matches_all_literals,
+    Literal, LiteralCorpusEntry, build_literal_corpus, exact_fallback, matches_all_literals,
 };
 use crate::search::query::ParsedQuery;
 pub use crate::text_match::normalize_for_search;
@@ -159,6 +159,24 @@ fn browse_debug_results(
         .collect()
 }
 
+fn identifier_literals(query: &str) -> Vec<Literal> {
+    query
+        .split_whitespace()
+        .filter(|term| term.contains('_'))
+        .map(|term| Literal::new(term.to_string()))
+        .collect()
+}
+
+fn normalized_query_words(query: &str) -> String {
+    normalize_for_search(
+        &query
+            .split_whitespace()
+            .filter(|term| !term.contains('_'))
+            .collect::<Vec<_>>()
+            .join(" "),
+    )
+}
+
 fn search_debug_with_query(
     conversations: &[Conversation],
     searchable: &[SearchableConversation],
@@ -176,17 +194,37 @@ fn search_debug_with_query(
         return exact_debug_results(conversations, &corpus, parsed, now, scope);
     }
 
-    let query_lower = normalize_for_search(intent);
+    let query_lower = normalized_query_words(intent);
     let query_words: Vec<&str> = query_lower.split_whitespace().collect();
+    let identifier_literals = identifier_literals(intent);
+    let literal_filters = parsed
+        .literals()
+        .iter()
+        .cloned()
+        .chain(identifier_literals)
+        .collect::<Vec<_>>();
     if query_words.is_empty() {
-        if parsed.literals().is_empty() {
+        if literal_filters.is_empty() {
             return browse_debug_results(conversations, now, scope);
         }
         let corpus = build_literal_corpus(conversations);
-        return exact_debug_results(conversations, &corpus, parsed, now, scope);
+        return exact_fallback(conversations, &corpus, &literal_filters, scope)
+            .into_iter()
+            .map(|index| {
+                let fresh = freshness_bonus(conversations[index].timestamp, now);
+                (
+                    index,
+                    ScoreDebug {
+                        total: fresh,
+                        freshness: fresh,
+                        fields: vec![],
+                    },
+                )
+            })
+            .collect();
     }
 
-    let corpus = if parsed.literals().is_empty() {
+    let corpus = if literal_filters.is_empty() {
         None
     } else {
         Some(build_literal_corpus(conversations))
@@ -206,7 +244,7 @@ fn search_debug_with_query(
         .filter_map(|s| {
             if !scope(s.index)
                 || corpus.as_ref().is_some_and(|corpus| {
-                    !matches_all_literals(&corpus[s.index].text, parsed.literals())
+                    !matches_all_literals(&corpus[s.index].text, &literal_filters)
                 })
             {
                 return None;
@@ -571,14 +609,21 @@ mod tests {
     }
 
     #[test]
-    fn unquoted_identifier_keeps_tokenized_behavior() {
+    fn unquoted_identifier_requires_exact_underscore_match() {
         let now = Local::now();
-        let convs = vec![make_conv("restaurant signals normalized words only", now)];
+        let convs = vec![
+            make_conv("restaurant signals normalized words only", now),
+            make_conv("restaurant_signals identifier", now - Duration::hours(1)),
+            make_conv(
+                "restaurant API_SIGNALS mixed identifier",
+                now - Duration::hours(2),
+            ),
+        ];
         let searchable = precompute_search_text(&convs);
 
-        let results = search(&convs, &searchable, "RESTAURANT_SIGNALS", now);
+        let results = search(&convs, &searchable, "restaurant_signals", now);
 
-        assert_eq!(results, vec![0]);
+        assert_eq!(results, vec![1]);
     }
 
     #[test]
@@ -647,13 +692,18 @@ mod tests {
     }
 
     #[test]
-    fn search_with_underscore_in_query() {
+    fn search_with_underscore_in_query_requires_whole_identifier() {
         let now = Local::now();
-        let convs = vec![make_conv("hardened runtime enabled", now)];
+        let convs = vec![
+            make_conv("hardened runtime enabled", now),
+            make_conv("hardened_runtime enabled", now - Duration::hours(1)),
+            make_conv("hardened other_runtime enabled", now - Duration::hours(2)),
+        ];
         let searchable = precompute_search_text(&convs);
-        // Query with underscore should still match space-separated text
+
         let results = search(&convs, &searchable, "hardened_runtime", now);
-        assert_eq!(results.len(), 1);
+
+        assert_eq!(results, vec![1]);
     }
 
     #[test]

@@ -72,9 +72,9 @@ $ claude-history
 ```
 
 This opens a terminal UI listing all conversations, sorted by recency. Type to
-search across all transcripts. Each item shows a preview of the conversation and
-match context is highlighted when your search matches content not visible in the
-preview.
+search across all transcripts. Each item shows a preview of the conversation.
+Quoted exact matches also show hidden context when the match is not visible in
+the preview.
 
 ### Keyboard navigation (List mode)
 
@@ -156,6 +156,9 @@ Unquoted search matches words flexibly:
 - `auth` matches `authentication` and `authorize`
 - `red` won't match inside `fired`
 - multiple words must all match
+
+Identifier-style terms with underscores keep the underscore, so `api_key` matches
+`api_key` but not `api key`.
 
 Use quotes when you need exact text. For example, `"DEPLOYMENT_TOKEN"` matches
 `DEPLOYMENT_TOKEN` but not `deployment token`. Lowercase quoted text ignores

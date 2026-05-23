@@ -1,3 +1,8 @@
+## v0.1.61 (2026-05-23)
+
+- Added quoted search for exact text, so you can find literals like tokens,
+  flags, and identifiers without fuzzy word matching ([#48](https://github.com/raine/claude-history/issues/48))
+
 ## v0.1.60 (2026-05-19)
 
 - Nix installs now link ONNX Runtime from nixpkgs, so semantic search works in

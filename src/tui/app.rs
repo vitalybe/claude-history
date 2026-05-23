@@ -14,9 +14,7 @@ use crate::tui::viewer::ToolOutputId;
 use chrono::Local;
 use crossterm::event::{KeyCode, KeyModifiers};
 use ratatui::prelude::*;
-#[cfg(test)]
-use std::collections::HashMap;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::mpsc;
@@ -99,6 +97,8 @@ pub struct App {
     list_search_mode: ListSearchMode,
     /// Semantic TUI state
     semantic_search: SemanticSearchState,
+    /// Cached lexical evidence produced outside the render path
+    lexical_evidence: HashMap<usize, search::LexicalEvidence>,
 }
 
 struct AppParts {
@@ -156,6 +156,7 @@ impl App {
             search_in_flight: false,
             list_search_mode: parts.list_search_mode,
             semantic_search: parts.semantic_search,
+            lexical_evidence: HashMap::new(),
         }
     }
 

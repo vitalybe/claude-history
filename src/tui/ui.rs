@@ -1677,19 +1677,31 @@ fn render_list(frame: &mut Frame, app: &App, area: Rect) {
 
             let header = Line::from(header_spans).style(selection_bg);
 
+            let max_preview_len = width.saturating_sub(4);
+            let lexical_evidence = (!semantic_mode)
+                .then(|| app.lexical_evidence(conv_idx))
+                .flatten();
+            let lexical_context = lexical_evidence.and_then(|evidence| {
+                build_context_segments_from_ranges(
+                    &conv.full_text,
+                    &evidence.context_ranges,
+                    max_preview_len,
+                )
+            });
             let preview_text = if semantic_mode && !query_normalized.is_empty() {
                 semantic_metadata
                     .map(|metadata| sanitize_preview(&metadata.explanation.evidence_preview))
                     .unwrap_or_else(|| sanitize_preview(&conv.preview))
+            } else if let Some(context) = lexical_context.as_ref() {
+                context.clone()
             } else {
                 sanitize_preview(&conv.preview)
             };
-            let max_preview_len = width.saturating_sub(4);
             let truncated_preview = if query_normalized.is_empty() {
                 simple_truncate(&preview_text, max_preview_len)
             } else if semantic_mode && highlight_query.has_match(&preview_text) {
                 build_match_segments_for_query(&preview_text, &highlight_query, max_preview_len)
-            } else if semantic_mode {
+            } else if semantic_mode || lexical_context.is_some() {
                 simple_truncate(&preview_text, max_preview_len)
             } else {
                 build_match_segments(&preview_text, &query_normalized, max_preview_len)
@@ -1706,14 +1718,13 @@ fn render_list(frame: &mut Frame, app: &App, area: Rect) {
 
             let preview = Line::from(preview_spans).style(selection_bg);
 
-            // Check for hidden matches and build context line if needed
-            let context_line = if !query_normalized.is_empty()
-                && (!semantic_mode
-                    || (highlight_query.has_literals()
-                        && !highlight_query.has_all_literal_matches(&truncated_preview)))
+            let allow_literal_context = lexical_context.is_none();
+            // Check for hidden literal matches and build context line if needed
+            let context_line = if allow_literal_context
+                && highlight_query.needs_literal_context(&truncated_preview)
             {
                 let context_width = width.saturating_sub(4);
-                build_context_segments_for_query(
+                build_literal_context_segments(
                     &conv.full_text,
                     &truncated_preview,
                     &highlight_query,
@@ -2049,6 +2060,21 @@ impl HitCluster {
 /// This makes the literal phrase `audio generation` win over a far-apart pair
 /// of `audio` + `generation` occurrences in unrelated boilerplate.
 /// Operates on raw full_text and sanitizes each extracted slice independently.
+fn build_literal_context_segments(
+    full_text: &str,
+    preview: &str,
+    query: &HighlightQuery,
+    max_width: usize,
+) -> Option<String> {
+    build_context_segments_with_specs(
+        full_text,
+        preview,
+        &query.literal_context_specs(),
+        max_width,
+    )
+}
+
+#[cfg(test)]
 fn build_context_segments_for_query(
     full_text: &str,
     preview: &str,
@@ -2071,6 +2097,18 @@ fn build_context_segments(
         &HighlightQuery::normalized_context_specs(query),
         max_width,
     )
+}
+
+fn build_context_segments_from_ranges(
+    full_text: &str,
+    hidden_matches: &[(usize, usize)],
+    max_width: usize,
+) -> Option<String> {
+    if hidden_matches.is_empty() || max_width == 0 {
+        return None;
+    }
+
+    build_context_segments_from_ranges_unchecked(full_text, hidden_matches, max_width)
 }
 
 fn build_context_segments_with_specs(
@@ -2235,6 +2273,14 @@ fn build_context_segments_with_specs(
     let hidden_matches: Vec<(usize, usize)> =
         selected.into_iter().map(|c| (c.start, c.end)).collect();
 
+    build_context_segments_from_ranges_unchecked(full_text, &hidden_matches, max_width)
+}
+
+fn build_context_segments_from_ranges_unchecked(
+    full_text: &str,
+    hidden_matches: &[(usize, usize)],
+    max_width: usize,
+) -> Option<String> {
     // For each hidden match cluster, extract a context window from raw full_text,
     // then sanitize just that slice
     let num_segments = hidden_matches.len();
@@ -2488,9 +2534,26 @@ struct HighlightQuery {
 impl HighlightQuery {
     fn parse(query: &str) -> Self {
         let parsed = ParsedQuery::parse(query);
+        let unquoted_terms = parsed.unquoted().split_whitespace().collect::<Vec<_>>();
+        let identifier_literals = unquoted_terms
+            .iter()
+            .copied()
+            .filter(|term| term.contains('_'))
+            .map(|term| Literal::new(term.to_string()))
+            .collect::<Vec<_>>();
+        let unquoted = unquoted_terms
+            .into_iter()
+            .filter(|term| !term.contains('_'))
+            .collect::<Vec<_>>()
+            .join(" ");
         Self {
-            unquoted: normalize_highlight_query(parsed.unquoted()),
-            literals: parsed.literals().to_vec(),
+            unquoted: normalize_highlight_query(&unquoted),
+            literals: parsed
+                .literals()
+                .iter()
+                .cloned()
+                .chain(identifier_literals)
+                .collect(),
         }
     }
 
@@ -2516,10 +2579,19 @@ impl HighlightQuery {
         highlight_ranges(text, ranges, base_style, highlight_style)
     }
 
+    #[cfg(test)]
     fn context_specs(&self) -> Vec<ContextMatchSpec> {
         Self::normalized_context_specs(&self.unquoted)
             .into_iter()
             .chain(self.literals.iter().cloned().map(ContextMatchSpec::Literal))
+            .collect()
+    }
+
+    fn literal_context_specs(&self) -> Vec<ContextMatchSpec> {
+        self.literals
+            .iter()
+            .cloned()
+            .map(ContextMatchSpec::Literal)
             .collect()
     }
 
@@ -2528,16 +2600,14 @@ impl HighlightQuery {
             || self.has_literal_match(text)
     }
 
-    fn has_literals(&self) -> bool {
-        !self.literals.is_empty()
-    }
-
     fn has_literal_match(&self, text: &str) -> bool {
-        !match_literal_ranges(text, &self.literals).is_empty()
+        self.literals.iter().any(|literal| literal.matches(text))
     }
 
-    fn has_all_literal_matches(&self, text: &str) -> bool {
-        self.literals.iter().all(|literal| literal.matches(text))
+    fn needs_literal_context(&self, preview: &str) -> bool {
+        self.literals
+            .iter()
+            .any(|literal| !literal.matches(preview))
     }
 
     fn match_ranges(&self, text: &str) -> Vec<(usize, usize)> {
@@ -2546,6 +2616,7 @@ impl HighlightQuery {
         merge_match_ranges(ranges)
     }
 
+    #[cfg(test)]
     fn normalized_context_specs(query: &str) -> Vec<ContextMatchSpec> {
         query
             .split_whitespace()
@@ -2554,6 +2625,7 @@ impl HighlightQuery {
     }
 }
 
+#[allow(dead_code)]
 #[derive(Clone)]
 enum ContextMatchSpec {
     Normalized(String),
@@ -3184,11 +3256,11 @@ mod tests {
     }
 
     #[test]
-    fn highlight_query_preserves_unquoted_behavior() {
+    fn highlight_query_preserves_unquoted_identifier_punctuation() {
         let highlight_style = Style::default().fg(Color::Yellow);
-        let query = HighlightQuery::parse("DEPLOYMENT_TOKEN");
+        let query = HighlightQuery::parse("deployment_token");
         let spans = query.highlight(
-            "prefix deployment token suffix",
+            "prefix deployment token suffix DEPLOYMENT_TOKEN",
             Style::default(),
             highlight_style,
         );
@@ -3197,7 +3269,7 @@ mod tests {
             .filter(|(_, highlighted)| *highlighted)
             .collect();
 
-        assert_eq!(highlighted, vec![("deployment token", true)]);
+        assert_eq!(highlighted, vec![("DEPLOYMENT_TOKEN", true)]);
     }
 
     #[test]
@@ -3312,6 +3384,83 @@ mod tests {
             let line = row_text(&terminal, y);
             assert_eq!(line.chars().count(), width as usize, "{line:?}");
         }
+    }
+
+    #[test]
+    fn lexical_unquoted_render_shows_cached_hidden_full_text_context() {
+        let mut conversation = test_conversation();
+        conversation.preview = "visible lexical preview".to_string();
+        conversation.full_text =
+            format!("visible lexical preview {} hiddenneedle", "x ".repeat(200));
+        let evidence = crate::search::build_lexical_evidence(
+            &conversation,
+            &ParsedQuery::parse("hiddenneedle"),
+        )
+        .unwrap();
+        let mut app = App::new(
+            vec![conversation],
+            ToolDisplayMode::Truncated,
+            false,
+            KeyBindings::default(),
+            vec![],
+        );
+        app.set_query_for_test("hiddenneedle");
+        app.set_lexical_evidence_for_test(0, evidence);
+        let backend = TestBackend::new(80, 8);
+        let mut terminal = Terminal::new(backend).unwrap();
+
+        terminal
+            .draw(|frame| render_list(frame, &app, frame.area()))
+            .unwrap();
+
+        let contents = terminal_contents(&terminal);
+        assert!(contents.contains("hiddenneedle"), "{contents:?}");
+    }
+
+    #[test]
+    fn lexical_quoted_render_shows_hidden_literal_context() {
+        let mut conversation = test_conversation();
+        conversation.preview = "visible lexical preview".to_string();
+        conversation.full_text =
+            format!("visible lexical preview {} hidden_literal", "x ".repeat(80));
+        let mut app = App::new(
+            vec![conversation],
+            ToolDisplayMode::Truncated,
+            false,
+            KeyBindings::default(),
+            vec![],
+        );
+        app.set_query_for_test("\"hidden_literal\"");
+        let backend = TestBackend::new(80, 8);
+        let mut terminal = Terminal::new(backend).unwrap();
+
+        terminal
+            .draw(|frame| render_list(frame, &app, frame.area()))
+            .unwrap();
+
+        let contents = terminal_contents(&terminal);
+        assert!(contents.contains("hidden_literal"), "{contents:?}");
+    }
+
+    #[test]
+    fn lexical_mixed_query_cached_context_uses_unquoted_and_literals() {
+        let mut conversation = test_conversation();
+        conversation.preview = "visible preview".to_string();
+        conversation.full_text = format!("hidden_unquoted {} exact_literal", "x ".repeat(120));
+        let evidence = crate::search::build_lexical_evidence(
+            &conversation,
+            &ParsedQuery::parse("hidden_unquoted \"exact_literal\""),
+        )
+        .unwrap();
+        let ctx = build_context_segments_from_ranges(
+            &conversation.full_text,
+            &evidence.context_ranges,
+            120,
+        )
+        .unwrap();
+
+        assert!(ctx.contains("exact_literal"), "{ctx:?}");
+        assert!(ctx.contains("hidden_unquoted"), "{ctx:?}");
     }
 
     #[test]
