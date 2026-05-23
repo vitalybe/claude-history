@@ -1,4 +1,8 @@
 use crate::history::Conversation;
+use crate::search::literal::{
+    LiteralCorpusEntry, build_literal_corpus, exact_fallback, matches_all_literals,
+};
+use crate::search::query::ParsedQuery;
 pub use crate::text_match::normalize_for_search;
 use chrono::{DateTime, Duration, Local};
 use rayon::prelude::*;
@@ -85,19 +89,109 @@ pub fn search(
     query: &str,
     now: DateTime<Local>,
 ) -> Vec<usize> {
-    let query = query.trim();
-    if query.is_empty() {
-        // Return all indices sorted by timestamp (already sorted in history.rs)
-        return (0..conversations.len()).collect();
+    debug_search(conversations, searchable, query, now, |_| true)
+        .results
+        .into_iter()
+        .map(|(index, _)| index)
+        .collect()
+}
+
+pub struct LexicalDebugSearch {
+    pub parsed: ParsedQuery,
+    pub results: Vec<(usize, ScoreDebug)>,
+}
+
+pub fn debug_search(
+    conversations: &[Conversation],
+    searchable: &[SearchableConversation],
+    query: &str,
+    now: DateTime<Local>,
+    scope: impl Fn(usize) -> bool + Sync,
+) -> LexicalDebugSearch {
+    let parsed = ParsedQuery::parse(query);
+    let results = search_debug_with_query(conversations, searchable, &parsed, now, scope);
+    LexicalDebugSearch { parsed, results }
+}
+
+fn exact_debug_results(
+    conversations: &[Conversation],
+    corpus: &[LiteralCorpusEntry],
+    parsed: &ParsedQuery,
+    now: DateTime<Local>,
+    scope: impl Fn(usize) -> bool + Sync,
+) -> Vec<(usize, ScoreDebug)> {
+    exact_fallback(conversations, corpus, parsed.literals(), scope)
+        .into_iter()
+        .map(|index| {
+            let fresh = freshness_bonus(conversations[index].timestamp, now);
+            (
+                index,
+                ScoreDebug {
+                    total: fresh,
+                    freshness: fresh,
+                    fields: vec![],
+                },
+            )
+        })
+        .collect()
+}
+
+fn browse_debug_results(
+    conversations: &[Conversation],
+    now: DateTime<Local>,
+    scope: impl Fn(usize) -> bool + Sync,
+) -> Vec<(usize, ScoreDebug)> {
+    conversations
+        .iter()
+        .enumerate()
+        .filter(|(index, _)| scope(*index))
+        .map(|(index, conversation)| {
+            let fresh = freshness_bonus(conversation.timestamp, now);
+            (
+                index,
+                ScoreDebug {
+                    total: fresh,
+                    freshness: fresh,
+                    fields: vec![],
+                },
+            )
+        })
+        .collect()
+}
+
+fn search_debug_with_query(
+    conversations: &[Conversation],
+    searchable: &[SearchableConversation],
+    parsed: &ParsedQuery,
+    now: DateTime<Local>,
+    scope: impl Fn(usize) -> bool + Sync,
+) -> Vec<(usize, ScoreDebug)> {
+    let intent = parsed.lexical_text().trim();
+    if parsed.raw().trim().is_empty() {
+        return browse_debug_results(conversations, now, scope);
     }
 
-    let query_lower = normalize_for_search(query);
+    if parsed.is_quoted_only() {
+        let corpus = build_literal_corpus(conversations);
+        return exact_debug_results(conversations, &corpus, parsed, now, scope);
+    }
+
+    let query_lower = normalize_for_search(intent);
     let query_words: Vec<&str> = query_lower.split_whitespace().collect();
     if query_words.is_empty() {
-        return (0..conversations.len()).collect();
+        if parsed.literals().is_empty() {
+            return browse_debug_results(conversations, now, scope);
+        }
+        let corpus = build_literal_corpus(conversations);
+        return exact_debug_results(conversations, &corpus, parsed, now, scope);
     }
 
-    // Precompute adjacent pairs once per query (not per conversation)
+    let corpus = if parsed.literals().is_empty() {
+        None
+    } else {
+        Some(build_literal_corpus(conversations))
+    };
+
     let adjacent_pairs: Vec<String> = if query_words.len() > 1 {
         query_words
             .windows(2)
@@ -107,34 +201,39 @@ pub fn search(
         vec![]
     };
 
-    // Score all conversations in parallel
-    let mut scored: Vec<(usize, f64, DateTime<Local>)> = searchable
+    let mut scored: Vec<(usize, ScoreDebug, DateTime<Local>)> = searchable
         .par_iter()
         .filter_map(|s| {
-            let score = score_text(
+            if !scope(s.index)
+                || corpus.as_ref().is_some_and(|corpus| {
+                    !matches_all_literals(&corpus[s.index].text, parsed.literals())
+                })
+            {
+                return None;
+            }
+            let debug = score_text_debug(
                 s,
                 &conversations[s.index].search_text_lower,
                 &query_words,
                 &adjacent_pairs,
                 conversations[s.index].timestamp,
                 now,
-            );
-            if score > 0.0 {
-                Some((s.index, score, conversations[s.index].timestamp))
-            } else {
-                None
-            }
+            )?;
+            Some((s.index, debug, conversations[s.index].timestamp))
         })
         .collect();
 
-    // Sort by score descending, then by timestamp descending for stability
     scored.sort_unstable_by(|a, b| {
-        b.1.partial_cmp(&a.1)
+        b.1.total
+            .partial_cmp(&a.1.total)
             .unwrap_or(std::cmp::Ordering::Equal)
             .then_with(|| b.2.cmp(&a.2))
     });
 
-    scored.into_iter().map(|(idx, _, _)| idx).collect()
+    scored
+        .into_iter()
+        .map(|(idx, debug, _)| (idx, debug))
+        .collect()
 }
 
 /// Field weights for scoring
@@ -257,19 +356,6 @@ fn score_impl(
         freshness: fresh,
         fields: field_debugs,
     })
-}
-
-/// Score a conversation. Returns 0.0 if not matched.
-/// Thin wrapper around score_impl.
-fn score_text(
-    s: &SearchableConversation,
-    body_lower: &str,
-    query_words: &[&str],
-    adjacent_pairs: &[String],
-    timestamp: DateTime<Local>,
-    now: DateTime<Local>,
-) -> f64 {
-    score_impl(s, body_lower, query_words, adjacent_pairs, timestamp, now).map_or(0.0, |d| d.total)
 }
 
 /// Score with full debug breakdown. Returns None if Stage 1 rejects.
@@ -402,6 +488,112 @@ mod tests {
         timestamp: DateTime<Local>,
     ) -> Conversation {
         make_conv_full(text, Some(project), None, None, timestamp)
+    }
+
+    #[test]
+    fn quoted_identifier_matches_exact_literal_only() {
+        let now = Local::now();
+        let convs = vec![
+            make_conv("literal RESTAURANT_SIGNALS identifier", now),
+            make_conv("restaurant signals normalized words only", now),
+        ];
+        let searchable = precompute_search_text(&convs);
+
+        let results = search(&convs, &searchable, "\"RESTAURANT_SIGNALS\"", now);
+
+        assert_eq!(results, vec![0]);
+    }
+
+    #[test]
+    fn mixed_query_scores_unquoted_intent_and_requires_literal() {
+        let now = Local::now();
+        let convs = vec![
+            make_conv_full(
+                "alpha alpha alpha RESTAURANT_SIGNALS",
+                None,
+                None,
+                None,
+                now - Duration::hours(2),
+            ),
+            make_conv_full("alpha alpha alpha alpha alpha", None, None, None, now),
+            make_conv_full("beta RESTAURANT_SIGNALS", None, None, None, now),
+        ];
+        let searchable = precompute_search_text(&convs);
+
+        let results = search(&convs, &searchable, "alpha \"RESTAURANT_SIGNALS\"", now);
+
+        assert_eq!(results, vec![0]);
+    }
+
+    #[test]
+    fn quoted_only_query_uses_exact_fallback_newest_first() {
+        let now = Local::now();
+        let convs = vec![
+            make_conv_full("needle_literal", None, None, None, now - Duration::days(1)),
+            make_conv_full("needle_literal", None, None, None, now),
+            make_conv_full("needle literal", None, None, None, now - Duration::hours(1)),
+        ];
+        let searchable = precompute_search_text(&convs);
+
+        let results = search(&convs, &searchable, "\"needle_literal\"", now);
+
+        assert_eq!(results, vec![1, 0]);
+    }
+
+    #[test]
+    fn quoted_literals_use_smart_case_in_lexical_search() {
+        let now = Local::now();
+        let convs = vec![
+            make_conv("RESTAURANT_SIGNALS uppercase", now - Duration::hours(1)),
+            make_conv("restaurant_signals lowercase", now),
+        ];
+        let searchable = precompute_search_text(&convs);
+
+        let insensitive = search(&convs, &searchable, "\"restaurant_signals\"", now);
+        let sensitive = search(&convs, &searchable, "\"RESTAURANT_SIGNALS\"", now);
+
+        assert_eq!(insensitive, vec![1, 0]);
+        assert_eq!(sensitive, vec![0]);
+    }
+
+    #[test]
+    fn unquoted_identifier_keeps_tokenized_behavior() {
+        let now = Local::now();
+        let convs = vec![make_conv("restaurant signals normalized words only", now)];
+        let searchable = precompute_search_text(&convs);
+
+        let results = search(&convs, &searchable, "RESTAURANT_SIGNALS", now);
+
+        assert_eq!(results, vec![0]);
+    }
+
+    #[test]
+    fn debug_search_enforces_literal_filters() {
+        let now = Local::now();
+        let convs = vec![
+            make_conv("alpha RESTAURANT_SIGNALS", now),
+            make_conv("alpha restaurant signals", now),
+        ];
+        let searchable = precompute_search_text(&convs);
+
+        let debug = debug_search(
+            &convs,
+            &searchable,
+            "alpha \"RESTAURANT_SIGNALS\"",
+            now,
+            |_| true,
+        );
+
+        assert_eq!(
+            debug
+                .results
+                .iter()
+                .map(|(idx, _)| *idx)
+                .collect::<Vec<_>>(),
+            vec![0]
+        );
+        assert_eq!(debug.parsed.unquoted(), "alpha");
+        assert_eq!(debug.parsed.literals()[0].text(), "RESTAURANT_SIGNALS");
     }
 
     #[test]

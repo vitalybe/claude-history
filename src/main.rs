@@ -153,17 +153,6 @@ fn run() -> Result<()> {
         let searchable = search::precompute_search_text(&conversations);
         let now = chrono::Local::now();
 
-        let query_lower = search::normalize_for_search(query);
-        let query_words: Vec<&str> = query_lower.split_whitespace().collect();
-        let adjacent_pairs: Vec<String> = if query_words.len() > 1 {
-            query_words
-                .windows(2)
-                .map(|w| format!("{} {}", w[0], w[1]))
-                .collect()
-        } else {
-            vec![]
-        };
-
         // Optionally filter to local workspace
         let current_project_dir_name = if args.local {
             std::env::current_dir()
@@ -173,40 +162,29 @@ fn run() -> Result<()> {
             None
         };
 
-        let mut results: Vec<_> = searchable
-            .iter()
-            .filter_map(|s| {
-                if let Some(ref proj) = current_project_dir_name {
-                    let conv = &conversations[s.index];
-                    let matches =
-                        conv.path
-                            .parent()
-                            .and_then(|p| p.file_name())
-                            .is_some_and(|name| {
-                                history::is_same_project(&name.to_string_lossy(), proj)
-                            });
-                    if !matches {
-                        return None;
-                    }
-                }
-
-                let debug = search::score_text_debug(
-                    s,
-                    &conversations[s.index].search_text_lower,
-                    &query_words,
-                    &adjacent_pairs,
-                    conversations[s.index].timestamp,
-                    now,
-                )?;
-                Some((s.index, debug))
-            })
-            .collect();
-
-        results.sort_by(|a, b| {
-            b.1.total
-                .partial_cmp(&a.1.total)
-                .unwrap_or(std::cmp::Ordering::Equal)
+        let debug_search = search::debug_search(&conversations, &searchable, query, now, |index| {
+            if let Some(ref proj) = current_project_dir_name {
+                let conv = &conversations[index];
+                return conv
+                    .path
+                    .parent()
+                    .and_then(|p| p.file_name())
+                    .is_some_and(|name| history::is_same_project(&name.to_string_lossy(), proj));
+            }
+            true
         });
+        let results = debug_search.results;
+
+        eprintln!("intent: {:?}", debug_search.parsed.unquoted());
+        if debug_search.parsed.literals().is_empty() {
+            eprintln!("literals: none");
+        } else {
+            eprintln!("literals:");
+            for literal in debug_search.parsed.literals() {
+                eprintln!("  {:?} ({:?})", literal.text(), literal.case_mode());
+            }
+        }
+        eprintln!();
 
         for (rank, (idx, debug)) in results.iter().take(30).enumerate() {
             let conv = &conversations[*idx];
