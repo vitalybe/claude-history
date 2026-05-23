@@ -18,6 +18,7 @@ pub fn run(query: &str, conversations: &[Conversation], top: usize, local: bool)
     let candidates = semantic_index_candidates(&selected);
     let request = SemanticIndexRequest {
         query,
+        literal_filters: &[],
         full_corpus: &candidates,
         scope: &candidates,
         corpus_version: 1,
@@ -89,6 +90,7 @@ pub fn generate_cache(conversations: &[Conversation], local: bool) -> Result<()>
     let candidates = semantic_index_candidates(&selected);
     let request = SemanticIndexRequest {
         query: "",
+        literal_filters: &[],
         full_corpus: &candidates,
         scope: &candidates,
         corpus_version: 1,
@@ -448,6 +450,7 @@ mod tests {
         let query = "alpha".to_string();
         let request = crate::semantic::index::SemanticIndexRequest {
             query: &query,
+            literal_filters: &[],
             full_corpus: &candidates,
             scope: &candidates,
             corpus_version: 1,
@@ -486,6 +489,7 @@ mod tests {
         let query = "alpha".to_string();
         let request = crate::semantic::index::SemanticIndexRequest {
             query: &query,
+            literal_filters: &[],
             full_corpus: &candidates,
             scope: &candidates,
             corpus_version: 1,

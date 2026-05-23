@@ -1,5 +1,7 @@
 use crate::error::Result;
 use crate::history::Conversation;
+use crate::search::literal::{build_literal_corpus, exact_fallback};
+use crate::search::query::ParsedQuery;
 use crate::semantic::cache::write_embedding_cache;
 use crate::semantic::fastembed::FastembedEmbedder;
 use crate::semantic::index::{
@@ -25,7 +27,7 @@ pub enum SemanticWorkerCommand {
     },
     Search {
         generation: u64,
-        query: String,
+        query: ParsedQuery,
         corpus_version: u64,
         scope_version: u64,
         prewarm: bool,
@@ -35,7 +37,7 @@ pub enum SemanticWorkerCommand {
 #[derive(Clone)]
 struct SemanticSearchRequest {
     generation: u64,
-    query: String,
+    query: ParsedQuery,
     corpus_version: u64,
     scope_version: u64,
     prewarm: bool,
@@ -106,10 +108,22 @@ fn run_semantic_worker(
         }
 
         cancellation = SemanticCancellationToken::new();
+        if request.query.is_quoted_only() {
+            let response = exact_literal_semantic_response(
+                request.generation,
+                request.prewarm,
+                worker.corpus.as_ref(),
+                worker.scope.as_ref(),
+                &request.query,
+            );
+            let _ = res_tx.send(SemanticSearchMessage::Complete(response));
+            continue;
+        }
         let full_corpus = worker.full_corpus_candidates();
         let scope = worker.semantic_candidates();
         let index_request = SemanticIndexRequest {
-            query: &request.query,
+            query: request.query.semantic_text(),
+            literal_filters: request.query.literals(),
             full_corpus: &full_corpus,
             scope: &scope,
             corpus_version: request.corpus_version,
@@ -350,6 +364,36 @@ fn empty_semantic_response(generation: u64, prewarm: bool) -> SemanticSearchResp
     }
 }
 
+fn exact_literal_semantic_response(
+    generation: u64,
+    prewarm: bool,
+    conversations: &[Arc<Conversation>],
+    scope: &[usize],
+    parsed: &ParsedQuery,
+) -> SemanticSearchResponse {
+    let plain_conversations = conversations
+        .iter()
+        .map(|conversation| conversation.as_ref().clone())
+        .collect::<Vec<_>>();
+    let corpus = build_literal_corpus(&plain_conversations);
+    let scope = scope
+        .iter()
+        .copied()
+        .collect::<std::collections::HashSet<_>>();
+    let filtered = exact_fallback(&plain_conversations, &corpus, parsed.literals(), |index| {
+        scope.contains(&index)
+    });
+
+    SemanticSearchResponse {
+        generation,
+        filtered,
+        metadata: HashMap::new(),
+        error: None,
+        progress: SemanticProgress::Complete,
+        prewarm,
+    }
+}
+
 fn failed_semantic_response(
     generation: u64,
     prewarm: bool,
@@ -386,7 +430,7 @@ mod tests {
         SemanticChunkIdentity, SemanticExplanation, SemanticQuality, SemanticRationaleKind,
         SemanticScoreBreakdown,
     };
-    use chrono::Local;
+    use chrono::{Duration as ChronoDuration, Local};
     use std::path::PathBuf;
     use std::time::Duration;
 
@@ -481,7 +525,7 @@ mod tests {
         .expect("send scope");
         tx.send(SemanticWorkerCommand::Search {
             generation: 1,
-            query: "alpha".to_string(),
+            query: ParsedQuery::parse("alpha"),
             corpus_version: 1,
             scope_version: 1,
             prewarm: false,
@@ -500,6 +544,91 @@ mod tests {
             }
             SemanticSearchMessage::Progress { progress, .. } => {
                 panic!("unexpected progress before empty response: {progress:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn quoted_only_search_uses_literal_fallback_without_embedding() {
+        let (tx, rx) = spawn_semantic_worker();
+        tx.send(SemanticWorkerCommand::UpdateCorpus {
+            corpus_version: 1,
+            conversations: corpus(vec![conversation(
+                "/projects/project-a/session-a.jsonl",
+                vec![],
+            )]),
+        })
+        .expect("send corpus");
+        tx.send(SemanticWorkerCommand::UpdateScope {
+            corpus_version: 1,
+            scope_version: 1,
+            indices: Arc::new(vec![0]),
+        })
+        .expect("send scope");
+        tx.send(SemanticWorkerCommand::Search {
+            generation: 1,
+            query: ParsedQuery::parse("\"title sentinel\""),
+            corpus_version: 1,
+            scope_version: 1,
+            prewarm: false,
+        })
+        .expect("send semantic request");
+        let message = rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("literal response");
+
+        match message {
+            SemanticSearchMessage::Complete(response) => {
+                assert_eq!(response.filtered, vec![0]);
+                assert!(response.metadata.is_empty());
+                assert_eq!(response.error, None);
+                assert_eq!(response.progress, SemanticProgress::Complete);
+            }
+            SemanticSearchMessage::Progress { progress, .. } => {
+                panic!("unexpected progress before literal response: {progress:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn quoted_only_search_respects_scope_and_orders_newest_first() {
+        let mut old = conversation("/projects/project-a/session-a.jsonl", vec![]);
+        old.timestamp = Local::now() - ChronoDuration::days(1);
+        let mut newest = conversation("/projects/project-a/session-b.jsonl", vec![]);
+        newest.timestamp = Local::now();
+        let mut hidden = conversation("/projects/project-a/session-c.jsonl", vec![]);
+        hidden.timestamp = Local::now() + ChronoDuration::days(1);
+        let (tx, rx) = spawn_semantic_worker();
+        tx.send(SemanticWorkerCommand::UpdateCorpus {
+            corpus_version: 1,
+            conversations: corpus(vec![old, newest, hidden]),
+        })
+        .expect("send corpus");
+        tx.send(SemanticWorkerCommand::UpdateScope {
+            corpus_version: 1,
+            scope_version: 1,
+            indices: Arc::new(vec![0, 1]),
+        })
+        .expect("send scope");
+        tx.send(SemanticWorkerCommand::Search {
+            generation: 1,
+            query: ParsedQuery::parse("\"title sentinel\""),
+            corpus_version: 1,
+            scope_version: 1,
+            prewarm: false,
+        })
+        .expect("send semantic request");
+
+        match rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("literal response")
+        {
+            SemanticSearchMessage::Complete(response) => {
+                assert_eq!(response.filtered, vec![1, 0]);
+                assert!(response.metadata.is_empty());
+            }
+            SemanticSearchMessage::Progress { progress, .. } => {
+                panic!("unexpected progress before literal response: {progress:?}");
             }
         }
     }
@@ -562,7 +691,7 @@ mod tests {
         );
         let request = SemanticSearchRequest {
             generation: 1,
-            query: "visible".to_string(),
+            query: ParsedQuery::parse("visible"),
             corpus_version: 1,
             scope_version: 1,
             prewarm: false,

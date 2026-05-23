@@ -4,6 +4,7 @@ use crate::error::{AppError, Result};
 use crate::history::{
     Conversation, LoaderMessage, format_short_name_from_path, process_conversation_file,
 };
+use crate::search::query::ParsedQuery;
 use crate::search::{self, SearchableConversation, normalize_for_search};
 use crate::semantic::types::{SemanticExplanation, SemanticScoreBreakdown};
 use crate::tui::semantic_worker::{
@@ -902,7 +903,7 @@ impl App {
         let generation = self.search_generation;
         if !self.send_semantic_command(SemanticWorkerCommand::Search {
             generation,
-            query: query.clone(),
+            query: ParsedQuery::parse(&query),
             corpus_version,
             scope_version,
             prewarm,
@@ -915,7 +916,7 @@ impl App {
             };
             if !self.send_semantic_command(SemanticWorkerCommand::Search {
                 generation,
-                query,
+                query: ParsedQuery::parse(&query),
                 corpus_version,
                 scope_version,
                 prewarm,
@@ -3808,7 +3809,7 @@ mod tests {
                 prewarm,
             } => Some((
                 *generation,
-                query.as_str(),
+                query.raw(),
                 *corpus_version,
                 *scope_version,
                 *prewarm,

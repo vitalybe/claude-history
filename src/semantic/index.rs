@@ -1,5 +1,6 @@
 use crate::error::{AppError, Result};
 use crate::history::Conversation;
+use crate::search::literal::{Literal, build_literal_corpus, matches_all_literals};
 use crate::semantic::cache::{
     cache_miss_count, embed_chunks_with_progress_and_save, read_embedding_cache,
 };
@@ -10,7 +11,7 @@ use crate::semantic::types::{
     ChunkConfig, EmbeddedChunk, EmbeddingCache, SemanticCancellationToken, SemanticChunk,
     SemanticHit,
 };
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -22,6 +23,7 @@ pub struct SemanticIndexCandidate {
 
 pub struct SemanticIndexRequest<'a> {
     pub query: &'a str,
+    pub literal_filters: &'a [Literal],
     pub full_corpus: &'a [SemanticIndexCandidate],
     pub scope: &'a [SemanticIndexCandidate],
     pub corpus_version: u64,
@@ -230,17 +232,16 @@ impl SemanticIndexState {
             });
         };
 
-        let hits = rank_chunks(
-            request.query,
-            &query_embedding,
-            &scoped_chunks,
-            cancellation,
-        )?;
-        let progress = if hits.is_empty() {
-            SemanticIndexProgress::EmptyCorpus
-        } else {
-            SemanticIndexProgress::Complete
-        };
+        let hits = filter_hits_by_literals(
+            rank_chunks(
+                request.query,
+                &query_embedding,
+                &scoped_chunks,
+                cancellation,
+            )?,
+            request,
+        );
+        let progress = SemanticIndexProgress::Complete;
 
         Ok(SemanticIndexResponse {
             hits,
@@ -339,6 +340,37 @@ fn candidate_chunks(
             .map(|candidate| (candidate.index, candidate.conversation.as_ref())),
         chunk_config,
     )
+}
+
+fn filter_hits_by_literals(
+    hits: Vec<SemanticHit>,
+    request: &SemanticIndexRequest<'_>,
+) -> Vec<SemanticHit> {
+    if request.literal_filters.is_empty() {
+        return hits;
+    }
+
+    let corpus = build_literal_corpus(
+        &request
+            .full_corpus
+            .iter()
+            .map(|candidate| candidate.conversation.as_ref().clone())
+            .collect::<Vec<_>>(),
+    );
+    let text_by_index = request
+        .full_corpus
+        .iter()
+        .zip(corpus.iter())
+        .map(|(candidate, entry)| (candidate.index, entry.text.as_str()))
+        .collect::<HashMap<_, _>>();
+
+    hits.into_iter()
+        .filter(|hit| {
+            text_by_index
+                .get(&hit.conversation_index)
+                .is_some_and(|text| matches_all_literals(text, request.literal_filters))
+        })
+        .collect()
 }
 
 fn semantic_index_signature(
@@ -461,6 +493,7 @@ mod tests {
     ) -> SemanticIndexRequest<'a> {
         SemanticIndexRequest {
             query,
+            literal_filters: &[],
             full_corpus: candidates,
             scope: candidates,
             corpus_version: 1,
@@ -552,6 +585,81 @@ mod tests {
         assert_eq!(metadata.explanation.chunk.conversation_index, 1);
         assert_eq!(metadata.explanation.chunk.session, "session-b");
         assert_eq!(metadata.explanation.chunk.chunk_index, 0);
+    }
+
+    #[test]
+    fn literal_filters_use_conversation_text_and_semantic_query_text() {
+        let mut first = conversation("/projects/project-a/session-a.jsonl", vec!["visible alpha"]);
+        first.full_text = "conversation-level literal needle".to_string();
+        let mut second = conversation("/projects/project-a/session-b.jsonl", vec!["visible beta"]);
+        second.full_text = "missing literal".to_string();
+        let conversations = vec![first, second];
+        let all = candidates_from(&conversations);
+        let literals = vec![Literal::new("literal needle".to_string())];
+        let query = "alpha".to_string();
+        let request = SemanticIndexRequest {
+            query: &query,
+            literal_filters: &literals,
+            full_corpus: &all,
+            scope: &all,
+            corpus_version: 1,
+            prewarm: false,
+        };
+        let mut cache = empty_embedding_cache(ChunkConfig::default());
+        cache_request_passages(&mut cache, &request);
+        let mut state = SemanticIndexState::with_cache(ChunkConfig::default(), cache);
+        let mut embedder = FakeEmbedder::new();
+
+        let response = state
+            .refresh_or_prewarm(
+                &request,
+                &mut embedder,
+                &SemanticCancellationToken::new(),
+                |_| {},
+                |_| {},
+            )
+            .expect("rank succeeds");
+
+        assert_eq!(embedder.query_calls, 1);
+        assert_eq!(response.progress, SemanticIndexProgress::Complete);
+        assert_eq!(response.hits.len(), 1);
+        assert_eq!(response.hits[0].conversation_index, 0);
+        assert_eq!(response.hits[0].explanation.matched_terms, vec!["alpha"]);
+    }
+
+    #[test]
+    fn literal_filter_no_match_is_not_empty_corpus() {
+        let mut conversation =
+            conversation("/projects/project-a/session-a.jsonl", vec!["visible alpha"]);
+        conversation.full_text = "missing literal".to_string();
+        let all = candidates_from(&[conversation]);
+        let literals = vec![Literal::new("absent needle".to_string())];
+        let query = "alpha".to_string();
+        let request = SemanticIndexRequest {
+            query: &query,
+            literal_filters: &literals,
+            full_corpus: &all,
+            scope: &all,
+            corpus_version: 1,
+            prewarm: false,
+        };
+        let mut cache = empty_embedding_cache(ChunkConfig::default());
+        cache_request_passages(&mut cache, &request);
+        let mut state = SemanticIndexState::with_cache(ChunkConfig::default(), cache);
+        let mut embedder = FakeEmbedder::new();
+
+        let response = state
+            .refresh_or_prewarm(
+                &request,
+                &mut embedder,
+                &SemanticCancellationToken::new(),
+                |_| {},
+                |_| {},
+            )
+            .expect("rank succeeds");
+
+        assert!(response.hits.is_empty());
+        assert_eq!(response.progress, SemanticIndexProgress::Complete);
     }
 
     #[test]
@@ -859,6 +967,7 @@ mod tests {
         let (query, candidates) = request("", conversations, vec![0]);
         let request = SemanticIndexRequest {
             query: &query,
+            literal_filters: &[],
             full_corpus: &candidates,
             scope: &candidates,
             corpus_version: 1,
@@ -985,6 +1094,7 @@ mod tests {
         let alpha_query = "alpha".to_string();
         let alpha_request = SemanticIndexRequest {
             query: &alpha_query,
+            literal_filters: &[],
             full_corpus: &all,
             scope: &alpha_scope,
             corpus_version: 1,
@@ -1006,6 +1116,7 @@ mod tests {
         let beta_query = "beta".to_string();
         let beta_request = SemanticIndexRequest {
             query: &beta_query,
+            literal_filters: &[],
             full_corpus: &all,
             scope: &beta_scope,
             corpus_version: 1,
@@ -1052,6 +1163,7 @@ mod tests {
             .expect("warm corpus");
         let empty_request = SemanticIndexRequest {
             query: &query,
+            literal_filters: &[],
             full_corpus: &candidates,
             scope: &[],
             corpus_version: 1,
@@ -1087,6 +1199,7 @@ mod tests {
         let query = "beta".to_string();
         let persistent_request = SemanticIndexRequest {
             query: &query,
+            literal_filters: &[],
             full_corpus: &all,
             scope: &scope,
             corpus_version: 1,
@@ -1135,6 +1248,7 @@ mod tests {
         let query = "alpha".to_string();
         let first_request = SemanticIndexRequest {
             query: &query,
+            literal_filters: &[],
             full_corpus: &first_all,
             scope: &first_all,
             corpus_version: 1,
@@ -1157,6 +1271,7 @@ mod tests {
         let reordered_all = candidates_from(&reordered);
         let reordered_request = SemanticIndexRequest {
             query: &query,
+            literal_filters: &[],
             full_corpus: &reordered_all,
             scope: &reordered_all,
             corpus_version: 2,
@@ -1188,6 +1303,7 @@ mod tests {
         let query = "alpha".to_string();
         let first_request = SemanticIndexRequest {
             query: &query,
+            literal_filters: &[],
             full_corpus: &first_all,
             scope: &first_all,
             corpus_version: 1,
@@ -1214,6 +1330,7 @@ mod tests {
         let updated_all = candidates_from(&updated);
         let updated_request = SemanticIndexRequest {
             query: &query,
+            literal_filters: &[],
             full_corpus: &updated_all,
             scope: &updated_all,
             corpus_version: 2,
@@ -1251,6 +1368,7 @@ mod tests {
         let query = "alpha".to_string();
         let first_request = SemanticIndexRequest {
             query: &query,
+            literal_filters: &[],
             full_corpus: &first_all,
             scope: &first_all,
             corpus_version: 1,
@@ -1273,6 +1391,7 @@ mod tests {
         let updated_all = candidates_from(&updated);
         let updated_request = SemanticIndexRequest {
             query: &query,
+            literal_filters: &[],
             full_corpus: &updated_all,
             scope: &updated_all,
             corpus_version: 2,
