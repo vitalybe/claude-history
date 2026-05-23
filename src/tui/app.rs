@@ -224,10 +224,28 @@ struct SearchResponse {
     filtered: Vec<usize>,
     generation: u64,
     mode: ListSearchMode,
+    evidence: HashMap<usize, search::LexicalEvidence>,
 }
 
 /// Spawn the background search worker thread.
 /// Returns (sender for commands, receiver for results).
+fn build_search_evidence(
+    conversations: &[Conversation],
+    filtered: &[usize],
+    parsed: &ParsedQuery,
+) -> HashMap<usize, search::LexicalEvidence> {
+    const MAX_EVIDENCE_ROWS: usize = 200;
+
+    filtered
+        .iter()
+        .take(MAX_EVIDENCE_ROWS)
+        .filter_map(|&index| {
+            search::build_lexical_evidence(&conversations[index], parsed)
+                .map(|evidence| (index, evidence))
+        })
+        .collect()
+}
+
 fn spawn_search_worker() -> (mpsc::Sender<SearchCommand>, mpsc::Receiver<SearchResponse>) {
     let (cmd_tx, cmd_rx) = mpsc::channel::<SearchCommand>();
     let (res_tx, res_rx) = mpsc::channel::<SearchResponse>();
@@ -276,17 +294,23 @@ fn spawn_search_worker() -> (mpsc::Sender<SearchCommand>, mpsc::Receiver<SearchR
                         }
 
                         let now = chrono::Local::now();
-                        let filtered = match mode {
+                        let (filtered, evidence) = match mode {
                             ListSearchMode::Lexical => {
-                                search::search(&conversations, &searchable, &query, now)
+                                let filtered =
+                                    search::search(&conversations, &searchable, &query, now);
+                                let parsed = ParsedQuery::parse(&query);
+                                let evidence =
+                                    build_search_evidence(&conversations, &filtered, &parsed);
+                                (filtered, evidence)
                             }
-                            ListSearchMode::Semantic => Vec::new(),
+                            ListSearchMode::Semantic => (Vec::new(), HashMap::new()),
                         };
 
                         let _ = res_tx.send(SearchResponse {
                             filtered,
                             generation,
                             mode,
+                            evidence,
                         });
                     }
                 }
@@ -359,6 +383,8 @@ pub struct App {
     list_search_mode: ListSearchMode,
     /// Semantic TUI state
     semantic_search: SemanticSearchState,
+    /// Cached lexical evidence produced outside the render path
+    lexical_evidence: HashMap<usize, search::LexicalEvidence>,
 }
 
 impl App {
@@ -455,6 +481,7 @@ impl App {
                 available: true,
                 ..Default::default()
             },
+            lexical_evidence: HashMap::new(),
         }
     }
 
@@ -509,6 +536,7 @@ impl App {
                 available: true,
                 ..Default::default()
             },
+            lexical_evidence: HashMap::new(),
         }
     }
 
@@ -594,6 +622,7 @@ impl App {
             search_in_flight: false,
             list_search_mode: ListSearchMode::Lexical,
             semantic_search: SemanticSearchState::default(),
+            lexical_evidence: HashMap::new(),
         }
     }
 
@@ -696,6 +725,7 @@ impl App {
     fn invalidate_search_generation(&mut self) {
         self.search_generation += 1;
         self.search_in_flight = false;
+        self.lexical_evidence.clear();
         self.semantic_search.pending_generation = None;
         self.semantic_search.pending_status = None;
         self.semantic_search.prewarm_generation = None;
@@ -943,6 +973,7 @@ impl App {
                 && response.mode == self.list_search_mode
             {
                 let filtered = self.filter_indices(response.filtered);
+                self.lexical_evidence = response.evidence;
                 self.apply_filtered(filtered);
                 self.search_in_flight = false;
                 applied = true;
@@ -1258,6 +1289,19 @@ impl App {
         conversation_index: usize,
     ) -> Option<&SemanticResultMetadata> {
         self.semantic_search.results.get(&conversation_index)
+    }
+
+    pub fn lexical_evidence(&self, conversation_index: usize) -> Option<&search::LexicalEvidence> {
+        self.lexical_evidence.get(&conversation_index)
+    }
+
+    #[cfg(test)]
+    pub fn set_lexical_evidence_for_test(
+        &mut self,
+        conversation_index: usize,
+        evidence: search::LexicalEvidence,
+    ) {
+        self.lexical_evidence.insert(conversation_index, evidence);
     }
 
     pub fn semantic_result_metadata_for_selection(&self) -> Option<&SemanticResultMetadata> {
@@ -3583,6 +3627,7 @@ mod tests {
             filtered: vec![0],
             generation: 7,
             mode: ListSearchMode::Lexical,
+            evidence: HashMap::new(),
         })
         .unwrap();
 
@@ -4699,6 +4744,7 @@ mod tests {
             filtered: vec![1],
             generation: 1,
             mode: ListSearchMode::Lexical,
+            evidence: HashMap::new(),
         })
         .unwrap();
 
@@ -4736,6 +4782,7 @@ mod tests {
             filtered: vec![],
             generation: 1,
             mode: ListSearchMode::Lexical,
+            evidence: HashMap::new(),
         })
         .unwrap();
 
