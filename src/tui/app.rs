@@ -13,6 +13,7 @@ use crate::tui::semantic_worker::{
 };
 use crate::tui::ui;
 use crate::tui::viewer::{MessageRange, RenderedLine, ToolDisplayMode, ToolOutputId};
+#[cfg(test)]
 use chrono::Local;
 use crossterm::event::{
     self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEventKind, KeyModifiers,
@@ -27,6 +28,7 @@ use std::sync::Arc;
 use std::sync::mpsc::{self, Receiver};
 use std::time::Duration;
 
+mod list_state;
 mod types;
 #[allow(unused_imports)]
 pub use types::{
@@ -246,7 +248,7 @@ impl App {
     ) -> Self {
         let searchable = search::precompute_search_text(&conversations);
         let excluded_projects = exclude_projects.into_iter().collect();
-        let filtered = filter_conversation_indices(
+        let filtered = list_state::filter_conversation_indices(
             0..conversations.len(),
             &conversations,
             &excluded_projects,
@@ -525,28 +527,6 @@ impl App {
         matches!(self.loading_state, LoadingState::Loading { .. })
     }
 
-    fn filter_indices<I>(&self, indices: I) -> Vec<usize>
-    where
-        I: IntoIterator<Item = usize>,
-    {
-        filter_conversation_indices(
-            indices,
-            &self.conversations,
-            &self.excluded_projects,
-            self.workspace_filter,
-            self.current_project_dir_name.as_deref(),
-        )
-    }
-
-    fn apply_filtered(&mut self, filtered: Vec<usize>) {
-        self.filtered = filtered;
-        self.selected = if self.filtered.is_empty() {
-            None
-        } else {
-            Some(0)
-        };
-    }
-
     fn invalidate_search_generation(&mut self) {
         self.search_generation += 1;
         self.search_in_flight = false;
@@ -557,23 +537,6 @@ impl App {
         self.semantic_search.last_status = SemanticProgress::Idle;
         self.semantic_search.error = None;
         self.semantic_search.results.clear();
-    }
-
-    fn apply_uuid_filter(&mut self, query: &str) -> bool {
-        if let Some(idx) = self.find_or_load_uuid(query) {
-            self.filtered = vec![idx];
-            self.selected = Some(0);
-            true
-        } else {
-            false
-        }
-    }
-
-    fn apply_lexical_filter(&mut self) {
-        let now = Local::now();
-        let filtered = search::search(&self.conversations, &self.searchable, &self.query, now);
-        let filtered = self.filter_indices(filtered);
-        self.apply_filtered(filtered);
     }
 
     fn ensure_semantic_worker(&mut self) {
@@ -652,31 +615,6 @@ impl App {
         }
 
         Some((self.semantic_corpus_version, self.semantic_scope_version))
-    }
-
-    /// Update filtered results based on current query
-    fn update_filter(&mut self) {
-        let query = self.query.trim().to_string();
-
-        if ParsedQuery::parse(&query).is_effectively_empty() {
-            self.semantic_search.error = None;
-            self.apply_lexical_filter();
-            return;
-        }
-
-        if search::is_uuid(&query) {
-            self.semantic_search.error = None;
-            self.apply_uuid_filter(&query);
-            return;
-        }
-
-        if self.list_search_mode == ListSearchMode::Semantic {
-            return;
-        }
-
-        self.semantic_search.error = None;
-        self.semantic_search.results.clear();
-        self.apply_lexical_filter();
     }
 
     /// Dispatch a search to the background worker.
@@ -866,149 +804,6 @@ impl App {
         self.search_in_flight
             || self.semantic_search.pending_generation.is_some()
             || self.semantic_search.prewarm_generation.is_some()
-    }
-
-    /// Find a conversation by UUID in loaded conversations, or load it from disk.
-    fn find_or_load_uuid(&mut self, uuid: &str) -> Option<usize> {
-        // Check already-loaded conversations
-        let uuid_jsonl = format!("{}.jsonl", uuid);
-        for (idx, conv) in self.conversations.iter().enumerate() {
-            if conv
-                .path
-                .file_name()
-                .is_some_and(|f| f.to_string_lossy() == uuid_jsonl)
-            {
-                return Some(idx);
-            }
-        }
-
-        // Try to find and load from filesystem
-        let path = crate::history::find_jsonl_by_uuid(uuid).ok()??;
-        let modified = path.metadata().ok().and_then(|m| m.modified().ok());
-        let mut conv = crate::history::process_conversation_file(path, modified, None).ok()??;
-
-        // Inject project metadata (process_conversation_file doesn't set these)
-        let fallback_path = conv
-            .path
-            .parent()
-            .and_then(|p| p.file_name())
-            .map(|n| crate::history::path::decode_project_dir_name_to_path(&n.to_string_lossy()))
-            .unwrap_or_default();
-        let project_path = conv.cwd.clone().unwrap_or(fallback_path);
-        conv.project_name = Some(format_short_name_from_path(&project_path));
-        conv.project_path = Some(project_path);
-
-        let idx = self.conversations.len();
-        self.conversations.push(conv);
-
-        // Rebuild search index to include the new conversation
-        self.searchable = search::precompute_search_text(&self.conversations);
-
-        self.conversations_snapshot = Arc::new(self.conversations.clone());
-        self.rebuild_semantic_conversations_snapshot();
-
-        // Update the worker's data snapshot
-        let _ = self.search_tx.send(SearchCommand::UpdateData {
-            conversations: self.conversations_snapshot.clone(),
-            searchable: Arc::new(self.searchable.clone()),
-        });
-
-        Some(idx)
-    }
-
-    /// Move selection up
-    fn select_prev(&mut self) {
-        if let Some(selected) = self.selected
-            && selected > 0
-        {
-            self.selected = Some(selected - 1);
-        }
-    }
-
-    /// Move selection down
-    fn select_next(&mut self) {
-        if let Some(selected) = self.selected
-            && selected + 1 < self.filtered.len()
-        {
-            self.selected = Some(selected + 1);
-        }
-    }
-
-    /// Move selection to first item
-    fn select_first(&mut self) {
-        if !self.filtered.is_empty() {
-            self.selected = Some(0);
-        }
-    }
-
-    /// Move selection to last item
-    fn select_last(&mut self) {
-        if !self.filtered.is_empty() {
-            self.selected = Some(self.filtered.len() - 1);
-        }
-    }
-
-    /// Move selection up by a page
-    fn select_page_up(&mut self) {
-        if let Some(selected) = self.selected {
-            self.selected = Some(selected.saturating_sub(10));
-        }
-    }
-
-    /// Move selection down by a page
-    fn select_page_down(&mut self) {
-        if let Some(selected) = self.selected {
-            let new_selected = (selected + 10).min(self.filtered.len().saturating_sub(1));
-            self.selected = Some(new_selected);
-        }
-    }
-
-    /// Move selection down by half a page (vim-style Ctrl-D)
-    fn select_half_page_down(&mut self, viewport_height: usize) {
-        if let Some(selected) = self.selected {
-            let half_page = viewport_height / 2;
-            let new_selected = (selected + half_page).min(self.filtered.len().saturating_sub(1));
-            self.selected = Some(new_selected);
-        }
-    }
-
-    /// Move list selection by a signed number of rows.
-    fn scroll_list(&mut self, delta: isize) {
-        let Some(selected) = self.selected else {
-            return;
-        };
-
-        let max = self.filtered.len().saturating_sub(1);
-        let new_selected = if delta >= 0 {
-            selected.saturating_add(delta as usize).min(max)
-        } else {
-            selected.saturating_sub((-delta) as usize)
-        };
-        self.selected = Some(new_selected);
-    }
-
-    /// Get the currently selected conversation path
-    fn get_selected_path(&self) -> Option<PathBuf> {
-        self.selected
-            .and_then(|sel| self.filtered.get(sel))
-            .map(|&idx| self.conversations[idx].path.clone())
-    }
-
-    fn get_selected_conversation_index(&self) -> Option<usize> {
-        self.selected
-            .and_then(|sel| self.filtered.get(sel))
-            .copied()
-    }
-
-    fn refresh_search_data(&mut self) {
-        self.conversations_snapshot = Arc::new(self.conversations.clone());
-        self.rebuild_semantic_conversations_snapshot();
-        self.searchable = search::precompute_search_text(&self.conversations);
-        let _ = self.search_tx.send(SearchCommand::UpdateData {
-            conversations: self.conversations_snapshot.clone(),
-            searchable: Arc::new(self.searchable.clone()),
-        });
-        self.invalidate_search_generation();
     }
 
     // Getters for UI access
@@ -1354,53 +1149,6 @@ impl App {
         self.query.replace_range(start_byte..end_byte, "");
         self.cursor_pos = new_pos;
         true
-    }
-
-    /// Remove the currently selected conversation from the UI list.
-    /// This should only be called after the file has been successfully deleted from disk.
-    /// Handles index management for conversations, searchable, and filtered vectors.
-    pub fn remove_selected_from_list(&mut self) {
-        let Some(selected) = self.selected else {
-            return;
-        };
-        let Some(&conv_idx) = self.filtered.get(selected) else {
-            return;
-        };
-
-        // Remove from conversations
-        self.conversations.remove(conv_idx);
-
-        // Remove from searchable and update indices
-        // Note: searchable is not ordered by index due to parallel collection,
-        // so we can't use positional removal - must find by index value
-        self.searchable.retain_mut(|s| {
-            if s.index == conv_idx {
-                false // Remove this entry
-            } else {
-                if s.index > conv_idx {
-                    s.index -= 1; // Adjust index for removed item
-                }
-                true
-            }
-        });
-
-        // Update filtered: remove the deleted index and decrement all indices > conv_idx
-        self.filtered.retain(|&idx| idx != conv_idx);
-        for idx in &mut self.filtered {
-            if *idx > conv_idx {
-                *idx -= 1;
-            }
-        }
-
-        // Update selection: stay at same position if possible, or move to last item
-        if self.filtered.is_empty() {
-            self.selected = None;
-        } else if selected >= self.filtered.len() {
-            self.selected = Some(self.filtered.len() - 1);
-        }
-        // else: selected stays the same (now pointing to next item)
-
-        self.refresh_search_data();
     }
 
     /// Handle a key event during confirmation mode
@@ -3028,47 +2776,6 @@ impl App {
             self.re_render_view(viewport_height);
         }
     }
-}
-
-fn project_is_excluded(project_name: &str, excluded_projects: &HashSet<String>) -> bool {
-    excluded_projects.contains(project_name)
-        || project_name
-            .split_once('/')
-            .is_some_and(|(parent, _)| excluded_projects.contains(parent))
-}
-
-fn filter_conversation_indices<I>(
-    indices: I,
-    conversations: &[Conversation],
-    excluded_projects: &HashSet<String>,
-    workspace_filter: bool,
-    current_project_dir_name: Option<&str>,
-) -> Vec<usize>
-where
-    I: IntoIterator<Item = usize>,
-{
-    indices
-        .into_iter()
-        .filter(|&idx| {
-            conversations[idx]
-                .project_name
-                .as_deref()
-                .is_none_or(|name| !project_is_excluded(name, excluded_projects))
-        })
-        .filter(|&idx| {
-            let Some(project_dir_name) = current_project_dir_name.filter(|_| workspace_filter)
-            else {
-                return true;
-            };
-            conversations[idx]
-                .path
-                .parent()
-                .and_then(|p| p.file_name())
-                .is_some_and(|name| {
-                    crate::history::path::is_same_project(&name.to_string_lossy(), project_dir_name)
-                })
-        })
-        .collect()
 }
 
 /// Stable reference point for preserving scroll position across re-renders.
