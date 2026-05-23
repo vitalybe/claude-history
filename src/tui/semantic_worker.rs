@@ -108,6 +108,17 @@ fn run_semantic_worker(
         }
 
         cancellation = SemanticCancellationToken::new();
+        if request.query.is_effectively_empty() {
+            let _ = res_tx.send(SemanticSearchMessage::Complete(SemanticSearchResponse {
+                generation: request.generation,
+                filtered: Vec::new(),
+                metadata: HashMap::new(),
+                error: None,
+                progress: SemanticProgress::Idle,
+                prewarm: request.prewarm,
+            }));
+            continue;
+        }
         if request.query.is_quoted_only() {
             let response = exact_literal_semantic_response(
                 request.generation,
@@ -541,6 +552,48 @@ mod tests {
                 assert!(response.metadata.is_empty());
                 assert_eq!(response.error, None);
                 assert_eq!(response.progress, SemanticProgress::EmptyCorpus);
+            }
+            SemanticSearchMessage::Progress { progress, .. } => {
+                panic!("unexpected progress before empty response: {progress:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn empty_quoted_search_returns_idle_without_embedding() {
+        let (tx, rx) = spawn_semantic_worker();
+        tx.send(SemanticWorkerCommand::UpdateCorpus {
+            corpus_version: 1,
+            conversations: corpus(vec![conversation(
+                "/projects/project-a/session-a.jsonl",
+                vec!["visible dialogue"],
+            )]),
+        })
+        .expect("send corpus");
+        tx.send(SemanticWorkerCommand::UpdateScope {
+            corpus_version: 1,
+            scope_version: 1,
+            indices: Arc::new(vec![0]),
+        })
+        .expect("send scope");
+        tx.send(SemanticWorkerCommand::Search {
+            generation: 1,
+            query: ParsedQuery::parse("\"\""),
+            corpus_version: 1,
+            scope_version: 1,
+            prewarm: false,
+        })
+        .expect("send semantic request");
+        let message = rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("empty response");
+
+        match message {
+            SemanticSearchMessage::Complete(response) => {
+                assert!(response.filtered.is_empty());
+                assert!(response.metadata.is_empty());
+                assert_eq!(response.error, None);
+                assert_eq!(response.progress, SemanticProgress::Idle);
             }
             SemanticSearchMessage::Progress { progress, .. } => {
                 panic!("unexpected progress before empty response: {progress:?}");

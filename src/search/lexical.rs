@@ -167,7 +167,7 @@ fn search_debug_with_query(
     scope: impl Fn(usize) -> bool + Sync,
 ) -> Vec<(usize, ScoreDebug)> {
     let intent = parsed.lexical_text().trim();
-    if parsed.raw().trim().is_empty() {
+    if parsed.is_effectively_empty() {
         return browse_debug_results(conversations, now, scope);
     }
 
@@ -488,6 +488,20 @@ mod tests {
         timestamp: DateTime<Local>,
     ) -> Conversation {
         make_conv_full(text, Some(project), None, None, timestamp)
+    }
+
+    #[test]
+    fn empty_quoted_query_browses_results() {
+        let now = Local::now();
+        let convs = vec![
+            make_conv("older text", now),
+            make_conv("newer text", now - Duration::days(1)),
+        ];
+        let searchable = precompute_search_text(&convs);
+
+        let results = search(&convs, &searchable, "\"\"", now);
+
+        assert_eq!(results, vec![0, 1]);
     }
 
     #[test]

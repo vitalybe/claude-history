@@ -1,4 +1,5 @@
 use crate::config::KeyBindings;
+use crate::search::literal::{Literal, match_literal_ranges};
 use crate::search::normalize_for_search;
 use crate::search::query::ParsedQuery;
 use crate::tui::app::{
@@ -2580,7 +2581,7 @@ fn find_normalized_match_ranges(text: &str, query_normalized: &str) -> Vec<(usiz
 #[derive(Debug, Default)]
 struct HighlightQuery {
     unquoted: String,
-    literals: Vec<String>,
+    literals: Vec<Literal>,
 }
 
 impl HighlightQuery {
@@ -2588,11 +2589,7 @@ impl HighlightQuery {
         let parsed = ParsedQuery::parse(query);
         Self {
             unquoted: normalize_highlight_query(parsed.unquoted()),
-            literals: parsed
-                .literals()
-                .iter()
-                .map(|literal| literal.text().to_string())
-                .collect(),
+            literals: parsed.literals().to_vec(),
         }
     }
 
@@ -2600,7 +2597,7 @@ impl HighlightQuery {
         normalize_highlight_query(
             [self.unquoted.as_str()]
                 .into_iter()
-                .chain(self.literals.iter().map(String::as_str))
+                .chain(self.literals.iter().map(Literal::text))
                 .collect::<Vec<_>>()
                 .join(" ")
                 .as_str(),
@@ -2614,7 +2611,7 @@ impl HighlightQuery {
         highlight_style: Style,
     ) -> Vec<Span<'static>> {
         let mut ranges = find_normalized_match_ranges(text, &self.unquoted);
-        ranges.extend(find_literal_match_ranges(text, &self.literals));
+        ranges.extend(match_literal_ranges(text, &self.literals));
         highlight_ranges(text, ranges, base_style, highlight_style)
     }
 }
@@ -2624,34 +2621,6 @@ fn normalize_highlight_query(query: &str) -> String {
         .split_whitespace()
         .collect::<Vec<_>>()
         .join(" ")
-}
-
-fn find_literal_match_ranges(text: &str, literals: &[String]) -> Vec<(usize, usize)> {
-    let text_lower = text.to_lowercase();
-    literals
-        .iter()
-        .flat_map(|literal| {
-            if literal.is_empty() {
-                Vec::new()
-            } else if literal.chars().any(char::is_uppercase) {
-                find_substring_ranges(text, literal)
-            } else {
-                find_substring_ranges(&text_lower, &literal.to_lowercase())
-            }
-        })
-        .collect()
-}
-
-fn find_substring_ranges(text: &str, needle: &str) -> Vec<(usize, usize)> {
-    let mut ranges = Vec::new();
-    let mut start = 0;
-    while let Some(pos) = text[start..].find(needle) {
-        let range_start = start + pos;
-        let range_end = range_start + needle.len();
-        ranges.push((range_start, range_end));
-        start = range_end;
-    }
-    ranges
 }
 
 #[cfg(test)]

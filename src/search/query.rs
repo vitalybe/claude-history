@@ -17,7 +17,9 @@ impl ParsedQuery {
         for ch in query.chars() {
             if ch == '"' {
                 if in_quote {
-                    literals.push(Literal::new(literal.clone()));
+                    if !literal.is_empty() {
+                        literals.push(Literal::new(literal.clone()));
+                    }
                     literal.clear();
                     in_quote = false;
                 } else {
@@ -30,7 +32,7 @@ impl ParsedQuery {
             }
         }
 
-        if in_quote {
+        if in_quote && !literal.is_empty() {
             literals.push(Literal::new(literal));
         }
 
@@ -50,7 +52,9 @@ impl ParsedQuery {
     }
 
     pub fn lexical_text(&self) -> &str {
-        if self.unquoted.is_empty() {
+        if self.is_effectively_empty() {
+            ""
+        } else if self.unquoted.is_empty() {
             self.raw.trim()
         } else {
             &self.unquoted
@@ -59,6 +63,10 @@ impl ParsedQuery {
 
     pub fn semantic_text(&self) -> &str {
         &self.unquoted
+    }
+
+    pub fn is_effectively_empty(&self) -> bool {
+        self.literals.is_empty() && self.unquoted.split_whitespace().next().is_none()
     }
 
     pub fn literals(&self) -> &[Literal] {
@@ -105,11 +113,19 @@ mod tests {
     }
 
     #[test]
-    fn preserves_empty_quotes() {
+    fn drops_empty_quotes() {
         let parsed = ParsedQuery::parse("\"\"");
-        assert_eq!(parsed.literals().len(), 1);
-        assert_eq!(parsed.literals()[0].text(), "");
-        assert!(parsed.is_quoted_only());
+        assert!(parsed.literals().is_empty());
+        assert!(!parsed.is_quoted_only());
+        assert!(parsed.is_effectively_empty());
+        assert_eq!(parsed.lexical_text(), "");
+    }
+
+    #[test]
+    fn drops_trailing_empty_open_quote() {
+        let parsed = ParsedQuery::parse("alpha \"");
+        assert_eq!(parsed.unquoted(), "alpha");
+        assert!(parsed.literals().is_empty());
     }
 
     #[test]

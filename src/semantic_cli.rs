@@ -18,6 +18,10 @@ pub fn run(query: &str, conversations: &[Conversation], top: usize, local: bool)
     }
 
     let parsed = ParsedQuery::parse(query);
+    if parsed.is_effectively_empty() {
+        eprintln!("Query is empty.");
+        return Ok(());
+    }
     if parsed.is_quoted_only() {
         let results = exact_literal_indices(&selected, &parsed);
         for (rank, index) in results.iter().take(top).enumerate() {

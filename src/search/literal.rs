@@ -32,9 +32,24 @@ impl Literal {
     }
 
     pub fn matches(&self, text: &str) -> bool {
+        if self.text.is_empty() {
+            return false;
+        }
+
         match self.case_mode {
             CaseMode::Sensitive => text.contains(&self.text),
-            CaseMode::Insensitive => text.to_lowercase().contains(&self.text.to_lowercase()),
+            CaseMode::Insensitive => contains_case_insensitive(text, &self.text),
+        }
+    }
+
+    pub fn match_ranges(&self, text: &str) -> Vec<(usize, usize)> {
+        if self.text.is_empty() {
+            return Vec::new();
+        }
+
+        match self.case_mode {
+            CaseMode::Sensitive => find_substring_ranges(text, &self.text),
+            CaseMode::Insensitive => find_case_insensitive_ranges(text, &self.text),
         }
     }
 }
@@ -60,6 +75,13 @@ pub fn matches_all_literals(text: &str, literals: &[Literal]) -> bool {
     literals.iter().all(|literal| literal.matches(text))
 }
 
+pub fn match_literal_ranges(text: &str, literals: &[Literal]) -> Vec<(usize, usize)> {
+    literals
+        .iter()
+        .flat_map(|literal| literal.match_ranges(text))
+        .collect()
+}
+
 pub fn exact_fallback(
     conversations: &[Conversation],
     corpus: &[LiteralCorpusEntry],
@@ -78,6 +100,51 @@ pub fn exact_fallback(
 
     matches.sort_unstable_by(|a, b| b.1.cmp(&a.1));
     matches.into_iter().map(|(index, _)| index).collect()
+}
+
+fn contains_case_insensitive(text: &str, needle: &str) -> bool {
+    !find_case_insensitive_ranges(text, needle).is_empty()
+}
+
+fn find_substring_ranges(text: &str, needle: &str) -> Vec<(usize, usize)> {
+    let mut ranges = Vec::new();
+    let mut start = 0;
+    while let Some(pos) = text[start..].find(needle) {
+        let range_start = start + pos;
+        let range_end = range_start + needle.len();
+        ranges.push((range_start, range_end));
+        start = range_end;
+    }
+    ranges
+}
+
+fn find_case_insensitive_ranges(text: &str, needle: &str) -> Vec<(usize, usize)> {
+    let needle_chars: Vec<char> = needle.chars().flat_map(char::to_lowercase).collect();
+    if needle_chars.is_empty() {
+        return Vec::new();
+    }
+
+    let mut folded_chars = Vec::new();
+    let mut folded_map = Vec::new();
+    for (start, ch) in text.char_indices() {
+        let end = start + ch.len_utf8();
+        for folded in ch.to_lowercase() {
+            folded_chars.push(folded);
+            folded_map.push((start, end));
+        }
+    }
+
+    let mut ranges = Vec::new();
+    let mut i = 0;
+    while i + needle_chars.len() <= folded_chars.len() {
+        if folded_chars[i..i + needle_chars.len()] == needle_chars[..] {
+            ranges.push((folded_map[i].0, folded_map[i + needle_chars.len() - 1].1));
+            i += needle_chars.len();
+        } else {
+            i += 1;
+        }
+    }
+    ranges
 }
 
 fn literal_text(conversation: &Conversation) -> String {
@@ -149,6 +216,26 @@ mod tests {
         assert!(Literal::new("exact_phrase".to_string()).matches("EXACT_PHRASE"));
         assert!(!Literal::new("Exact_Phrase".to_string()).matches("exact_phrase"));
         assert!(Literal::new("Exact_Phrase".to_string()).matches("Exact_Phrase"));
+    }
+
+    #[test]
+    fn literal_ranges_use_smart_case() {
+        let insensitive = Literal::new("exact_phrase".to_string());
+        let sensitive = Literal::new("Exact_Phrase".to_string());
+
+        assert_eq!(insensitive.match_ranges("EXACT_PHRASE"), vec![(0, 12)]);
+        assert_eq!(sensitive.match_ranges("exact_phrase"), Vec::new());
+        assert_eq!(sensitive.match_ranges("Exact_Phrase"), vec![(0, 12)]);
+    }
+
+    #[test]
+    fn insensitive_literal_ranges_are_original_text_boundaries() {
+        let text = "pre İSTANBUL post";
+        let literal = Literal::new("i\u{307}stanbul".to_string());
+        let ranges = literal.match_ranges(text);
+
+        assert_eq!(ranges, vec![(4, 13)]);
+        assert_eq!(&text[ranges[0].0..ranges[0].1], "İSTANBUL");
     }
 
     #[test]
