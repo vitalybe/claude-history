@@ -85,7 +85,12 @@ pub fn build_lexical_evidence(
 }
 
 fn evidence_specs(parsed: &ParsedQuery) -> Vec<EvidenceSpec> {
-    let normalized = normalize_for_search(parsed.unquoted())
+    let unquoted = parsed.unquoted();
+    let identifier_literals = unquoted
+        .split_whitespace()
+        .filter(|term| term.contains('_'))
+        .map(|term| EvidenceSpec::Literal(Literal::new(term.to_string())));
+    let normalized = normalize_for_search(unquoted)
         .split_whitespace()
         .map(|term| EvidenceSpec::Normalized(term.to_string()))
         .collect::<Vec<_>>();
@@ -93,6 +98,7 @@ fn evidence_specs(parsed: &ParsedQuery) -> Vec<EvidenceSpec> {
     dedupe_specs(
         &normalized
             .into_iter()
+            .chain(identifier_literals)
             .chain(parsed.literals().iter().cloned().map(EvidenceSpec::Literal))
             .collect::<Vec<_>>(),
     )
@@ -375,6 +381,24 @@ mod tests {
 
         let (start, end) = evidence.context_ranges[0];
         assert_eq!(&conversation.full_text[start..end], "audio_generation");
+    }
+
+    #[test]
+    fn unquoted_identifier_evidence_preserves_exact_punctuation() {
+        let parsed = ParsedQuery::parse("api_key");
+        let conversation = conversation(
+            "api key normalized preview",
+            "api key normalized preview and exact api_key evidence",
+        );
+
+        let evidence = build_lexical_evidence(&conversation, &parsed).unwrap();
+
+        let snippets = evidence
+            .context_ranges
+            .iter()
+            .map(|(start, end)| &conversation.full_text[*start..*end])
+            .collect::<Vec<_>>();
+        assert!(snippets.iter().any(|snippet| snippet.contains("api_key")));
     }
 
     #[test]

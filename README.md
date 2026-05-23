@@ -157,6 +157,9 @@ Unquoted search matches words flexibly:
 - `red` won't match inside `fired`
 - multiple words must all match
 
+Identifier-style terms with underscores keep the underscore, so `api_key` matches
+`api_key` but not `api key`.
+
 Use quotes when you need exact text. For example, `"DEPLOYMENT_TOKEN"` matches
 `DEPLOYMENT_TOKEN` but not `deployment token`. Lowercase quoted text ignores
 case, while quoted text with uppercase letters is case-sensitive.
