@@ -181,6 +181,11 @@ pub fn debug_search(query: &str, conversations: &[Conversation], local: bool) ->
         return Ok(());
     }
 
+    if parsed.is_effectively_empty() {
+        eprintln!("Semantic debug: query is empty.");
+        return Ok(());
+    }
+
     let turn_count = selected
         .iter()
         .map(|conversation| conversation.semantic_turns.len())

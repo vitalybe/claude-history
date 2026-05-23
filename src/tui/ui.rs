@@ -1711,10 +1711,10 @@ fn render_list(frame: &mut Frame, app: &App, area: Rect) {
             // Check for hidden matches and build context line if needed
             let context_line = if !semantic_mode && !query_normalized.is_empty() {
                 let context_width = width.saturating_sub(4);
-                build_context_segments(
+                build_context_segments_for_query(
                     &conv.full_text,
                     &truncated_preview,
-                    &query_normalized,
+                    &highlight_query,
                     context_width,
                 )
                 .map(|context_text| {
@@ -2033,45 +2033,64 @@ impl HitCluster {
 /// This makes the literal phrase `audio generation` win over a far-apart pair
 /// of `audio` + `generation` occurrences in unrelated boilerplate.
 /// Operates on raw full_text and sanitizes each extracted slice independently.
+fn build_context_segments_for_query(
+    full_text: &str,
+    preview: &str,
+    query: &HighlightQuery,
+    max_width: usize,
+) -> Option<String> {
+    build_context_segments_with_specs(full_text, preview, &query.context_specs(), max_width)
+}
+
+#[cfg(test)]
 fn build_context_segments(
     full_text: &str,
     preview: &str,
     query: &str,
     max_width: usize,
 ) -> Option<String> {
-    if query.is_empty() || max_width == 0 {
+    build_context_segments_with_specs(
+        full_text,
+        preview,
+        &HighlightQuery::normalized_context_specs(query),
+        max_width,
+    )
+}
+
+fn build_context_segments_with_specs(
+    full_text: &str,
+    preview: &str,
+    specs: &[ContextMatchSpec],
+    max_width: usize,
+) -> Option<String> {
+    if specs.is_empty() || max_width == 0 {
         return None;
     }
 
-    // Split into terms, dedupe (case-insensitive), and cap to 64 so we can
-    // use a u64 bitmask. Deduping prevents `audio audio generation` from
-    // double-counting `audio` in unique/missing/adjacency math.
-    let mut terms: Vec<&str> = Vec::new();
-    for tok in query.split_whitespace() {
-        if !terms.iter().any(|t: &&str| t.eq_ignore_ascii_case(tok)) {
-            terms.push(tok);
-            if terms.len() == 64 {
-                break;
-            }
-        }
-    }
-    if terms.is_empty() {
+    let specs = dedupe_context_specs(specs);
+    if specs.is_empty() {
         return None;
     }
 
-    // Determine which terms are NOT in the visible preview. Snippet should
-    // surface those first so the context line complements the preview line.
+    let has_normalized_specs = specs
+        .iter()
+        .any(|spec| matches!(spec, ContextMatchSpec::Normalized(_)));
+    let preview_normalized = has_normalized_specs.then(|| NormalizedText::new(preview));
+    let full_text_normalized = has_normalized_specs.then(|| NormalizedText::new(full_text));
+
     let mut missing_mask: u64 = 0;
     let mut missing_count = 0u32;
-    for (i, term) in terms.iter().enumerate() {
-        if find_first_normalized_match(preview, term).is_none() {
+    for (i, spec) in specs.iter().enumerate() {
+        if spec
+            .find_ranges(preview, preview_normalized.as_ref())
+            .is_empty()
+        {
             missing_mask |= 1 << i;
             missing_count += 1;
         }
     }
 
-    // Collect every hit in full_text, tagged with which term matched.
-    let all_hits = find_all_term_hits(full_text, &terms);
+    let all_hits = find_all_spec_hits(full_text, &specs, full_text_normalized.as_ref());
     if all_hits.is_empty() {
         return None;
     }
@@ -2084,7 +2103,8 @@ fn build_context_segments(
     // informative cluster across the whole document. Worst case it picks one
     // that overlaps preview content, which is still the best snippet we have.
     if missing_count == 0 {
-        let preview_hit_count = find_all_term_hits(preview, &terms).len();
+        let preview_hit_count =
+            find_all_spec_hits(preview, &specs, preview_normalized.as_ref()).len();
         if all_hits.len() <= preview_hit_count {
             return None;
         }
@@ -2314,147 +2334,12 @@ fn sanitize_preview(text: &str) -> String {
     result.trim().to_string()
 }
 
-/// Lazy, zero-allocation normalized search over a string.
-/// Scans char-by-char without building intermediate Vecs, short-circuits on first match.
-/// Used for large strings (full_text) where NormalizedText would allocate too much.
-fn find_first_normalized_match(text: &str, term: &str) -> Option<(usize, usize)> {
-    let term_chars: Vec<char> = term.chars().collect();
-    if term_chars.is_empty() {
-        return None;
-    }
-    let query_starts_alnum = term_chars[0].is_alphanumeric();
-    let mut prev_is_alnum = false;
-    let mut iter = text.char_indices().peekable();
-
-    while let Some(&(byte_start, ch)) = iter.peek() {
-        let norm_ch = if ch == '_' || ch == '-' || ch == '/' {
-            ' '
-        } else {
-            ch.to_lowercase().next().unwrap_or(ch)
-        };
-        let is_alnum = ch.is_alphanumeric();
-        let valid_start = !query_starts_alnum || !prev_is_alnum;
-
-        if valid_start && norm_ch == term_chars[0] {
-            // Try to match the full term from here
-            let mut lookahead = iter.clone();
-            lookahead.next(); // skip current char
-            let mut matched = true;
-            let mut end_byte = byte_start + ch.len_utf8();
-
-            for &q_char in term_chars.iter().skip(1) {
-                if let Some(&(_, next_ch)) = lookahead.peek() {
-                    let next_norm = if next_ch == '_' || next_ch == '-' || next_ch == '/' {
-                        ' '
-                    } else {
-                        next_ch.to_lowercase().next().unwrap_or(next_ch)
-                    };
-                    end_byte += next_ch.len_utf8();
-                    lookahead.next();
-                    if next_norm != q_char {
-                        matched = false;
-                        break;
-                    }
-                } else {
-                    matched = false;
-                    break;
-                }
-            }
-
-            if matched {
-                return Some((byte_start, end_byte));
-            }
-        }
-
-        prev_is_alnum = is_alnum;
-        iter.next();
-    }
-    None
-}
-
-/// A single hit returned from `find_all_term_hits`. Carries which query term
-/// matched so callers can compute term-coverage / phrase-density per cluster.
+/// One match used to compute term coverage and phrase density per cluster.
 #[derive(Clone, Copy, Debug)]
 struct TermHit {
     start: usize,
     end: usize,
     term_idx: usize,
-}
-
-/// Find all normalized matches for multiple terms in text, returning hits
-/// tagged with which term they matched. Sorted by start position.
-/// Uses lazy scanning — avoids building NormalizedText.
-fn find_all_term_hits(text: &str, terms: &[&str]) -> Vec<TermHit> {
-    let mut all_hits = Vec::new();
-    for (term_idx, term) in terms.iter().enumerate() {
-        let term_chars: Vec<char> = term.chars().collect();
-        if term_chars.is_empty() {
-            continue;
-        }
-        let query_starts_alnum = term_chars[0].is_alphanumeric();
-        let mut prev_is_alnum = false;
-        let mut iter = text.char_indices().peekable();
-
-        while let Some(&(byte_start, ch)) = iter.peek() {
-            let norm_ch = if ch == '_' || ch == '-' || ch == '/' {
-                ' '
-            } else {
-                ch.to_lowercase().next().unwrap_or(ch)
-            };
-            let is_alnum = ch.is_alphanumeric();
-            let valid_start = !query_starts_alnum || !prev_is_alnum;
-
-            if valid_start && norm_ch == term_chars[0] {
-                let mut lookahead = iter.clone();
-                lookahead.next();
-                let mut matched = true;
-                let mut end_byte = byte_start + ch.len_utf8();
-
-                for &q_char in term_chars.iter().skip(1) {
-                    if let Some(&(_, next_ch)) = lookahead.peek() {
-                        let next_norm = if next_ch == '_' || next_ch == '-' || next_ch == '/' {
-                            ' '
-                        } else {
-                            next_ch.to_lowercase().next().unwrap_or(next_ch)
-                        };
-                        end_byte += next_ch.len_utf8();
-                        lookahead.next();
-                        if next_norm != q_char {
-                            matched = false;
-                            break;
-                        }
-                    } else {
-                        matched = false;
-                        break;
-                    }
-                }
-
-                if matched {
-                    all_hits.push(TermHit {
-                        start: byte_start,
-                        end: end_byte,
-                        term_idx,
-                    });
-                    // Skip past this match. The next iteration's
-                    // `prev_is_alnum` should reflect the *last* matched char,
-                    // not be hardcoded — terms ending in punctuation (e.g.
-                    // `c++`, `audio.`) would otherwise wrongly reject the
-                    // following character as a non-word-start.
-                    for _ in 0..term_chars.len().saturating_sub(1) {
-                        iter.next();
-                    }
-                    prev_is_alnum = term_chars.last().is_some_and(|c| c.is_alphanumeric());
-                    iter.next();
-                    continue;
-                }
-            }
-
-            prev_is_alnum = is_alnum;
-            iter.next();
-        }
-    }
-    all_hits.sort_unstable_by_key(|h| h.start);
-    all_hits
 }
 
 /// Pre-normalized text with char-to-byte mapping for efficient repeated searches.
@@ -2614,6 +2499,82 @@ impl HighlightQuery {
         ranges.extend(match_literal_ranges(text, &self.literals));
         highlight_ranges(text, ranges, base_style, highlight_style)
     }
+
+    fn context_specs(&self) -> Vec<ContextMatchSpec> {
+        Self::normalized_context_specs(&self.unquoted)
+            .into_iter()
+            .chain(self.literals.iter().cloned().map(ContextMatchSpec::Literal))
+            .collect()
+    }
+
+    fn normalized_context_specs(query: &str) -> Vec<ContextMatchSpec> {
+        query
+            .split_whitespace()
+            .map(|term| ContextMatchSpec::Normalized(term.to_string()))
+            .collect()
+    }
+}
+
+#[derive(Clone)]
+enum ContextMatchSpec {
+    Normalized(String),
+    Literal(Literal),
+}
+
+impl ContextMatchSpec {
+    fn key(&self) -> (&str, bool) {
+        match self {
+            Self::Normalized(term) => (term.as_str(), false),
+            Self::Literal(literal) => (literal.text(), true),
+        }
+    }
+
+    fn find_ranges(&self, text: &str, normalized: Option<&NormalizedText>) -> Vec<(usize, usize)> {
+        match self {
+            Self::Normalized(term) => normalized
+                .map(|normalized| normalized.find_all_ranges(term))
+                .unwrap_or_else(|| find_normalized_match_ranges(text, term)),
+            Self::Literal(literal) => literal.match_ranges(text),
+        }
+    }
+}
+
+fn dedupe_context_specs(specs: &[ContextMatchSpec]) -> Vec<ContextMatchSpec> {
+    let mut deduped = Vec::new();
+    for spec in specs {
+        let (text, is_literal) = spec.key();
+        if !deduped.iter().any(|existing: &ContextMatchSpec| {
+            let (existing_text, existing_is_literal) = existing.key();
+            existing_is_literal == is_literal && existing_text.eq_ignore_ascii_case(text)
+        }) {
+            deduped.push(spec.clone());
+            if deduped.len() == 64 {
+                break;
+            }
+        }
+    }
+    deduped
+}
+
+fn find_all_spec_hits(
+    text: &str,
+    specs: &[ContextMatchSpec],
+    normalized: Option<&NormalizedText>,
+) -> Vec<TermHit> {
+    let mut all_hits = Vec::new();
+    for (term_idx, spec) in specs.iter().enumerate() {
+        all_hits.extend(
+            spec.find_ranges(text, normalized)
+                .into_iter()
+                .map(|(start, end)| TermHit {
+                    start,
+                    end,
+                    term_idx,
+                }),
+        );
+    }
+    all_hits.sort_unstable_by_key(|hit| hit.start);
+    all_hits
 }
 
 fn normalize_highlight_query(query: &str) -> String {
@@ -3848,6 +3809,26 @@ mod tests {
         assert!(
             ctx.contains("audio_generation") || ctx.contains("audio generation"),
             "context should contain the adjacent occurrence, got: {ctx}"
+        );
+    }
+
+    #[test]
+    fn context_query_quoted_literal_preserves_punctuation_contract() {
+        let query = HighlightQuery::parse("\"audio_generation\"");
+        let mut full_text = String::new();
+        full_text.push_str("punctuation-stripped audio generation appears early. ");
+        full_text.push_str(&"x ".repeat(30));
+        full_text.push_str("the exact audio_generation literal appears here.");
+        let preview = "preview only";
+
+        let result = build_context_segments_for_query(&full_text, preview, &query, 120);
+
+        assert!(result.is_some());
+        let ctx = result.unwrap();
+        assert!(ctx.contains("audio_generation"), "got: {ctx}");
+        assert!(
+            !ctx.contains("audio generation appears early"),
+            "got: {ctx}"
         );
     }
 

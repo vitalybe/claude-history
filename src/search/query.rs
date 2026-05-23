@@ -17,7 +17,7 @@ impl ParsedQuery {
         for ch in query.chars() {
             if ch == '"' {
                 if in_quote {
-                    if !literal.is_empty() {
+                    if !literal.trim().is_empty() {
                         literals.push(Literal::new(literal.clone()));
                     }
                     literal.clear();
@@ -32,7 +32,7 @@ impl ParsedQuery {
             }
         }
 
-        if in_quote && !literal.is_empty() {
+        if in_quote && !literal.trim().is_empty() {
             literals.push(Literal::new(literal));
         }
 
@@ -115,6 +115,15 @@ mod tests {
     #[test]
     fn drops_empty_quotes() {
         let parsed = ParsedQuery::parse("\"\"");
+        assert!(parsed.literals().is_empty());
+        assert!(!parsed.is_quoted_only());
+        assert!(parsed.is_effectively_empty());
+        assert_eq!(parsed.lexical_text(), "");
+    }
+
+    #[test]
+    fn drops_whitespace_only_quotes() {
+        let parsed = ParsedQuery::parse("\"  \t \"");
         assert!(parsed.literals().is_empty());
         assert!(!parsed.is_quoted_only());
         assert!(parsed.is_effectively_empty());
