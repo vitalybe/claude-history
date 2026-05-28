@@ -116,9 +116,7 @@ jobs:
             license "MIT"
 
             on_macos do
-              if Hardware::CPU.intel?
-                odie "Intel macOS bottles are not available for this version"
-              end
+              depends_on arch: :arm64
 
               url "https://github.com/raine/claude-history/releases/download/v${VERSION}/claude-history-darwin-arm64.tar.gz"
               sha256 "${SHA_ARM}"
