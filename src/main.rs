@@ -612,7 +612,7 @@ fn run_agent_semantic_hits(
         literal_filters: parsed.literals(),
         full_corpus: &candidates,
         scope: &candidates,
-        corpus_version: 1,
+        corpus_version: 2,
         prewarm: false,
     };
     let mut state = semantic::index::SemanticIndexState::new();
@@ -944,6 +944,8 @@ mod agent_command_tests {
                 title: "cache session".to_string(),
                 score: 12.5,
                 source: agent::search::AgentHitKind::Lexical,
+                evidence_source: agent::retrieval::AgentHitSource::Dialogue,
+                render_options: agent::retrieval::AgentHitRenderOptions::default(),
                 preview: "cache warming answer".to_string(),
                 focus_range: agent::refs::MessageRange::single(2),
                 read_range: agent::refs::MessageRange { start: 1, end: 3 },
@@ -956,6 +958,40 @@ mod agent_command_tests {
         assert!(rendered.starts_with("protocol agent-search v=1 mode=lexical hits=1\n"));
         assert!(rendered.contains("hit ref=ch_123456789abc"));
         assert!(rendered.contains("read ref=ch_123456789abc:m1..m3 focus=m2..m2\n"));
+    }
+
+    fn read_args_from_line(read_line: &str) -> AgentReadArgs {
+        let mut read_ref = None;
+        let mut focus = None;
+        let mut tools = false;
+        let mut tool_results = false;
+        let mut thinking = false;
+        let mut subagents = false;
+        for field in read_line.split_whitespace().skip(1) {
+            if let Some(value) = field.strip_prefix("ref=") {
+                read_ref = Some(value.to_string());
+            } else if let Some(value) = field.strip_prefix("focus=") {
+                focus = Some(value.to_string());
+            } else if field == "tools=true" {
+                tools = true;
+            } else if field == "tool-results=true" {
+                tool_results = true;
+            } else if field == "thinking=true" {
+                thinking = true;
+            } else if field == "subagents=true" {
+                subagents = true;
+            }
+        }
+        AgentReadArgs {
+            refs: vec![read_ref.expect("read ref field")],
+            focus,
+            budget: 6000,
+            no_budget: false,
+            tools,
+            tool_results,
+            thinking,
+            subagents,
+        }
     }
 
     #[test]
@@ -1029,32 +1065,185 @@ mod agent_command_tests {
             .lines()
             .find(|line| line.starts_with("read ref="))
             .expect("within output should include a read ref");
-        let mut fields = read_line.split_whitespace();
-        fields.next();
-        let read_ref = fields
-            .next()
-            .and_then(|field| field.strip_prefix("ref="))
-            .expect("read ref field");
-        let focus = fields
-            .next()
-            .and_then(|field| field.strip_prefix("focus="))
-            .expect("focus field");
-        let read_args = AgentReadArgs {
-            refs: vec![read_ref.to_string()],
-            focus: Some(focus.to_string()),
-            budget: 6000,
-            no_budget: false,
-            tools: false,
-            tool_results: false,
-            thinking: false,
-            subagents: false,
-        };
+        let read_args = read_args_from_line(read_line);
 
         let output = run_agent_read(&read_args, Some(&keys)).unwrap();
 
         assert!(output.starts_with("protocol agent-read v=1"));
         assert!(output.contains("message m2 role=assistant line=2"));
         assert!(output.contains("| cache warming answer\n"));
+    }
+
+    fn tool_result_user(tool_output: &str) -> String {
+        serde_json::json!({
+            "type": "user",
+            "timestamp": "2024-01-01T00:00:02Z",
+            "message": {
+                "role": "user",
+                "content": [{"type": "tool_result", "tool_use_id": "toolu_1", "content": tool_output}]
+            }
+        })
+        .to_string()
+    }
+
+    #[test]
+    fn tool_result_read_recipe_replays_without_manual_flags() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = write_jsonl(
+            &dir,
+            "session.jsonl",
+            &[
+                user("question"),
+                assistant("I'll inspect it"),
+                tool_result_user("hidden_exact_tool_needle"),
+                assistant("done"),
+            ],
+        );
+        let keys = vec![AgentConversationKey::new(
+            "project-a",
+            "session.jsonl",
+            path.clone(),
+        )];
+        let resolved = agent::refs::ResolvedConversation {
+            key: keys[0].clone(),
+            reference: keys[0].conversation_ref(),
+        };
+        let conversation = history::Conversation {
+            path,
+            index: 0,
+            timestamp: chrono::Local::now(),
+            preview: "session".to_string(),
+            preview_first: "session".to_string(),
+            preview_last: "session".to_string(),
+            full_text: "session".to_string(),
+            semantic_turns: vec!["session".to_string()],
+            semantic_turn_ranges: vec![agent::refs::MessageRange::single(1)],
+            search_text_lower: "session".to_string(),
+            project_name: Some("project-a".to_string()),
+            project_path: None,
+            cwd: None,
+            message_count: 4,
+            parse_errors: Vec::new(),
+            summary: None,
+            custom_title: Some("session".to_string()),
+            model: None,
+            total_tokens: 0,
+            duration_minutes: None,
+        };
+        let transcript = agent::transcript::AgentTranscript::load(&resolved.key.path).unwrap();
+        let within_request = agent::search::AgentWithinRequest {
+            query: "\"hidden_exact_tool_needle\"".to_string(),
+            top: 1,
+            cli_mode: None,
+            config_mode: None,
+            tui_semantic_search: None,
+        };
+        let within = agent::search::format_agent_output(&agent::search::run_within_search(
+            &within_request,
+            &conversation,
+            &resolved,
+            &transcript,
+            &[],
+        ));
+
+        assert!(within.contains("hit ref="));
+        assert!(within.contains("source=tool"));
+        let read_line = within
+            .lines()
+            .find(|line| line.starts_with("read ref="))
+            .expect("within output should include a read ref");
+        assert!(read_line.contains("tool-results=true"));
+        let output = run_agent_read(&read_args_from_line(read_line), Some(&keys)).unwrap();
+
+        assert!(output.contains("hidden_exact_tool_needle"));
+    }
+
+    #[test]
+    fn semantic_read_ref_uses_canonical_assistant_ordinal() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = write_jsonl(
+            &dir,
+            "session.jsonl",
+            &[
+                user("first visible"),
+                serde_json::json!({
+                    "type": "assistant",
+                    "timestamp": "2024-01-01T00:00:01Z",
+                    "message": {"role": "assistant", "content": [{"type": "tool_use", "id": "toolu_1", "name": "Bash", "input": {"command": "pwd"}}]}
+                })
+                .to_string(),
+                tool_result_user("tool output only"),
+                r#"{"type":"progress","data":{"type":"agent_progress","agentId":"agent-abcdef","message":{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"subagent hidden text"}]}}}}"#.to_string(),
+                assistant("final assistant text"),
+            ],
+        );
+        let keys = vec![AgentConversationKey::new(
+            "project-a",
+            "session.jsonl",
+            path.clone(),
+        )];
+        let resolved = agent::refs::ResolvedConversation {
+            key: keys[0].clone(),
+            reference: keys[0].conversation_ref(),
+        };
+        let conversation = history::parser::process_conversation_reader(
+            path.clone(),
+            std::io::Cursor::new(std::fs::read_to_string(&path).unwrap()),
+            None,
+            None,
+        )
+        .unwrap()
+        .unwrap();
+        let transcript = agent::transcript::AgentTranscript::load(&resolved.key.path).unwrap();
+        let semantic_range = *conversation
+            .semantic_turn_ranges
+            .iter()
+            .find(|range| **range == agent::refs::MessageRange::single(5))
+            .expect("assistant text should use canonical m5");
+        let semantic_hit = crate::semantic::types::SemanticHit::new(
+            crate::semantic::types::SemanticScoreBreakdown {
+                hybrid: 0.9,
+                semantic: 0.9,
+                lexical: 0.0,
+            },
+            crate::semantic::types::SemanticExplanation {
+                quality: crate::semantic::types::SemanticQuality::Good,
+                quality_label: "good",
+                matched_terms: vec![],
+                evidence_preview: "final assistant text".to_string(),
+                rationale_kind: crate::semantic::types::SemanticRationaleKind::SemanticOnly,
+                chunk: crate::semantic::types::SemanticChunkIdentity {
+                    conversation_index: 0,
+                    session: "session".to_string(),
+                    chunk_index: 0,
+                    message_range: semantic_range,
+                },
+            },
+        );
+        let within_request = agent::search::AgentWithinRequest {
+            query: "final assistant".to_string(),
+            top: 1,
+            cli_mode: Some(SearchMode::Semantic),
+            config_mode: None,
+            tui_semantic_search: None,
+        };
+        let within = agent::search::format_agent_output(&agent::search::run_within_search(
+            &within_request,
+            &conversation,
+            &resolved,
+            &transcript,
+            &[semantic_hit],
+        ));
+
+        assert!(within.contains("focus=m5..m5"));
+        let read_line = within
+            .lines()
+            .find(|line| line.starts_with("read ref="))
+            .expect("within output should include a read ref");
+        let output = run_agent_read(&read_args_from_line(read_line), Some(&keys)).unwrap();
+
+        assert!(output.contains("message m5 role=assistant"));
+        assert!(output.contains("final assistant text"));
     }
 
     #[test]

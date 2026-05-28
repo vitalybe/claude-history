@@ -13,7 +13,7 @@
 
 pub mod cache;
 mod loader;
-mod parser;
+pub mod parser;
 pub mod path;
 mod rename;
 

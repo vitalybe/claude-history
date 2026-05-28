@@ -682,6 +682,46 @@ mod tests {
     }
 
     #[test]
+    fn subagent_messages_are_hidden_by_default_and_visible_with_option() {
+        let resolved = resolved("session.jsonl");
+        let mut subagent = text_message(2, AgentMessageRole::Assistant, "subagent hidden text");
+        subagent.parent_tool_use_id = Some("agent-abcdef".to_string());
+        let transcript = transcript(vec![
+            text_message(1, AgentMessageRole::User, "question"),
+            subagent,
+            text_message(3, AgentMessageRole::Assistant, "answer"),
+        ]);
+
+        let hidden = format_read(
+            &[ReadRequest {
+                resolved: &resolved,
+                transcript: &transcript,
+                range: None,
+            }],
+            None,
+            options(),
+        )
+        .unwrap();
+        let visible = format_read(
+            &[ReadRequest {
+                resolved: &resolved,
+                transcript: &transcript,
+                range: None,
+            }],
+            None,
+            ProtocolOptions {
+                subagents: true,
+                ..options()
+            },
+        )
+        .unwrap();
+
+        assert!(!hidden.contains("subagent hidden text"));
+        assert!(visible.contains("message m2 role=assistant"));
+        assert!(visible.contains("subagent hidden text"));
+    }
+
+    #[test]
     fn short_outline_emits_one_line_per_message() {
         let resolved = resolved("session.jsonl");
         let transcript = transcript(vec![

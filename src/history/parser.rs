@@ -6,8 +6,9 @@
 use super::{Conversation, ParseError};
 use crate::agent::refs::MessageRange;
 use crate::claude::{
-    LogEntry, TokenUsage, extract_search_text_from_assistant, extract_search_text_from_user,
-    extract_text_from_assistant, extract_text_from_user,
+    AgentContent, ContentBlock, LogEntry, TokenUsage, extract_search_text_from_assistant,
+    extract_search_text_from_user, extract_text_from_assistant, extract_text_from_user,
+    parse_agent_progress,
 };
 use crate::cli::DebugLevel;
 use crate::debug;
@@ -34,7 +35,7 @@ pub fn process_conversation_file(
 }
 
 /// Process a conversation from any BufRead source (for testability)
-pub(crate) fn process_conversation_reader<R: BufRead>(
+pub fn process_conversation_reader<R: BufRead>(
     path: PathBuf,
     reader: R,
     modified: Option<SystemTime>,
@@ -160,7 +161,8 @@ pub(crate) fn process_conversation_reader<R: BufRead>(
                                 preview_text
                             };
 
-                        if !search_text.is_empty() {
+                        let has_search_text = !search_text.is_empty();
+                        if has_search_text {
                             all_parts.push(search_text);
                         }
 
@@ -169,16 +171,19 @@ pub(crate) fn process_conversation_reader<R: BufRead>(
                             !seen_real_user_message && effective_preview.trim() == "Warmup";
                         if is_warmup {
                             skip_next_assistant = true;
-                        } else if !effective_preview.is_empty() {
-                            let message_range = MessageRange::single(message_count + 1);
-                            if let Some(turn) = filter_turn(SemanticTurnRole::User, &semantic_input)
-                            {
-                                semantic_turns.push(turn);
-                                semantic_turn_ranges.push(message_range);
-                            }
+                        } else if !effective_preview.is_empty() || has_search_text {
                             message_count += 1;
-                            preview_parts.push(effective_preview);
-                            seen_real_user_message = true;
+                            let message_range = MessageRange::single(message_count);
+                            if !effective_preview.is_empty() {
+                                if let Some(turn) =
+                                    filter_turn(SemanticTurnRole::User, &semantic_input)
+                                {
+                                    semantic_turns.push(turn);
+                                    semantic_turn_ranges.push(message_range);
+                                }
+                                preview_parts.push(effective_preview);
+                                seen_real_user_message = true;
+                            }
                         }
                     }
                     LogEntry::Assistant {
@@ -231,7 +236,12 @@ pub(crate) fn process_conversation_reader<R: BufRead>(
                         // Skip this assistant message if it follows a warmup user message
                         if skip_next_assistant {
                             skip_next_assistant = false;
-                        } else if seen_real_user_message && !preview_text.is_empty() {
+                        } else if seen_real_user_message
+                            && (!preview_text.is_empty() || !message.content.is_empty())
+                        {
+                            if canonical_ordinal == message_count + 1 {
+                                message_count += 1;
+                            }
                             let message_range = MessageRange::single(canonical_ordinal);
                             let semantic_turn =
                                 filter_turn(SemanticTurnRole::Assistant, &preview_text);
@@ -252,26 +262,24 @@ pub(crate) fn process_conversation_reader<R: BufRead>(
                                     semantic_turn_ranges.push(message_range);
                                 }
 
-                                if let Some(existing_index) =
-                                    assistant_id_preview_indices.get(id).copied()
-                                {
-                                    preview_parts[existing_index] = preview_text;
-                                } else {
-                                    assistant_id_preview_indices
-                                        .insert(id.clone(), preview_parts.len());
-                                    preview_parts.push(preview_text);
+                                if !preview_text.is_empty() {
+                                    if let Some(existing_index) =
+                                        assistant_id_preview_indices.get(id).copied()
+                                    {
+                                        preview_parts[existing_index] = preview_text;
+                                    } else {
+                                        assistant_id_preview_indices
+                                            .insert(id.clone(), preview_parts.len());
+                                        preview_parts.push(preview_text);
+                                    }
                                 }
                                 assistant_id_ordinals.insert(id.clone(), canonical_ordinal);
-                            } else {
+                            } else if !preview_text.is_empty() {
                                 if let Some(turn) = semantic_turn {
                                     semantic_turns.push(turn);
                                     semantic_turn_ranges.push(message_range);
                                 }
                                 preview_parts.push(preview_text);
-                            }
-                            // Only add assistant messages to preview after we've seen a real user message
-                            if canonical_ordinal == message_count + 1 {
-                                message_count += 1;
                             }
                         }
                     }
@@ -290,6 +298,11 @@ pub(crate) fn process_conversation_reader<R: BufRead>(
                         } else {
                             Some(trimmed.to_owned())
                         };
+                    }
+                    LogEntry::Progress { data, .. } => {
+                        if progress_counts_as_agent_message(&data) {
+                            message_count += 1;
+                        }
                     }
                     LogEntry::AgentName { .. } => {}
                     LogEntry::System { .. } => {}
@@ -495,6 +508,22 @@ pub(crate) fn extract_skill_preview(message: &str) -> Option<String> {
 }
 
 /// Check if a conversation only contains /clear command messages
+fn progress_counts_as_agent_message(data: &serde_json::Value) -> bool {
+    let Some(progress) = parse_agent_progress(data) else {
+        return false;
+    };
+    if !matches!(progress.message.message_type.as_str(), "user" | "assistant") {
+        return false;
+    }
+    let AgentContent::Blocks(blocks) = progress.message.message.content;
+    blocks.into_iter().any(|block| match block {
+        ContentBlock::Text { text } => !text.trim().is_empty(),
+        ContentBlock::ToolUse { .. } | ContentBlock::ToolResult { .. } => true,
+        ContentBlock::Thinking { thinking, .. } => !thinking.trim().is_empty(),
+        ContentBlock::Image { .. } => false,
+    })
+}
+
 pub(crate) fn is_clear_only_conversation(user_messages: &[String]) -> bool {
     if user_messages.is_empty() {
         return false;
@@ -1671,6 +1700,65 @@ mod tests {
             ]
         );
         assert!(!conv.semantic_turns.join(" ").contains("tool output"));
+    }
+
+    #[test]
+    fn semantic_turn_ranges_skip_agent_progress_ordinals() {
+        let content = [
+            user_msg("first visible", None),
+            r#"{"type":"progress","data":{"type":"agent_progress","agentId":"agent-abcdef","message":{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"subagent hidden text"}]}}}}"#.to_string(),
+            assistant_msg("final assistant text"),
+        ]
+        .join("\n");
+
+        let conv = parse_jsonl(&content).unwrap().unwrap();
+
+        assert_eq!(
+            conv.semantic_turns,
+            vec!["first visible", "final assistant text"]
+        );
+        assert_eq!(
+            conv.semantic_turn_ranges,
+            vec![MessageRange::single(1), MessageRange::single(3)]
+        );
+    }
+
+    #[test]
+    fn semantic_turn_ranges_use_canonical_agent_ordinals() {
+        let content = [
+            user_msg("first visible", None),
+            serde_json::json!({
+                "type": "assistant",
+                "timestamp": "2024-01-01T00:00:00Z",
+                "message": {
+                    "role": "assistant",
+                    "content": [{"type": "tool_use", "id": "toolu_1", "name": "Bash", "input": {"command": "pwd"}}]
+                }
+            })
+            .to_string(),
+            serde_json::json!({
+                "type": "user",
+                "timestamp": "2024-01-01T00:00:00Z",
+                "message": {
+                    "role": "user",
+                    "content": [{"type": "tool_result", "tool_use_id": "toolu_1", "content": "tool output only"}]
+                }
+            })
+            .to_string(),
+            assistant_msg("final assistant text"),
+        ]
+        .join("\n");
+
+        let conv = parse_jsonl(&content).unwrap().unwrap();
+
+        assert_eq!(
+            conv.semantic_turns,
+            vec!["first visible", "final assistant text"]
+        );
+        assert_eq!(
+            conv.semantic_turn_ranges,
+            vec![MessageRange::single(1), MessageRange::single(4)]
+        );
     }
 
     #[test]

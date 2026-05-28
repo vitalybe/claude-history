@@ -1,4 +1,7 @@
-use crate::claude::{AssistantMessage, ContentBlock, LogEntry, UserContent, UserMessage};
+use crate::claude::{
+    AgentContent, AgentMessage as ProgressMessage, AgentProgressData, AssistantMessage,
+    ContentBlock, LogEntry, UserContent, UserMessage, parse_agent_progress,
+};
 use crate::error::Result;
 use crate::history::{extract_skill_preview, is_clear_metadata_message};
 use std::collections::HashMap;
@@ -160,9 +163,16 @@ impl AgentTranscript {
                         messages.push(agent_message);
                     }
                 }
+                LogEntry::Progress { data, .. } => {
+                    if let Some(progress) = parse_agent_progress(&data)
+                        && let Some(agent_message) =
+                            progress_message_to_agent(progress, jsonl_line, messages.len() + 1)
+                    {
+                        messages.push(agent_message);
+                    }
+                }
                 LogEntry::Summary { .. }
                 | LogEntry::FileHistorySnapshot { .. }
-                | LogEntry::Progress { .. }
                 | LogEntry::System { .. }
                 | LogEntry::CustomTitle { .. }
                 | LogEntry::AgentName { .. } => {}
@@ -251,6 +261,38 @@ fn assistant_message_to_agent(
         timestamp,
         jsonl_line,
         assistant_message_id,
+        parent_tool_use_id,
+        parts,
+    })
+}
+
+fn progress_message_to_agent(
+    progress: AgentProgressData,
+    jsonl_line: usize,
+    ordinal: usize,
+) -> Option<AgentMessage> {
+    let role = match progress.message.message_type.as_str() {
+        "user" => AgentMessageRole::User,
+        "assistant" => AgentMessageRole::Assistant,
+        _ => return None,
+    };
+    let ProgressMessage { message, .. } = progress.message;
+    let AgentContent::Blocks(blocks) = message.content;
+    let parent_tool_use_id = Some(progress.agent_id);
+    let parts = blocks_to_parts(
+        role,
+        blocks,
+        None,
+        jsonl_line,
+        None,
+        parent_tool_use_id.clone(),
+    );
+    non_empty_message(AgentMessage {
+        ordinal,
+        role,
+        timestamp: None,
+        jsonl_line,
+        assistant_message_id: None,
         parent_tool_use_id,
         parts,
     })
@@ -420,6 +462,30 @@ mod tests {
             &transcript.messages[2].parts[0],
             AgentMessagePart::Text { text, .. } if text == "/consult topic"
         ));
+    }
+
+    #[test]
+    fn agent_progress_entries_use_subagent_visibility() {
+        let content = [
+            user("question"),
+            r#"{"type":"progress","data":{"type":"agent_progress","agentId":"agent-abcdef","message":{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"subagent hidden text"}]}}}}"#.to_string(),
+            assistant("answer"),
+        ]
+        .join("\n");
+
+        let transcript = parse(&content);
+
+        assert_eq!(transcript.messages.len(), 3);
+        assert_eq!(transcript.messages[1].ordinal, 2);
+        assert_eq!(
+            transcript.messages[1].parent_tool_use_id.as_deref(),
+            Some("agent-abcdef")
+        );
+        assert!(matches!(
+            &transcript.messages[1].parts[0],
+            AgentMessagePart::Text { text, .. } if text == "subagent hidden text"
+        ));
+        assert_eq!(transcript.messages[2].ordinal, 3);
     }
 
     #[test]

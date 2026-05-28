@@ -1,7 +1,7 @@
 use crate::agent::refs::{AgentConversationKey, MessageRange, ResolvedConversation};
 use crate::agent::retrieval::{
-    AgentRetrievalOptions, AgentSearchHit as RetrievalHit, AgentTranscriptSearchTarget,
-    retrieve_agent_hits_for_target,
+    AgentHitRenderOptions, AgentHitSource, AgentRetrievalOptions, AgentSearchHit as RetrievalHit,
+    AgentTranscriptSearchTarget, retrieve_agent_hits_for_target,
 };
 use crate::agent::transcript::AgentTranscript;
 use crate::error::{AppError, Result};
@@ -77,6 +77,8 @@ pub struct AgentOutputHit {
     pub title: String,
     pub score: f64,
     pub source: AgentHitKind,
+    pub evidence_source: AgentHitSource,
+    pub render_options: AgentHitRenderOptions,
     pub preview: String,
     pub focus_range: MessageRange,
     pub read_range: MessageRange,
@@ -144,19 +146,20 @@ pub fn format_agent_output(output: &AgentSearchOutput) -> String {
         rendered.push_str(&format!(
             "hit ref={} source={} score={:.6} focus=m{}..m{} preview={}\n",
             crate::agent::protocol::escape_atom(&hit.conversation_ref),
-            hit_source_atom(hit.source),
+            output_source_atom(hit),
             hit.score,
             hit.focus_range.start,
             hit.focus_range.end,
             crate::agent::protocol::escape_atom(&hit.preview)
         ));
         rendered.push_str(&format!(
-            "read ref={}:m{}..m{} focus=m{}..m{}\n",
+            "read ref={}:m{}..m{} focus=m{}..m{}{}\n",
             crate::agent::protocol::escape_atom(&hit.conversation_ref),
             hit.read_range.start,
             hit.read_range.end,
             hit.focus_range.start,
-            hit.focus_range.end
+            hit.focus_range.end,
+            render_option_atoms(hit.render_options)
         ));
     }
     rendered
@@ -410,6 +413,8 @@ fn retrieval_output_hit(
         } else {
             AgentHitKind::Lexical
         },
+        evidence_source: hit.source,
+        render_options: hit.render_options,
         preview: hit.preview,
         focus_range: hit.focus_range,
         read_range: hit.read_range,
@@ -432,6 +437,8 @@ fn semantic_output_hits(
                 title: title_for_conversation(input.conversation),
                 score: semantic_score(hit.score_breakdown),
                 source: AgentHitKind::Semantic,
+                evidence_source: AgentHitSource::Dialogue,
+                render_options: AgentHitRenderOptions::default(),
                 preview: hit.snippet.clone(),
                 focus_range: hit.message_range,
                 read_range: hit.message_range,
@@ -465,6 +472,7 @@ fn hybrid_hits(
             existing.semantic_rank = Some(rank + 1);
             existing.hit.score = rrf_score(existing.lexical_rank, existing.semantic_rank);
             existing.hit.source = AgentHitKind::Hybrid;
+            existing.hit.render_options.merge(hit.render_options);
             existing.hit.read_range = existing.hit.read_range.union(&hit.read_range);
         } else {
             ranked.push(RankedHit {
@@ -552,6 +560,14 @@ fn mode_atom(mode: SearchMode) -> &'static str {
     }
 }
 
+fn output_source_atom(hit: &AgentOutputHit) -> &'static str {
+    match hit.evidence_source {
+        AgentHitSource::Dialogue => hit_source_atom(hit.source),
+        AgentHitSource::Tool => "tool",
+        AgentHitSource::Thinking => "thinking",
+    }
+}
+
 fn hit_source_atom(source: AgentHitKind) -> &'static str {
     match source {
         AgentHitKind::Exact => "exact",
@@ -559,6 +575,23 @@ fn hit_source_atom(source: AgentHitKind) -> &'static str {
         AgentHitKind::Semantic => "semantic",
         AgentHitKind::Hybrid => "hybrid",
     }
+}
+
+fn render_option_atoms(options: AgentHitRenderOptions) -> String {
+    let mut atoms = String::new();
+    if options.tools {
+        atoms.push_str(" tools=true");
+    }
+    if options.tool_results {
+        atoms.push_str(" tool-results=true");
+    }
+    if options.thinking {
+        atoms.push_str(" thinking=true");
+    }
+    if options.subagents {
+        atoms.push_str(" subagents=true");
+    }
+    atoms
 }
 
 #[allow(dead_code)]
@@ -759,6 +792,8 @@ mod tests {
             title: "title".to_string(),
             score: 10.0,
             source: AgentHitKind::Lexical,
+            evidence_source: AgentHitSource::Dialogue,
+            render_options: AgentHitRenderOptions::default(),
             preview: "lexical preview".to_string(),
             focus_range: MessageRange::single(2),
             read_range: MessageRange { start: 1, end: 3 },
@@ -768,6 +803,8 @@ mod tests {
             title: "title".to_string(),
             score: 0.9,
             source: AgentHitKind::Semantic,
+            evidence_source: AgentHitSource::Dialogue,
+            render_options: AgentHitRenderOptions::default(),
             preview: "semantic preview".to_string(),
             focus_range: MessageRange::single(2),
             read_range: MessageRange::single(2),
@@ -779,6 +816,48 @@ mod tests {
         assert_eq!(hits[0].source, AgentHitKind::Hybrid);
         assert_eq!(hits[0].preview, "lexical preview");
         assert_eq!(hits[0].read_range, MessageRange { start: 1, end: 3 });
+    }
+
+    #[test]
+    fn hybrid_preserves_tool_render_options() {
+        let lexical = vec![AgentOutputHit {
+            conversation_ref: "ch_123456789abc".to_string(),
+            title: "title".to_string(),
+            score: 10.0,
+            source: AgentHitKind::Lexical,
+            evidence_source: AgentHitSource::Tool,
+            render_options: AgentHitRenderOptions {
+                tool_results: true,
+                ..AgentHitRenderOptions::default()
+            },
+            preview: "tool preview".to_string(),
+            focus_range: MessageRange::single(2),
+            read_range: MessageRange { start: 1, end: 3 },
+        }];
+        let semantic = vec![AgentOutputHit {
+            conversation_ref: "ch_123456789abc".to_string(),
+            title: "title".to_string(),
+            score: 0.9,
+            source: AgentHitKind::Semantic,
+            evidence_source: AgentHitSource::Dialogue,
+            render_options: AgentHitRenderOptions::default(),
+            preview: "semantic preview".to_string(),
+            focus_range: MessageRange::single(2),
+            read_range: MessageRange::single(2),
+        }];
+
+        let rendered = format_agent_output(&AgentSearchOutput {
+            protocol: AgentProtocolKind::Within,
+            query: "needle".to_string(),
+            mode: SearchMode::Hybrid,
+            hits: hybrid_hits(lexical, semantic, 10),
+            stats: AgentSearchStats::default(),
+        });
+
+        assert!(rendered.contains("hit ref=ch_123456789abc source=tool"));
+        assert!(
+            rendered.contains("read ref=ch_123456789abc:m1..m3 focus=m2..m2 tool-results=true")
+        );
     }
 
     #[test]

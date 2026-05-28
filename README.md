@@ -284,10 +284,13 @@ message m9 role=user line=16
 
 Refs are `ch_...` conversation refs plus 1-based `mN` message refs. A read range
 uses `mN..mM`, such as `ch_1234abcd5678:m7..m9`. Search and within output emit
-`read ref=... focus=...` lines; copy those fields. Do not treat ranks, scores,
-or hidden chunk identifiers as stable addresses. If you read ranges
-from more than one conversation in a single command, qualify focus as
-`--focus ch_1234abcd5678:m8..m8`, or run one read command per emitted read line.
+`read ref=... focus=...` lines; copy those fields. Some hits include extra read
+atoms such as `tool-results=true`, `tools=true`, `thinking=true`, or
+`subagents=true`; pass the matching `agent read` flags so the evidence remains
+visible. Do not treat ranks, scores, or hidden chunk identifiers as stable
+addresses. If you read ranges from more than one conversation in a single
+command, qualify focus as `--focus ch_1234abcd5678:m8..m8`, or run one read
+command per emitted read line.
 
 Header values such as `query`, `title`, `preview`, and `path` are
 percent-encoded atoms. Refs and focus ranges are safe to copy as opaque fields;

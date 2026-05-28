@@ -28,7 +28,7 @@ pub struct AgentHitRenderOptions {
 }
 
 impl AgentHitRenderOptions {
-    fn merge(&mut self, other: Self) {
+    pub fn merge(&mut self, other: Self) {
         self.tools |= other.tools;
         self.tool_results |= other.tool_results;
         self.thinking |= other.thinking;
