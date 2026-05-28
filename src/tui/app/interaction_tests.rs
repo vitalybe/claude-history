@@ -157,8 +157,7 @@ fn semantic_ranked_selection_opens_selected_conversation_and_returns() {
         KeyBindings::default(),
         vec![],
         TuiSearchOptions {
-            semantic_search_default: true,
-            ..Default::default()
+            default_mode: ListSearchMode::Semantic,
         },
     );
     let (_request_tx, request_rx) = mpsc::channel();
@@ -220,8 +219,7 @@ fn semantic_list_click_uses_three_line_rows() {
         KeyBindings::default(),
         vec![],
         TuiSearchOptions {
-            semantic_search_default: true,
-            ..Default::default()
+            default_mode: ListSearchMode::Semantic,
         },
     );
     let (_request_tx, request_rx) = mpsc::channel();

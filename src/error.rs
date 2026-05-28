@@ -29,6 +29,9 @@ pub enum AppError {
     #[error("Update error: {0}")]
     UpdateError(String),
 
+    #[error("Not implemented: {0}")]
+    NotImplemented(String),
+
     #[error("Semantic search cancelled")]
     SemanticSearchCancelled,
 }

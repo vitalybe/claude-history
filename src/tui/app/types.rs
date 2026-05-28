@@ -97,9 +97,17 @@ pub enum ViewSearchMode {
     Active,
 }
 
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct TuiSearchOptions {
-    pub semantic_search_default: bool,
+    pub default_mode: ListSearchMode,
+}
+
+impl Default for TuiSearchOptions {
+    fn default() -> Self {
+        Self {
+            default_mode: ListSearchMode::Lexical,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]

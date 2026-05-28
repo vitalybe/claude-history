@@ -1,4 +1,5 @@
 use crate::error::{AppError, Result};
+use crate::search::mode::SearchMode;
 use crossterm::event::{KeyCode, KeyModifiers};
 use serde::Deserialize;
 use std::fs;
@@ -18,6 +19,13 @@ pub struct ConfigFile {
     pub resume: Option<ResumeConfig>,
     pub keys: Option<KeysConfig>,
     pub tui: Option<TuiConfig>,
+    pub search: Option<SearchConfig>,
+}
+
+#[derive(Deserialize, Debug, Default)]
+#[serde(deny_unknown_fields)]
+pub struct SearchConfig {
+    pub mode: Option<SearchMode>,
 }
 
 #[derive(Deserialize, Debug, Default)]
@@ -71,6 +79,32 @@ semantic_search = true
         .unwrap();
 
         assert_eq!(config.tui.unwrap().semantic_search, Some(true));
+    }
+
+    #[test]
+    fn search_mode_parses_hybrid_mode() {
+        let config: ConfigFile = toml::from_str(
+            r#"
+[search]
+mode = "hybrid"
+"#,
+        )
+        .unwrap();
+
+        assert_eq!(config.search.unwrap().mode, Some(SearchMode::Hybrid));
+    }
+
+    #[test]
+    fn search_mode_rejects_unknown_mode() {
+        let err = toml::from_str::<ConfigFile>(
+            r#"
+[search]
+mode = "vector"
+"#,
+        )
+        .expect_err("unknown search mode should fail");
+
+        assert!(err.to_string().contains("unknown variant"));
     }
 
     #[test]

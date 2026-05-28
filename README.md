@@ -192,9 +192,12 @@ Press `Ctrl+T` in the conversation list to switch between lexical and semantic
 search. To start in semantic mode by default, set:
 
 ```toml
-[tui]
-semantic_search = true
+[search]
+mode = "semantic"
 ```
+
+The older `[tui] semantic_search = true` setting is still accepted for existing
+configs.
 
 ### Direct file input
 
@@ -239,6 +242,7 @@ Usage: claude-history [OPTIONS] [FILE]
        claude-history [COMMAND]
 
 Commands:
+  agent   Run agent-oriented search and transcript commands
   update  Update claude-history to the latest version
 
 Arguments:
@@ -458,11 +462,15 @@ pager = true
 # rename = "alt+r"
 # fork = "alt+f"
 
+[search]
+# Search mode: lexical, semantic, exact, or hybrid
+mode = "lexical"
+
 [tui]
 # Hide exact project names from TUI browse/search lists
 # exclude_projects = ["project-name", "repo/worktree"]
 
-# Start list search in semantic mode instead of lexical mode
+# Deprecated: use [search].mode instead
 semantic_search = false
 
 EOF
@@ -500,6 +508,13 @@ are key combinations like `"ctrl+r"`, `"alt+f"`, or `"f2"`.
 - `rename` (string): Rename selected session (default: `"f2"`)
 - `delete` (string): Delete conversation (default: `"ctrl+x"`)
 
+#### Search options
+
+- `mode` (string): Search mode to use by default. Supported values are
+  `lexical`, `semantic`, `exact`, and `hybrid` (default: `lexical`). The TUI
+  supports lexical and semantic modes; exact and hybrid defaults start the TUI in
+  lexical mode.
+
 #### TUI options
 
 - `exclude_projects` (array of strings): Case-sensitive project names to hide
@@ -508,8 +523,9 @@ are key combinations like `"ctrl+r"`, `"alt+f"`, or `"f2"`.
   rows like `"repo/feature"`. Excluded conversations remain on disk and can
   still be opened by pasting their full UUID or by passing the JSONL file path
   directly.
-- `semantic_search` (boolean): Start list search in semantic mode instead of
-  lexical mode (default: false). Press `Ctrl+T` in the TUI to switch modes.
+- `semantic_search` (boolean): Deprecated compatibility alias. When
+  `[search].mode` is unset, `true` starts list search in semantic mode and
+  `false` starts lexical mode. Press `Ctrl+T` in the TUI to switch modes.
 
 ### Overriding config
 

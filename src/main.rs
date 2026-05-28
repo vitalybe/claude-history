@@ -18,11 +18,13 @@ mod tui;
 mod update;
 
 use clap::Parser;
-use cli::{Args, Commands};
+use cli::{AgentCommand, Args, Commands};
 use error::{AppError, Result};
+use search::mode::{SearchModeResolution, TuiSearchMode};
 use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use tui::ListSearchMode;
 
 fn main() {
     if let Err(e) = run() {
@@ -63,6 +65,7 @@ fn run() -> Result<()> {
     // Handle subcommands
     if let Some(command) = args.command {
         return match command {
+            Commands::Agent { command } => run_agent_command(command),
             Commands::Update => update::run(),
         };
     }
@@ -80,9 +83,14 @@ fn run() -> Result<()> {
     let resume_config = config.resume.unwrap_or_default();
     let default_args = resume_config.default_args.as_deref().unwrap_or(&[]);
 
+    let search_config = config.search.unwrap_or_default();
     let tui_config = config.tui.unwrap_or_default();
+    let search_mode = search::mode::resolve_tui_search_mode(SearchModeResolution {
+        cli_mode: None,
+        config_mode: search_config.mode,
+        tui_semantic_search: tui_config.semantic_search,
+    });
     let exclude_projects = tui_config.exclude_projects;
-    let semantic_search_default = tui_config.semantic_search.unwrap_or(false);
 
     // Disable colors globally when --no-color is passed
     if args.no_color {
@@ -315,7 +323,7 @@ fn run() -> Result<()> {
         current_project_dir_name,
         exclude_projects,
         tui::TuiSearchOptions {
-            semantic_search_default,
+            default_mode: tui_search_mode(search_mode),
         },
     )? {
         (tui::Action::Select(path), convs) => (convs, path),
@@ -416,6 +424,29 @@ fn run() -> Result<()> {
     }
 
     Ok(())
+}
+
+fn run_agent_command(command: AgentCommand) -> Result<()> {
+    match command {
+        AgentCommand::Search(args) => {
+            let _ = (args.scope(), args.mode_override());
+        }
+        AgentCommand::Within(args) => {
+            let _ = args.mode_override();
+        }
+        AgentCommand::Read(_) | AgentCommand::Outline(_) => {}
+    }
+
+    Err(AppError::NotImplemented(
+        "agent commands are not implemented yet".to_string(),
+    ))
+}
+
+fn tui_search_mode(mode: TuiSearchMode) -> ListSearchMode {
+    match mode {
+        TuiSearchMode::Lexical => ListSearchMode::Lexical,
+        TuiSearchMode::Semantic => ListSearchMode::Semantic,
+    }
 }
 
 fn resume_with_claude(

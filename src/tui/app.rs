@@ -180,11 +180,7 @@ impl App {
     }
 
     fn list_search_mode_from_options(search_options: TuiSearchOptions) -> ListSearchMode {
-        if search_options.semantic_search_default {
-            ListSearchMode::Semantic
-        } else {
-            ListSearchMode::Lexical
-        }
+        search_options.default_mode
     }
 
     fn semantic_search_state(available: bool) -> SemanticSearchState {

@@ -1,6 +1,7 @@
 pub mod evidence;
 pub mod lexical;
 pub mod literal;
+pub mod mode;
 pub mod query;
 
 pub use crate::text_match::{is_word_separator, normalize_for_search};

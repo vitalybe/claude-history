@@ -100,13 +100,12 @@ fn default_app_uses_lexical_search_with_semantic_available() {
 }
 
 #[test]
-fn semantic_search_default_uses_semantic_mode() {
+fn configured_search_default_uses_semantic_mode() {
     let app = app_with_options(
         vec![],
         vec![],
         TuiSearchOptions {
-            semantic_search_default: true,
-            ..Default::default()
+            default_mode: ListSearchMode::Semantic,
         },
     );
 
@@ -133,8 +132,7 @@ fn semantic_mode_toggle_returns_to_lexical_when_enabled() {
         vec![],
         vec![],
         TuiSearchOptions {
-            semantic_search_default: true,
-            ..Default::default()
+            default_mode: ListSearchMode::Semantic,
         },
     );
     let generation = app.search_generation();
@@ -286,8 +284,7 @@ fn stale_response_with_current_generation_but_old_mode_is_ignored() {
         )],
         vec![],
         TuiSearchOptions {
-            semantic_search_default: true,
-            ..Default::default()
+            default_mode: ListSearchMode::Semantic,
         },
     );
 
@@ -322,8 +319,7 @@ fn semantic_empty_query_preserves_default_browse_behavior() {
         )],
         vec![],
         TuiSearchOptions {
-            semantic_search_default: true,
-            ..Default::default()
+            default_mode: ListSearchMode::Semantic,
         },
     );
 
@@ -348,8 +344,7 @@ fn semantic_effectively_empty_query_preserves_default_browse_behavior() {
         )],
         vec![],
         TuiSearchOptions {
-            semantic_search_default: true,
-            ..Default::default()
+            default_mode: ListSearchMode::Semantic,
         },
     );
 
@@ -404,8 +399,7 @@ fn semantic_response_after_mode_toggle_is_ignored() {
         )],
         vec![],
         TuiSearchOptions {
-            semantic_search_default: true,
-            ..Default::default()
+            default_mode: ListSearchMode::Semantic,
         },
     );
     let (_request_tx, request_rx) = mpsc::channel();
@@ -451,8 +445,7 @@ fn current_generation_semantic_response_is_ignored_while_lexical_mode_is_active(
         )],
         vec![],
         TuiSearchOptions {
-            semantic_search_default: true,
-            ..Default::default()
+            default_mode: ListSearchMode::Semantic,
         },
     );
     let (_request_tx, request_rx) = mpsc::channel();
@@ -495,8 +488,7 @@ fn stale_semantic_response_with_old_generation_is_ignored() {
         )],
         vec![],
         TuiSearchOptions {
-            semantic_search_default: true,
-            ..Default::default()
+            default_mode: ListSearchMode::Semantic,
         },
     );
     let (_request_tx, request_rx) = mpsc::channel();
@@ -581,8 +573,7 @@ fn semantic_nonempty_query_dispatches_worker_request() {
         )],
         vec![],
         TuiSearchOptions {
-            semantic_search_default: true,
-            ..Default::default()
+            default_mode: ListSearchMode::Semantic,
         },
     );
     let (request_tx, request_rx) = mpsc::channel();
@@ -620,7 +611,7 @@ fn semantic_keypress_dispatches_immediately() {
         )],
         vec![],
         TuiSearchOptions {
-            semantic_search_default: true,
+            default_mode: ListSearchMode::Semantic,
         },
     );
     let (request_tx, request_rx) = mpsc::channel();
@@ -653,7 +644,7 @@ fn finish_loading_dispatches_buffered_semantic_query() {
         None,
         vec![],
         TuiSearchOptions {
-            semantic_search_default: true,
+            default_mode: ListSearchMode::Semantic,
         },
     );
     app.append_conversations(vec![conversation(
@@ -688,7 +679,7 @@ fn semantic_dispatch_after_loading_keeps_snapshot_aligned() {
         None,
         vec![],
         TuiSearchOptions {
-            semantic_search_default: true,
+            default_mode: ListSearchMode::Semantic,
         },
     );
     app.append_conversations(vec![conversation(
@@ -727,7 +718,7 @@ fn semantic_keypress_preserves_browse_rows_while_pending() {
         )],
         vec![],
         TuiSearchOptions {
-            semantic_search_default: true,
+            default_mode: ListSearchMode::Semantic,
         },
     );
     let (request_tx, request_rx) = mpsc::channel();
@@ -758,7 +749,7 @@ fn semantic_keypress_does_not_clone_full_corpus_on_ui_thread() {
         conversations,
         vec![],
         TuiSearchOptions {
-            semantic_search_default: true,
+            default_mode: ListSearchMode::Semantic,
         },
     );
     let snapshot = app.semantic_conversations_snapshot.clone();
@@ -796,8 +787,7 @@ fn semantic_mode_prewarms_cache_without_query() {
         )],
         vec![],
         TuiSearchOptions {
-            semantic_search_default: true,
-            ..Default::default()
+            default_mode: ListSearchMode::Semantic,
         },
     );
     let (request_tx, request_rx) = mpsc::channel();
@@ -827,8 +817,7 @@ fn semantic_request_uses_live_conversations_not_stale_snapshot() {
         )],
         vec![],
         TuiSearchOptions {
-            semantic_search_default: true,
-            ..Default::default()
+            default_mode: ListSearchMode::Semantic,
         },
     );
     app.conversations_snapshot = Arc::new(Vec::new());
@@ -863,8 +852,7 @@ fn semantic_query_keeps_existing_metadata_while_pending() {
         )],
         vec![],
         TuiSearchOptions {
-            semantic_search_default: true,
-            ..Default::default()
+            default_mode: ListSearchMode::Semantic,
         },
     );
     app.list_search_mode = ListSearchMode::Semantic;
@@ -907,7 +895,7 @@ fn semantic_scope_indices_apply_scope() {
         ],
         vec!["Hidden"],
         TuiSearchOptions {
-            semantic_search_default: true,
+            default_mode: ListSearchMode::Semantic,
         },
     );
     app.current_project_dir_name = Some("-tmp-visible".to_string());
@@ -936,8 +924,7 @@ fn semantic_response_applies_ranked_indices_and_metadata() {
         ],
         vec![],
         TuiSearchOptions {
-            semantic_search_default: true,
-            ..Default::default()
+            default_mode: ListSearchMode::Semantic,
         },
     );
     let (_request_tx, request_rx) = mpsc::channel();
@@ -987,8 +974,7 @@ fn semantic_empty_query_clears_error() {
         )],
         vec![],
         TuiSearchOptions {
-            semantic_search_default: true,
-            ..Default::default()
+            default_mode: ListSearchMode::Semantic,
         },
     );
 
@@ -1009,8 +995,7 @@ fn semantic_uuid_query_uses_uuid_lookup_and_clears_unsupported_error() {
         vec![conversation(Some("Hidden"), "-tmp-hidden", uuid, "needle")],
         vec!["Hidden"],
         TuiSearchOptions {
-            semantic_search_default: true,
-            ..Default::default()
+            default_mode: ListSearchMode::Semantic,
         },
     );
     app.toggle_list_search_mode();
@@ -1036,8 +1021,7 @@ fn semantic_progress_messages_update_activity_status_text() {
         )],
         vec![],
         TuiSearchOptions {
-            semantic_search_default: true,
-            ..Default::default()
+            default_mode: ListSearchMode::Semantic,
         },
     );
     let (_request_tx, request_rx) = mpsc::channel();
@@ -1079,8 +1063,7 @@ fn clearing_query_preserves_in_flight_prewarm_preparing_status() {
         )],
         vec![],
         TuiSearchOptions {
-            semantic_search_default: true,
-            ..Default::default()
+            default_mode: ListSearchMode::Semantic,
         },
     );
     app.list_search_mode = ListSearchMode::Semantic;
@@ -1110,8 +1093,7 @@ fn clearing_query_preserves_in_flight_prewarm_progress() {
         )],
         vec![],
         TuiSearchOptions {
-            semantic_search_default: true,
-            ..Default::default()
+            default_mode: ListSearchMode::Semantic,
         },
     );
     app.list_search_mode = ListSearchMode::Semantic;
@@ -1144,8 +1126,7 @@ fn query_ranking_status_does_not_use_activity_bar() {
         )],
         vec![],
         TuiSearchOptions {
-            semantic_search_default: true,
-            ..Default::default()
+            default_mode: ListSearchMode::Semantic,
         },
     );
     app.list_search_mode = ListSearchMode::Semantic;
@@ -1168,8 +1149,7 @@ fn prewarm_generation_keeps_search_polling_until_completion() {
         )],
         vec![],
         TuiSearchOptions {
-            semantic_search_default: true,
-            ..Default::default()
+            default_mode: ListSearchMode::Semantic,
         },
     );
     app.list_search_mode = ListSearchMode::Semantic;
@@ -1194,8 +1174,7 @@ fn semantic_prewarm_superseded_by_real_query_clears_stale_activity() {
         )],
         vec![],
         TuiSearchOptions {
-            semantic_search_default: true,
-            ..Default::default()
+            default_mode: ListSearchMode::Semantic,
         },
     );
     let (request_tx, _request_rx) = mpsc::channel();
@@ -1246,8 +1225,7 @@ fn semantic_empty_corpus_status_is_visible_after_completion() {
         )],
         vec![],
         TuiSearchOptions {
-            semantic_search_default: true,
-            ..Default::default()
+            default_mode: ListSearchMode::Semantic,
         },
     );
     let (_request_tx, request_rx) = mpsc::channel();
@@ -1289,8 +1267,7 @@ fn lexical_toggle_clears_semantic_error_and_pending_status() {
         )],
         vec![],
         TuiSearchOptions {
-            semantic_search_default: true,
-            ..Default::default()
+            default_mode: ListSearchMode::Semantic,
         },
     );
     app.list_search_mode = ListSearchMode::Semantic;
@@ -1314,8 +1291,7 @@ fn ctrl_t_toggles_to_lexical_mode_when_semantic_session_active() {
         vec![],
         vec![],
         TuiSearchOptions {
-            semantic_search_default: true,
-            ..Default::default()
+            default_mode: ListSearchMode::Semantic,
         },
     );
 
@@ -1345,8 +1321,7 @@ fn configured_ctrl_t_binding_takes_precedence_over_semantic_toggle() {
         keys,
         vec![],
         TuiSearchOptions {
-            semantic_search_default: true,
-            ..Default::default()
+            default_mode: ListSearchMode::Semantic,
         },
     );
 
@@ -1367,8 +1342,7 @@ fn workspace_toggle_dispatches_new_semantic_request() {
         )],
         vec![],
         TuiSearchOptions {
-            semantic_search_default: true,
-            ..Default::default()
+            default_mode: ListSearchMode::Semantic,
         },
     );
     let (request_tx, request_rx) = mpsc::channel();

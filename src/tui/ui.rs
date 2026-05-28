@@ -2867,8 +2867,7 @@ mod tests {
             KeyBindings::default(),
             vec![],
             TuiSearchOptions {
-                semantic_search_default: true,
-                ..Default::default()
+                default_mode: ListSearchMode::Semantic,
             },
         )
     }
@@ -3150,8 +3149,7 @@ mod tests {
             KeyBindings::default(),
             vec![],
             TuiSearchOptions {
-                semantic_search_default: true,
-                ..Default::default()
+                default_mode: ListSearchMode::Semantic,
             },
         );
         app.set_query_for_test("sentinel");
@@ -3508,8 +3506,7 @@ mod tests {
             KeyBindings::default(),
             vec![],
             TuiSearchOptions {
-                semantic_search_default: true,
-                ..Default::default()
+                default_mode: ListSearchMode::Semantic,
             },
         );
         app.set_query_for_test("semantic \"audio_generation\"");
@@ -3593,8 +3590,7 @@ mod tests {
             KeyBindings::default(),
             vec![],
             TuiSearchOptions {
-                semantic_search_default: true,
-                ..Default::default()
+                default_mode: ListSearchMode::Semantic,
             },
         );
         app.set_query_for_test("semantic \"alpha_exact\" \"beta_exact\"");
