@@ -235,6 +235,81 @@ conversations in a ledger-style format with scrolling support.
 
 Press `q` or `Esc` to return to the conversation list.
 
+### Agent protocol
+
+The `agent` namespace prints compact, stable protocol text for agents. It avoids
+ANSI color, pagers, ledger formatting, and JSON-first output so agents can copy
+refs into follow-up commands without reading whole transcripts.
+
+Start with global search. Use `--lexical` for baseline agent searches so the
+command ignores any slower semantic default in local config:
+
+```sh
+$ claude-history agent search --lexical "auth cache bug" --top 2
+```
+
+```text
+protocol agent-search v=1 mode=lexical hits=1
+query text=auth%20cache%20bug hits=1
+title ref=ch_1234abcd5678 text=fix%20auth%20cache
+hit ref=ch_1234abcd5678 source=lexical score=12.500000 focus=m8..m8 preview=auth%20cache%20bug%20repro
+read ref=ch_1234abcd5678:m7..m9 focus=m8..m8
+```
+
+Then narrow inside the selected conversation or inspect its outline before
+reading:
+
+```sh
+$ claude-history agent within ch_1234abcd5678 --lexical "auth cache bug"
+$ claude-history agent outline ch_1234abcd5678
+```
+
+Read only the emitted range, and preserve `focus=` as `--focus` so budgeted
+output keeps the evidence message:
+
+```sh
+$ claude-history agent read ch_1234abcd5678:m7..m9 --focus m8..m8
+```
+
+```text
+protocol agent-read v=1 cut=none budget=6000
+conversation ref=ch_1234abcd5678 path=session.jsonl
+message m7 role=user line=14
+| auth cache bug repro
+message m8 role=assistant line=15
+| the cache key omits the auth scope
+message m9 role=user line=16
+| please patch it
+```
+
+Refs are `ch_...` conversation refs plus 1-based `mN` message refs. A read range
+uses `mN..mM`, such as `ch_1234abcd5678:m7..m9`. Search and within output emit
+`read ref=... focus=...` lines; copy those fields. Do not treat ranks, scores,
+or hidden chunk identifiers as stable addresses. If you read ranges
+from more than one conversation in a single command, qualify focus as
+`--focus ch_1234abcd5678:m8..m8`, or run one read command per emitted read line.
+
+Header values such as `query`, `title`, `preview`, and `path` are
+percent-encoded atoms. Refs and focus ranges are safe to copy as opaque fields;
+decode other metadata only if you need to display it.
+
+Agent search is global by default. Pass `--local` to search only the current
+workspace, or `--all` to be explicit about global scope. `--top 20` is the default
+result limit. Search mode follows `[search].mode` unless `--lexical`, `--exact`,
+`--semantic`, or `--hybrid` is passed; the deprecated `[tui].semantic_search`
+setting is only a compatibility fallback when `[search].mode` is unset. Quoted-only
+queries use exact mode regardless of config.
+
+`agent read` and `agent outline` are budgeted by default. The budget is 6000, and
+tools, tool results, thinking, and subagent internals are hidden by default. Add
+`--tools`, `--tool-results`, `--thinking`, or `--subagents` only when that content
+is needed. Use `--no-budget` only when you intentionally want unbounded output.
+
+The companion Claude Code skill lives in
+`.claude/skills/claude-history-search/SKILL.md` in this repository. Copy that
+skill into a project or user skill directory if you installed only the binary and
+want Claude Code to discover the workflow guidance.
+
 ```
 View Claude conversation history
 

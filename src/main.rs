@@ -934,6 +934,130 @@ mod agent_command_tests {
     }
 
     #[test]
+    fn search_output_emits_read_ref_with_focus_recipe() {
+        let output = agent::search::AgentSearchOutput {
+            protocol: agent::search::AgentProtocolKind::Search,
+            query: "cache warming".to_string(),
+            mode: SearchMode::Lexical,
+            hits: vec![agent::search::AgentOutputHit {
+                conversation_ref: "ch_123456789abc".to_string(),
+                title: "cache session".to_string(),
+                score: 12.5,
+                source: agent::search::AgentHitKind::Lexical,
+                preview: "cache warming answer".to_string(),
+                focus_range: agent::refs::MessageRange::single(2),
+                read_range: agent::refs::MessageRange { start: 1, end: 3 },
+            }],
+            stats: agent::search::AgentSearchStats::default(),
+        };
+
+        let rendered = agent::search::format_agent_output(&output);
+
+        assert!(rendered.starts_with("protocol agent-search v=1 mode=lexical hits=1\n"));
+        assert!(rendered.contains("hit ref=ch_123456789abc"));
+        assert!(rendered.contains("read ref=ch_123456789abc:m1..m3 focus=m2..m2\n"));
+    }
+
+    #[test]
+    fn within_read_ref_can_drive_focused_read() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = write_jsonl(
+            &dir,
+            "session.jsonl",
+            &[
+                user("question"),
+                assistant("cache warming answer"),
+                user("follow up"),
+            ],
+        );
+        let keys = vec![AgentConversationKey::new(
+            "project-a",
+            "session.jsonl",
+            path.clone(),
+        )];
+        let resolved = agent::refs::ResolvedConversation {
+            key: keys[0].clone(),
+            reference: keys[0].conversation_ref(),
+        };
+        let conversation = history::Conversation {
+            path,
+            index: 0,
+            timestamp: chrono::Local::now(),
+            preview: "session".to_string(),
+            preview_first: "session".to_string(),
+            preview_last: "session".to_string(),
+            full_text: "session".to_string(),
+            semantic_turns: vec!["session".to_string()],
+            semantic_turn_ranges: vec![agent::refs::MessageRange::single(1)],
+            search_text_lower: "session".to_string(),
+            project_name: Some("project-a".to_string()),
+            project_path: None,
+            cwd: None,
+            message_count: 3,
+            parse_errors: Vec::new(),
+            summary: None,
+            custom_title: Some("session".to_string()),
+            model: None,
+            total_tokens: 0,
+            duration_minutes: None,
+        };
+        let transcript = agent::transcript::AgentTranscript::load(&resolved.key.path).unwrap();
+        let within_args = cli::AgentWithinArgs {
+            conversation: resolved.reference.canonical(),
+            query: "cache warming".to_string(),
+            top: 1,
+            lexical: true,
+            semantic: false,
+            exact: false,
+            hybrid: false,
+        };
+        let within_request = agent::search::AgentWithinRequest {
+            query: within_args.query.clone(),
+            top: within_args.top,
+            cli_mode: within_args.mode_override(),
+            config_mode: None,
+            tui_semantic_search: None,
+        };
+        let within = agent::search::format_agent_output(&agent::search::run_within_search(
+            &within_request,
+            &conversation,
+            &resolved,
+            &transcript,
+            &[],
+        ));
+        let read_line = within
+            .lines()
+            .find(|line| line.starts_with("read ref="))
+            .expect("within output should include a read ref");
+        let mut fields = read_line.split_whitespace();
+        fields.next();
+        let read_ref = fields
+            .next()
+            .and_then(|field| field.strip_prefix("ref="))
+            .expect("read ref field");
+        let focus = fields
+            .next()
+            .and_then(|field| field.strip_prefix("focus="))
+            .expect("focus field");
+        let read_args = AgentReadArgs {
+            refs: vec![read_ref.to_string()],
+            focus: Some(focus.to_string()),
+            budget: 6000,
+            no_budget: false,
+            tools: false,
+            tool_results: false,
+            thinking: false,
+            subagents: false,
+        };
+
+        let output = run_agent_read(&read_args, Some(&keys)).unwrap();
+
+        assert!(output.starts_with("protocol agent-read v=1"));
+        assert!(output.contains("message m2 role=assistant line=2"));
+        assert!(output.contains("| cache warming answer\n"));
+    }
+
+    #[test]
     fn read_command_rejects_out_of_range_loaded_messages() {
         let dir = tempfile::tempdir().unwrap();
         let path = write_jsonl(&dir, "session.jsonl", &[user("question")]);
