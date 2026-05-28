@@ -21,7 +21,7 @@ mod update;
 use clap::Parser;
 use cli::{AgentCommand, AgentOutlineArgs, AgentReadArgs, Args, Commands};
 use error::{AppError, Result};
-use search::mode::{SearchModeResolution, TuiSearchMode};
+use search::mode::{SearchMode, SearchModeResolution, TuiSearchMode};
 use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
 
@@ -431,19 +431,12 @@ fn run() -> Result<()> {
 
 fn run_agent_command(command: AgentCommand) -> Result<()> {
     match command {
-        AgentCommand::Search(args) => {
-            let _ = (args.scope(), args.mode_override());
-            Err(AppError::NotImplemented(
-                "agent search is not implemented yet".to_string(),
-            ))
-        }
-        AgentCommand::Within(args) => {
-            let _ = args.mode_override();
-            resolve_agent_conversation_arg(&args.conversation, None)?;
-            Err(AppError::NotImplemented(
-                "agent within is not implemented yet".to_string(),
-            ))
-        }
+        AgentCommand::Search(args) => run_agent_search(&args).map(|output| {
+            print!("{output}");
+        }),
+        AgentCommand::Within(args) => run_agent_within(&args).map(|output| {
+            print!("{output}");
+        }),
         AgentCommand::Read(args) => run_agent_read(&args, None).map(|output| {
             print!("{output}");
         }),
@@ -451,6 +444,235 @@ fn run_agent_command(command: AgentCommand) -> Result<()> {
             print!("{output}");
         }),
     }
+}
+
+fn run_agent_search(args: &cli::AgentSearchArgs) -> Result<String> {
+    let config = config::load_config()?;
+    let search_config = config.search.unwrap_or_default();
+    let tui_config = config.tui.unwrap_or_default();
+    let mut conversations = history::load_all_conversations(false, None)?;
+    conversations.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
+    let current_project_dir_name = if args.local {
+        std::env::current_dir()
+            .ok()
+            .map(|dir| history::convert_path_to_project_dir_name(&dir))
+    } else {
+        None
+    };
+    let scope = match args.scope() {
+        cli::AgentScope::Local => agent::search::AgentSearchScope::Local,
+        cli::AgentScope::Global => agent::search::AgentSearchScope::Global,
+    };
+    let scoped = agent::search::scoped_conversation_inputs(
+        &conversations,
+        scope,
+        current_project_dir_name.as_deref(),
+    )?;
+    let request = agent::search::AgentSearchRequest {
+        query: args.query.clone(),
+        top: args.top,
+        _scope: scope,
+        cli_mode: args.mode_override(),
+        config_mode: search_config.mode,
+        tui_semantic_search: tui_config.semantic_search,
+    };
+    let mode = agent::search::effective_agent_mode(
+        &request.query,
+        request.cli_mode,
+        request.config_mode,
+        request.tui_semantic_search,
+    );
+    let keys = agent::refs::conversation_keys_from_conversations(&conversations)?;
+    let output = match mode {
+        SearchMode::Lexical | SearchMode::Exact => {
+            let searchable = search::precompute_search_text(&conversations);
+            let ranked_all = search::search(
+                &conversations,
+                &searchable,
+                &args.query,
+                chrono::Local::now(),
+            );
+            let scoped_set = scoped
+                .iter()
+                .copied()
+                .collect::<std::collections::HashSet<_>>();
+            let ranked = ranked_all
+                .into_iter()
+                .filter(|index| scoped_set.contains(index))
+                .collect::<Vec<_>>();
+            agent::search::run_global_lexical_search(
+                &request,
+                &conversations,
+                &keys,
+                &ranked,
+                |key| agent::transcript::AgentTranscript::load(&key.path),
+            )?
+        }
+        SearchMode::Semantic => {
+            run_agent_semantic_search(&request, &conversations, &keys, &scoped)?
+        }
+        SearchMode::Hybrid => {
+            let lexical_request = agent::search::AgentSearchRequest {
+                cli_mode: Some(SearchMode::Lexical),
+                ..request.clone()
+            };
+            let searchable = search::precompute_search_text(&conversations);
+            let ranked_all = search::search(
+                &conversations,
+                &searchable,
+                &args.query,
+                chrono::Local::now(),
+            );
+            let scoped_set = scoped
+                .iter()
+                .copied()
+                .collect::<std::collections::HashSet<_>>();
+            let ranked = ranked_all
+                .into_iter()
+                .filter(|index| scoped_set.contains(index))
+                .collect::<Vec<_>>();
+            let lexical = agent::search::run_global_lexical_search(
+                &lexical_request,
+                &conversations,
+                &keys,
+                &ranked,
+                |key| agent::transcript::AgentTranscript::load(&key.path),
+            )?;
+            let inputs = agent_inputs_for_indices(&conversations, &keys, &scoped)?;
+            let semantic = run_agent_semantic_hits(&args.query, &inputs)?;
+            agent::search::run_global_hybrid_search(&request, lexical, &semantic, &inputs)
+        }
+    };
+    Ok(agent::search::format_agent_output(&output))
+}
+
+fn run_agent_within(args: &cli::AgentWithinArgs) -> Result<String> {
+    let config = config::load_config()?;
+    let search_config = config.search.unwrap_or_default();
+    let tui_config = config.tui.unwrap_or_default();
+    let conversations = history::load_all_conversations(false, None)?;
+    let keys = agent::refs::conversation_keys_from_conversations(&conversations)?;
+    let resolved = resolve_agent_conversation_arg(&args.conversation, Some(&keys))?;
+    let conversation = conversations
+        .iter()
+        .find(|conversation| conversation.path == resolved.key.path)
+        .ok_or_else(|| AppError::SessionNotFound(args.conversation.clone()))?;
+    let transcript = agent::transcript::AgentTranscript::load(&resolved.key.path)?;
+    let request = agent::search::AgentWithinRequest {
+        query: args.query.clone(),
+        top: args.top,
+        cli_mode: args.mode_override(),
+        config_mode: search_config.mode,
+        tui_semantic_search: tui_config.semantic_search,
+    };
+    let mode = agent::search::effective_agent_mode(
+        &request.query,
+        request.cli_mode,
+        request.config_mode,
+        request.tui_semantic_search,
+    );
+    let output = match mode {
+        SearchMode::Lexical | SearchMode::Exact => {
+            agent::search::run_within_search(&request, conversation, &resolved, &transcript, &[])
+        }
+        SearchMode::Semantic | SearchMode::Hybrid => {
+            run_agent_within_semantic(&request, conversation, &resolved, &transcript)?
+        }
+    };
+    Ok(agent::search::format_agent_output(&output))
+}
+
+fn run_agent_semantic_search(
+    request: &agent::search::AgentSearchRequest,
+    conversations: &[history::Conversation],
+    keys: &[agent::refs::AgentConversationKey],
+    indices: &[usize],
+) -> Result<agent::search::AgentSearchOutput> {
+    let inputs = agent_inputs_for_indices(conversations, keys, indices)?;
+    let semantic = run_agent_semantic_hits(&request.query, &inputs)?;
+    Ok(agent::search::run_global_semantic_search(
+        request, &inputs, &semantic,
+    ))
+}
+
+fn run_agent_semantic_hits(
+    query: &str,
+    inputs: &[agent::search::AgentConversationInput<'_>],
+) -> Result<Vec<semantic::types::SemanticHit>> {
+    let candidates = inputs
+        .iter()
+        .map(|input| semantic::index::SemanticIndexCandidate {
+            index: input.original_index,
+            conversation: std::sync::Arc::new(input.conversation.clone()),
+        })
+        .collect::<Vec<_>>();
+    let parsed = search::query::ParsedQuery::parse(query);
+    let request = semantic::index::SemanticIndexRequest {
+        query: parsed.semantic_text(),
+        literal_filters: parsed.literals(),
+        full_corpus: &candidates,
+        scope: &candidates,
+        corpus_version: 1,
+        prewarm: false,
+    };
+    let mut state = semantic::index::SemanticIndexState::new();
+    let mut embedder = semantic::fastembed::FastembedEmbedder::new()?;
+    let cancellation = semantic::types::SemanticCancellationToken::new();
+    let response = state.refresh_or_prewarm(
+        &request,
+        &mut embedder,
+        &cancellation,
+        |progress| eprintln!("Semantic search: {progress:?}"),
+        semantic::cache::write_embedding_cache,
+    )?;
+    Ok(response.chunk_hits)
+}
+
+fn run_agent_within_semantic(
+    request: &agent::search::AgentWithinRequest,
+    conversation: &history::Conversation,
+    resolved: &agent::refs::ResolvedConversation,
+    transcript: &agent::transcript::AgentTranscript,
+) -> Result<agent::search::AgentSearchOutput> {
+    let input = agent::search::AgentConversationInput {
+        conversation,
+        resolved: resolved.clone(),
+        original_index: 0,
+    };
+    let semantic = run_agent_semantic_hits(&request.query, &[input])?;
+    Ok(agent::search::run_within_search(
+        request,
+        conversation,
+        resolved,
+        transcript,
+        &semantic,
+    ))
+}
+
+fn agent_inputs_for_indices<'a>(
+    conversations: &'a [history::Conversation],
+    keys: &[agent::refs::AgentConversationKey],
+    indices: &[usize],
+) -> Result<Vec<agent::search::AgentConversationInput<'a>>> {
+    let key_by_path = keys
+        .iter()
+        .map(|key| (key.path.clone(), key.clone()))
+        .collect::<std::collections::HashMap<_, _>>();
+    indices
+        .iter()
+        .filter_map(|index| {
+            let conversation = conversations.get(*index)?;
+            let key = key_by_path.get(&conversation.path)?;
+            Some(Ok(agent::search::AgentConversationInput {
+                conversation,
+                resolved: agent::refs::ResolvedConversation {
+                    key: key.clone(),
+                    reference: key.conversation_ref(),
+                },
+                original_index: *index,
+            }))
+        })
+        .collect()
 }
 
 fn run_agent_read(

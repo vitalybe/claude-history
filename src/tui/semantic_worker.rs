@@ -614,6 +614,7 @@ mod tests {
                         },
                     },
                 )],
+                chunk_hits: Vec::new(),
                 indexed_chunk_count: 1,
                 query_embedding_returned: true,
                 progress: SemanticIndexProgress::Complete,

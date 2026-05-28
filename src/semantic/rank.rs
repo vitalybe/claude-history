@@ -14,6 +14,27 @@ pub fn rank_chunks(
     cancellation: &crate::semantic::types::SemanticCancellationToken,
 ) -> Result<Vec<SemanticHit>> {
     let mut best_by_conversation: HashMap<usize, SemanticHit> = HashMap::new();
+    for hit in rank_chunk_hits(query, query_embedding, chunks, cancellation)? {
+        let replace = best_by_conversation
+            .get(&hit.conversation_index)
+            .is_none_or(|existing| compare_hits(&hit, existing).is_lt());
+        if replace {
+            best_by_conversation.insert(hit.conversation_index, hit);
+        }
+    }
+
+    let mut hits: Vec<_> = best_by_conversation.into_values().collect();
+    hits.sort_by(compare_hits);
+    Ok(hits)
+}
+
+pub fn rank_chunk_hits(
+    query: &str,
+    query_embedding: &[f32],
+    chunks: &[EmbeddedChunk],
+    cancellation: &crate::semantic::types::SemanticCancellationToken,
+) -> Result<Vec<SemanticHit>> {
+    let mut hits = Vec::new();
     for chunk in chunks {
         if cancellation.is_cancelled() {
             return Err(AppError::SemanticSearchCancelled);
@@ -39,17 +60,8 @@ pub fn rank_chunks(
                 message_range: chunk.message_range,
             },
         };
-        let hit = SemanticHit::new(score_breakdown, explanation);
-
-        let replace = best_by_conversation
-            .get(&chunk.conversation_index)
-            .is_none_or(|existing| compare_hits(&hit, existing).is_lt());
-        if replace {
-            best_by_conversation.insert(chunk.conversation_index, hit);
-        }
+        hits.push(SemanticHit::new(score_breakdown, explanation));
     }
-
-    let mut hits: Vec<_> = best_by_conversation.into_values().collect();
     hits.sort_by(compare_hits);
     Ok(hits)
 }

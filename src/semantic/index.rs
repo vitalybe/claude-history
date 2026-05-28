@@ -6,7 +6,7 @@ use crate::semantic::cache::{
 };
 use crate::semantic::chunk::build_chunks_with_indices;
 use crate::semantic::embed::SemanticEmbedder;
-use crate::semantic::rank::rank_chunks;
+use crate::semantic::rank::{rank_chunk_hits, rank_chunks};
 use crate::semantic::types::{
     ChunkConfig, EmbeddedChunk, EmbeddingCache, SemanticCancellationToken, SemanticChunk,
     SemanticHit,
@@ -32,6 +32,7 @@ pub struct SemanticIndexRequest<'a> {
 
 pub struct SemanticIndexResponse {
     pub hits: Vec<SemanticHit>,
+    pub chunk_hits: Vec<SemanticHit>,
     pub indexed_chunk_count: usize,
     pub query_embedding_returned: bool,
     pub progress: SemanticIndexProgress,
@@ -130,6 +131,7 @@ impl SemanticIndexState {
             progress(SemanticIndexProgress::CacheReady);
             return Ok(SemanticIndexResponse {
                 hits: Vec::new(),
+                chunk_hits: Vec::new(),
                 indexed_chunk_count: self.embedded_chunks.len(),
                 query_embedding_returned: true,
                 progress: if self.embedded_chunks.is_empty() {
@@ -149,6 +151,7 @@ impl SemanticIndexState {
                 self.embedded_chunks.clear();
                 return Ok(SemanticIndexResponse {
                     hits: Vec::new(),
+                    chunk_hits: Vec::new(),
                     indexed_chunk_count: 0,
                     query_embedding_returned: true,
                     progress: SemanticIndexProgress::EmptyCorpus,
@@ -186,6 +189,7 @@ impl SemanticIndexState {
 
         Ok(SemanticIndexResponse {
             hits: Vec::new(),
+            chunk_hits: Vec::new(),
             indexed_chunk_count: self.embedded_chunks.len(),
             query_embedding_returned: true,
             progress: if self.embedded_chunks.is_empty() {
@@ -211,6 +215,7 @@ impl SemanticIndexState {
         if scoped_chunks.is_empty() || request.prewarm {
             return Ok(SemanticIndexResponse {
                 hits: Vec::new(),
+                chunk_hits: Vec::new(),
                 indexed_chunk_count: self.embedded_chunks.len(),
                 query_embedding_returned: true,
                 progress: if scoped_chunks.is_empty() {
@@ -226,6 +231,7 @@ impl SemanticIndexState {
         let Some(query_embedding) = embedder.embed_query(request.query)? else {
             return Ok(SemanticIndexResponse {
                 hits: Vec::new(),
+                chunk_hits: Vec::new(),
                 indexed_chunk_count: self.embedded_chunks.len(),
                 query_embedding_returned: false,
                 progress: SemanticIndexProgress::EmptyCorpus,
@@ -234,6 +240,12 @@ impl SemanticIndexState {
         };
 
         let scoped_chunks = filter_chunks_by_literals(scoped_chunks, request.literal_filters);
+        let chunk_hits = rank_chunk_hits(
+            request.query,
+            &query_embedding,
+            &scoped_chunks,
+            cancellation,
+        )?;
         let hits = rank_chunks(
             request.query,
             &query_embedding,
@@ -244,6 +256,7 @@ impl SemanticIndexState {
 
         Ok(SemanticIndexResponse {
             hits,
+            chunk_hits,
             indexed_chunk_count: self.embedded_chunks.len(),
             query_embedding_returned: true,
             progress,
