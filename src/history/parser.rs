@@ -6,7 +6,7 @@
 use super::{Conversation, ParseError};
 use crate::agent::refs::MessageRange;
 use crate::agent::transcript::{
-    agent_search_text_from_blocks, content_blocks_count_as_agent_message,
+    AgentMessageRole, agent_search_text_from_blocks, content_blocks_count_as_agent_message,
 };
 use crate::claude::{
     AgentContent, LogEntry, TokenUsage, extract_search_text_from_assistant,
@@ -314,7 +314,12 @@ pub fn process_conversation_reader<R: BufRead>(
                             if content_blocks_count_as_agent_message(&blocks) {
                                 message_count += 1;
                             }
-                            let agent_search_text = agent_search_text_from_blocks(&blocks);
+                            let role = match progress.message.message_type.as_str() {
+                                "user" => AgentMessageRole::User,
+                                "assistant" => AgentMessageRole::Assistant,
+                                _ => unreachable!("progress message type was checked above"),
+                            };
+                            let agent_search_text = agent_search_text_from_blocks(role, &blocks);
                             if !agent_search_text.is_empty() {
                                 agent_search_parts.push(agent_search_text);
                             }

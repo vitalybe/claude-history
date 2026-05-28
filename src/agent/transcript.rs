@@ -388,17 +388,27 @@ pub(crate) fn content_blocks_count_as_agent_message(blocks: &[ContentBlock]) -> 
     })
 }
 
-pub(crate) fn agent_search_text_from_blocks(blocks: &[ContentBlock]) -> String {
+pub(crate) fn agent_search_text_from_blocks(
+    role: AgentMessageRole,
+    blocks: &[ContentBlock],
+) -> String {
     blocks
         .iter()
-        .filter_map(agent_search_text_from_block)
+        .filter_map(|block| agent_search_text_from_block(role, block))
         .collect::<Vec<_>>()
         .join(" ")
 }
 
-fn agent_search_text_from_block(block: &ContentBlock) -> Option<String> {
+fn agent_search_text_from_block(role: AgentMessageRole, block: &ContentBlock) -> Option<String> {
     match block {
-        ContentBlock::Text { text } => non_empty_text(text),
+        ContentBlock::Text { text } => {
+            let text = if role == AgentMessageRole::User {
+                extract_skill_preview(text).unwrap_or_else(|| text.clone())
+            } else {
+                text.clone()
+            };
+            non_empty_text(&text)
+        }
         ContentBlock::ToolUse { name, input, .. } => Some(format_tool_summary(name, input)),
         ContentBlock::ToolResult { content, .. } => content
             .as_ref()
