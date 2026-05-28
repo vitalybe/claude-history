@@ -565,6 +565,7 @@ mod tests {
             full_text:
                 "title sentinel summary sentinel cwd sentinel project sentinel tool output sentinel"
                     .to_string(),
+            agent_search_text: String::new(),
             semantic_turn_ranges: (1..=semantic_turns.len())
                 .map(crate::agent::refs::MessageRange::single)
                 .collect(),

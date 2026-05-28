@@ -517,6 +517,7 @@ mod tests {
             preview_first: title.to_string(),
             preview_last: title.to_string(),
             full_text: title.to_string(),
+            agent_search_text: String::new(),
             semantic_turn_ranges: (1..=semantic_turns.len())
                 .map(crate::agent::refs::MessageRange::single)
                 .collect(),

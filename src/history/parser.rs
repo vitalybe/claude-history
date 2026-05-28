@@ -5,8 +5,11 @@
 
 use super::{Conversation, ParseError};
 use crate::agent::refs::MessageRange;
+use crate::agent::transcript::{
+    agent_search_text_from_blocks, content_blocks_count_as_agent_message,
+};
 use crate::claude::{
-    AgentContent, ContentBlock, LogEntry, TokenUsage, extract_search_text_from_assistant,
+    AgentContent, LogEntry, TokenUsage, extract_search_text_from_assistant,
     extract_search_text_from_user, extract_text_from_assistant, extract_text_from_user,
     parse_agent_progress,
 };
@@ -64,6 +67,7 @@ pub fn process_conversation_reader<R: BufRead>(
     }
 
     let mut all_parts = Vec::new();
+    let mut agent_search_parts = Vec::new();
     let mut semantic_turns = Vec::new();
     let mut semantic_turn_ranges = Vec::new();
     let mut preview_parts = Vec::new();
@@ -237,7 +241,7 @@ pub fn process_conversation_reader<R: BufRead>(
                         if skip_next_assistant {
                             skip_next_assistant = false;
                         } else if seen_real_user_message
-                            && (!preview_text.is_empty() || !message.content.is_empty())
+                            && content_blocks_count_as_agent_message(&message.content)
                         {
                             if canonical_ordinal == message_count + 1 {
                                 message_count += 1;
@@ -300,8 +304,20 @@ pub fn process_conversation_reader<R: BufRead>(
                         };
                     }
                     LogEntry::Progress { data, .. } => {
-                        if progress_counts_as_agent_message(&data) {
-                            message_count += 1;
+                        if let Some(progress) = parse_agent_progress(&data)
+                            && matches!(
+                                progress.message.message_type.as_str(),
+                                "user" | "assistant"
+                            )
+                        {
+                            let AgentContent::Blocks(blocks) = progress.message.message.content;
+                            if content_blocks_count_as_agent_message(&blocks) {
+                                message_count += 1;
+                            }
+                            let agent_search_text = agent_search_text_from_blocks(&blocks);
+                            if !agent_search_text.is_empty() {
+                                agent_search_parts.push(agent_search_text);
+                            }
                         }
                     }
                     LogEntry::AgentName { .. } => {}
@@ -395,6 +411,7 @@ pub fn process_conversation_reader<R: BufRead>(
     let preview_first = normalize_whitespace(&preview_first);
     let preview_last = normalize_whitespace(&preview_last);
     let full_text = normalize_whitespace(&full_text);
+    let agent_search_text = normalize_whitespace(&agent_search_parts.join(" "));
 
     // Pre-normalize search text to avoid re-normalizing on every startup
     let search_text_lower = normalize_for_search(&full_text);
@@ -441,6 +458,7 @@ pub fn process_conversation_reader<R: BufRead>(
         preview_first,
         preview_last,
         full_text,
+        agent_search_text,
         semantic_turns,
         semantic_turn_ranges,
         search_text_lower,
@@ -505,23 +523,6 @@ pub(crate) fn extract_skill_preview(message: &str) -> Option<String> {
     }
 
     Some(command_name.to_string())
-}
-
-/// Check if a conversation only contains /clear command messages
-fn progress_counts_as_agent_message(data: &serde_json::Value) -> bool {
-    let Some(progress) = parse_agent_progress(data) else {
-        return false;
-    };
-    if !matches!(progress.message.message_type.as_str(), "user" | "assistant") {
-        return false;
-    }
-    let AgentContent::Blocks(blocks) = progress.message.message.content;
-    blocks.into_iter().any(|block| match block {
-        ContentBlock::Text { text } => !text.trim().is_empty(),
-        ContentBlock::ToolUse { .. } | ContentBlock::ToolResult { .. } => true,
-        ContentBlock::Thinking { thinking, .. } => !thinking.trim().is_empty(),
-        ContentBlock::Image { .. } => false,
-    })
 }
 
 pub(crate) fn is_clear_only_conversation(user_messages: &[String]) -> bool {
@@ -1736,7 +1737,7 @@ mod tests {
     }
 
     #[test]
-    fn semantic_turn_ranges_skip_agent_progress_ordinals() {
+    fn semantic_turn_ranges_include_agent_progress_ordinals() {
         let content = [
             user_msg("first visible", None),
             r#"{"type":"progress","data":{"type":"agent_progress","agentId":"agent-abcdef","message":{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"subagent hidden text"}]}}}}"#.to_string(),
@@ -1753,6 +1754,34 @@ mod tests {
         assert_eq!(
             conv.semantic_turn_ranges,
             vec![MessageRange::single(1), MessageRange::single(3)]
+        );
+        assert!(conv.agent_search_text.contains("subagent hidden text"));
+        assert!(!conv.full_text.contains("subagent hidden text"));
+    }
+
+    #[test]
+    fn semantic_turn_ranges_skip_assistant_image_only_ordinals() {
+        let content = [
+            user_msg("first visible", None),
+            serde_json::json!({
+                "type": "assistant",
+                "timestamp": "2024-01-01T00:00:00Z",
+                "message": {"role": "assistant", "content": [{"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": "abc"}}]}
+            })
+            .to_string(),
+            assistant_msg("final assistant text"),
+        ]
+        .join("\n");
+
+        let conv = parse_jsonl(&content).unwrap().unwrap();
+
+        assert_eq!(
+            conv.semantic_turns,
+            vec!["first visible", "final assistant text"]
+        );
+        assert_eq!(
+            conv.semantic_turn_ranges,
+            vec![MessageRange::single(1), MessageRange::single(2)]
         );
     }
 

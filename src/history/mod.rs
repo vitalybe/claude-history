@@ -56,6 +56,7 @@ pub struct Conversation {
     /// Preview showing last 3 messages (used when show_last=true)
     pub preview_last: String,
     pub full_text: String,
+    pub agent_search_text: String,
     pub semantic_turns: Vec<String>,
     pub semantic_turn_ranges: Vec<crate::agent::refs::MessageRange>,
     /// Pre-normalized lowercase search text (avoids re-normalizing on every startup)

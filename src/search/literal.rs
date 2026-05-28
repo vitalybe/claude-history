@@ -62,12 +62,23 @@ pub struct LiteralCorpusEntry {
 }
 
 pub fn build_literal_corpus(conversations: &[Conversation]) -> Vec<LiteralCorpusEntry> {
+    build_literal_corpus_with(conversations, false)
+}
+
+pub fn build_agent_literal_corpus(conversations: &[Conversation]) -> Vec<LiteralCorpusEntry> {
+    build_literal_corpus_with(conversations, true)
+}
+
+fn build_literal_corpus_with(
+    conversations: &[Conversation],
+    include_agent_text: bool,
+) -> Vec<LiteralCorpusEntry> {
     conversations
         .par_iter()
         .enumerate()
         .map(|(index, conversation)| LiteralCorpusEntry {
             index,
-            text: literal_text(conversation),
+            text: literal_text(conversation, include_agent_text),
         })
         .collect()
 }
@@ -80,7 +91,7 @@ pub fn conversation_matches_all_literals(
     conversation: &Conversation,
     literals: &[Literal],
 ) -> bool {
-    matches_all_literals(&literal_text(conversation), literals)
+    matches_all_literals(&literal_text(conversation, false), literals)
 }
 
 pub fn match_literal_ranges(text: &str, literals: &[Literal]) -> Vec<(usize, usize)> {
@@ -172,9 +183,12 @@ fn find_case_insensitive_ranges(text: &str, needle: &str) -> Vec<(usize, usize)>
     ranges
 }
 
-fn literal_text(conversation: &Conversation) -> String {
+fn literal_text(conversation: &Conversation, include_agent_text: bool) -> String {
     let mut text = String::new();
     push_part(&mut text, Some(&conversation.full_text));
+    if include_agent_text {
+        push_part(&mut text, Some(&conversation.agent_search_text));
+    }
     push_part(&mut text, conversation.project_name.as_deref());
     text
 }
@@ -221,6 +235,7 @@ mod tests {
             preview_first: text.to_string(),
             preview_last: text.to_string(),
             full_text: full_text.clone(),
+            agent_search_text: String::new(),
             semantic_turns: vec![text.to_string()],
             semantic_turn_ranges: vec![crate::agent::refs::MessageRange::single(1)],
             search_text_lower: crate::search::normalize_for_search(&full_text),

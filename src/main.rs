@@ -485,8 +485,8 @@ fn run_agent_search(args: &cli::AgentSearchArgs) -> Result<String> {
     let keys = agent::refs::conversation_keys_from_conversations(&conversations)?;
     let output = match mode {
         SearchMode::Lexical | SearchMode::Exact => {
-            let searchable = search::precompute_search_text(&conversations);
-            let ranked_all = search::search(
+            let searchable = search::precompute_agent_search_text(&conversations);
+            let ranked_all = search::agent_search(
                 &conversations,
                 &searchable,
                 &args.query,
@@ -516,8 +516,8 @@ fn run_agent_search(args: &cli::AgentSearchArgs) -> Result<String> {
                 cli_mode: Some(SearchMode::Lexical),
                 ..request.clone()
             };
-            let searchable = search::precompute_search_text(&conversations);
-            let ranked_all = search::search(
+            let searchable = search::precompute_agent_search_text(&conversations);
+            let ranked_all = search::agent_search(
                 &conversations,
                 &searchable,
                 &args.query,
@@ -1023,6 +1023,7 @@ mod agent_command_tests {
             preview_first: "session".to_string(),
             preview_last: "session".to_string(),
             full_text: "session".to_string(),
+            agent_search_text: String::new(),
             semantic_turns: vec!["session".to_string()],
             semantic_turn_ranges: vec![agent::refs::MessageRange::single(1)],
             search_text_lower: "session".to_string(),
@@ -1116,6 +1117,7 @@ mod agent_command_tests {
             preview_first: "session".to_string(),
             preview_last: "session".to_string(),
             full_text: "session".to_string(),
+            agent_search_text: String::new(),
             semantic_turns: vec!["session".to_string()],
             semantic_turn_ranges: vec![agent::refs::MessageRange::single(1)],
             search_text_lower: "session".to_string(),
@@ -1244,6 +1246,159 @@ mod agent_command_tests {
 
         assert!(output.contains("message m5 role=assistant"));
         assert!(output.contains("final assistant text"));
+    }
+
+    #[test]
+    fn semantic_read_ref_skips_assistant_image_only_ordinal() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = write_jsonl(
+            &dir,
+            "session.jsonl",
+            &[
+                user("first visible"),
+                serde_json::json!({
+                    "type": "assistant",
+                    "timestamp": "2024-01-01T00:00:01Z",
+                    "message": {"role": "assistant", "content": [{"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": "abc"}}]}
+                })
+                .to_string(),
+                assistant("final assistant text"),
+            ],
+        );
+        let keys = vec![AgentConversationKey::new(
+            "project-a",
+            "session.jsonl",
+            path.clone(),
+        )];
+        let resolved = agent::refs::ResolvedConversation {
+            key: keys[0].clone(),
+            reference: keys[0].conversation_ref(),
+        };
+        let conversation = history::parser::process_conversation_reader(
+            path.clone(),
+            std::io::Cursor::new(std::fs::read_to_string(&path).unwrap()),
+            None,
+            None,
+        )
+        .unwrap()
+        .unwrap();
+        let transcript = agent::transcript::AgentTranscript::load(&resolved.key.path).unwrap();
+        let semantic_range = *conversation
+            .semantic_turn_ranges
+            .iter()
+            .find(|range| **range == agent::refs::MessageRange::single(2))
+            .expect("assistant text should use canonical m2");
+        let semantic_hit = crate::semantic::types::SemanticHit::new(
+            crate::semantic::types::SemanticScoreBreakdown {
+                hybrid: 0.9,
+                semantic: 0.9,
+                lexical: 0.0,
+            },
+            crate::semantic::types::SemanticExplanation {
+                quality: crate::semantic::types::SemanticQuality::Good,
+                quality_label: "good",
+                matched_terms: vec![],
+                evidence_preview: "final assistant text".to_string(),
+                rationale_kind: crate::semantic::types::SemanticRationaleKind::SemanticOnly,
+                chunk: crate::semantic::types::SemanticChunkIdentity {
+                    conversation_index: 0,
+                    session: "session".to_string(),
+                    chunk_index: 0,
+                    message_range: semantic_range,
+                },
+            },
+        );
+        let within_request = agent::search::AgentWithinRequest {
+            query: "final assistant".to_string(),
+            top: 1,
+            cli_mode: Some(SearchMode::Semantic),
+            config_mode: None,
+            tui_semantic_search: None,
+        };
+        let within = agent::search::format_agent_output(&agent::search::run_within_search(
+            &within_request,
+            &conversation,
+            &resolved,
+            &transcript,
+            &[semantic_hit],
+        ));
+
+        assert!(within.contains("focus=m2..m2"));
+        let read_line = within
+            .lines()
+            .find(|line| line.starts_with("read ref="))
+            .expect("within output should include a read ref");
+        let output = run_agent_read(&read_args_from_line(read_line), Some(&keys)).unwrap();
+
+        assert!(output.contains("message m2 role=assistant"));
+        assert!(output.contains("final assistant text"));
+    }
+
+    #[test]
+    fn global_search_finds_progress_only_subagent_evidence() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = write_jsonl(
+            &dir,
+            "session.jsonl",
+            &[
+                user("question"),
+                r#"{"type":"progress","data":{"type":"agent_progress","agentId":"agent-abcdef","message":{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"subagent_unique_needle"}]}}}}"#.to_string(),
+                assistant("done"),
+            ],
+        );
+        let keys = vec![AgentConversationKey::new(
+            "project-a",
+            "session.jsonl",
+            path.clone(),
+        )];
+        let conversation = history::parser::process_conversation_reader(
+            path.clone(),
+            std::io::Cursor::new(std::fs::read_to_string(&path).unwrap()),
+            None,
+            None,
+        )
+        .unwrap()
+        .unwrap();
+        assert!(!conversation.full_text.contains("subagent_unique_needle"));
+        assert!(
+            conversation
+                .agent_search_text
+                .contains("subagent_unique_needle")
+        );
+        let conversations = vec![conversation];
+        let searchable = search::precompute_agent_search_text(&conversations);
+        let ranked = search::agent_search(
+            &conversations,
+            &searchable,
+            "\"subagent_unique_needle\"",
+            chrono::Local::now(),
+        );
+        let request = agent::search::AgentSearchRequest {
+            query: "\"subagent_unique_needle\"".to_string(),
+            top: 1,
+            _scope: agent::search::AgentSearchScope::Global,
+            cli_mode: None,
+            config_mode: None,
+            tui_semantic_search: None,
+        };
+        let output = agent::search::run_global_lexical_search(
+            &request,
+            &conversations,
+            &keys,
+            &ranked,
+            |key| agent::transcript::AgentTranscript::load(&key.path),
+        )
+        .unwrap();
+        let rendered = agent::search::format_agent_output(&output);
+
+        assert!(rendered.contains("subagents=true"));
+        let read_line = rendered
+            .lines()
+            .find(|line| line.starts_with("read ref="))
+            .expect("search output should include a read ref");
+        let read_output = run_agent_read(&read_args_from_line(read_line), Some(&keys)).unwrap();
+
+        assert!(read_output.contains("subagent_unique_needle"));
     }
 
     #[test]

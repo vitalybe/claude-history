@@ -1,6 +1,7 @@
 use crate::history::Conversation;
 use crate::search::literal::{
-    Literal, LiteralCorpusEntry, build_literal_corpus, exact_fallback, matches_all_literals,
+    Literal, LiteralCorpusEntry, build_agent_literal_corpus, build_literal_corpus, exact_fallback,
+    matches_all_literals,
 };
 use crate::search::query::ParsedQuery;
 pub use crate::text_match::normalize_for_search;
@@ -43,6 +44,17 @@ pub fn is_uuid(query: &str) -> bool {
 /// Only appends the (small) project name — the expensive full_text normalization
 /// was already done during parsing/cache load.
 pub fn precompute_search_text(conversations: &[Conversation]) -> Vec<SearchableConversation> {
+    precompute_search_text_with(conversations, false)
+}
+
+pub fn precompute_agent_search_text(conversations: &[Conversation]) -> Vec<SearchableConversation> {
+    precompute_search_text_with(conversations, true)
+}
+
+fn precompute_search_text_with(
+    conversations: &[Conversation],
+    include_agent_text: bool,
+) -> Vec<SearchableConversation> {
     conversations
         .par_iter()
         .enumerate()
@@ -62,12 +74,13 @@ pub fn precompute_search_text(conversations: &[Conversation]) -> Vec<SearchableC
                 .as_ref()
                 .map(|n| normalize_for_search(n))
                 .unwrap_or_default();
+            let body_lower = body_search_text_lower(conv, include_agent_text);
 
             // Combined for Stage 1: same as before, just append project name
             let text_lower = if project_lower.is_empty() {
-                conv.search_text_lower.clone()
+                body_lower
             } else {
-                format!("{} {}", conv.search_text_lower, project_lower)
+                format!("{} {}", body_lower, project_lower)
             };
 
             SearchableConversation {
@@ -81,6 +94,18 @@ pub fn precompute_search_text(conversations: &[Conversation]) -> Vec<SearchableC
         .collect()
 }
 
+fn body_search_text_lower(conversation: &Conversation, include_agent_text: bool) -> String {
+    if !include_agent_text || conversation.agent_search_text.is_empty() {
+        conversation.search_text_lower.clone()
+    } else {
+        format!(
+            "{} {}",
+            conversation.search_text_lower,
+            normalize_for_search(&conversation.agent_search_text)
+        )
+    }
+}
+
 /// Filter and score conversations based on query
 /// Returns indices into the original conversations vec, sorted by score descending
 pub fn search(
@@ -89,11 +114,37 @@ pub fn search(
     query: &str,
     now: DateTime<Local>,
 ) -> Vec<usize> {
-    debug_search(conversations, searchable, query, now, |_| true)
-        .results
-        .into_iter()
-        .map(|(index, _)| index)
-        .collect()
+    search_with_surface(conversations, searchable, query, now, false)
+}
+
+pub fn agent_search(
+    conversations: &[Conversation],
+    searchable: &[SearchableConversation],
+    query: &str,
+    now: DateTime<Local>,
+) -> Vec<usize> {
+    search_with_surface(conversations, searchable, query, now, true)
+}
+
+fn search_with_surface(
+    conversations: &[Conversation],
+    searchable: &[SearchableConversation],
+    query: &str,
+    now: DateTime<Local>,
+    include_agent_text: bool,
+) -> Vec<usize> {
+    debug_search_with_surface(
+        conversations,
+        searchable,
+        query,
+        now,
+        include_agent_text,
+        |_| true,
+    )
+    .results
+    .into_iter()
+    .map(|(index, _)| index)
+    .collect()
 }
 
 pub struct LexicalDebugSearch {
@@ -108,8 +159,36 @@ pub fn debug_search(
     now: DateTime<Local>,
     scope: impl Fn(usize) -> bool + Sync,
 ) -> LexicalDebugSearch {
+    debug_search_with_surface(conversations, searchable, query, now, false, scope)
+}
+
+pub fn debug_agent_search(
+    conversations: &[Conversation],
+    searchable: &[SearchableConversation],
+    query: &str,
+    now: DateTime<Local>,
+    scope: impl Fn(usize) -> bool + Sync,
+) -> LexicalDebugSearch {
+    debug_search_with_surface(conversations, searchable, query, now, true, scope)
+}
+
+fn debug_search_with_surface(
+    conversations: &[Conversation],
+    searchable: &[SearchableConversation],
+    query: &str,
+    now: DateTime<Local>,
+    include_agent_text: bool,
+    scope: impl Fn(usize) -> bool + Sync,
+) -> LexicalDebugSearch {
     let parsed = ParsedQuery::parse(query);
-    let results = search_debug_with_query(conversations, searchable, &parsed, now, scope);
+    let results = search_debug_with_query(
+        conversations,
+        searchable,
+        &parsed,
+        now,
+        include_agent_text,
+        scope,
+    );
     LexicalDebugSearch { parsed, results }
 }
 
@@ -182,6 +261,7 @@ fn search_debug_with_query(
     searchable: &[SearchableConversation],
     parsed: &ParsedQuery,
     now: DateTime<Local>,
+    include_agent_text: bool,
     scope: impl Fn(usize) -> bool + Sync,
 ) -> Vec<(usize, ScoreDebug)> {
     let intent = parsed.lexical_text().trim();
@@ -190,7 +270,11 @@ fn search_debug_with_query(
     }
 
     if parsed.is_quoted_only() {
-        let corpus = build_literal_corpus(conversations);
+        let corpus = if include_agent_text {
+            build_agent_literal_corpus(conversations)
+        } else {
+            build_literal_corpus(conversations)
+        };
         return exact_debug_results(conversations, &corpus, parsed, now, scope);
     }
 
@@ -207,7 +291,11 @@ fn search_debug_with_query(
         if literal_filters.is_empty() {
             return browse_debug_results(conversations, now, scope);
         }
-        let corpus = build_literal_corpus(conversations);
+        let corpus = if include_agent_text {
+            build_agent_literal_corpus(conversations)
+        } else {
+            build_literal_corpus(conversations)
+        };
         return exact_fallback(conversations, &corpus, &literal_filters, scope)
             .into_iter()
             .map(|index| {
@@ -226,6 +314,8 @@ fn search_debug_with_query(
 
     let corpus = if literal_filters.is_empty() {
         None
+    } else if include_agent_text {
+        Some(build_agent_literal_corpus(conversations))
     } else {
         Some(build_literal_corpus(conversations))
     };
@@ -251,7 +341,7 @@ fn search_debug_with_query(
             }
             let debug = score_text_debug(
                 s,
-                &conversations[s.index].search_text_lower,
+                &body_search_text_lower(&conversations[s.index], include_agent_text),
                 &query_words,
                 &adjacent_pairs,
                 conversations[s.index].timestamp,
@@ -501,6 +591,7 @@ mod tests {
             preview_first: text.to_string(),
             preview_last: text.to_string(),
             full_text: full_text.clone(),
+            agent_search_text: String::new(),
             semantic_turns: vec![text.to_string()],
             semantic_turn_ranges: vec![crate::agent::refs::MessageRange::single(1)],
             search_text_lower: normalize_for_search(&full_text),
@@ -794,6 +885,35 @@ mod tests {
                 .semantic_turns
                 .join(" ")
                 .contains("project lexical sentinel")
+        );
+    }
+
+    #[test]
+    fn agent_search_text_includes_progress_without_polluting_full_text() {
+        let now = Local::now();
+        let mut conv = make_conv("visible dialogue", now);
+        conv.agent_search_text = "subagent_progress_needle".to_string();
+        let convs = vec![conv];
+        let normal_searchable = precompute_search_text(&convs);
+        let agent_searchable = precompute_agent_search_text(&convs);
+
+        assert!(!convs[0].full_text.contains("subagent_progress_needle"));
+        assert_eq!(
+            search(&convs, &normal_searchable, "subagent_progress_needle", now),
+            Vec::<usize>::new()
+        );
+        assert_eq!(
+            agent_search(&convs, &agent_searchable, "subagent_progress_needle", now),
+            vec![0]
+        );
+        assert_eq!(
+            agent_search(
+                &convs,
+                &agent_searchable,
+                "\"subagent_progress_needle\"",
+                now,
+            ),
+            vec![0]
         );
     }
 

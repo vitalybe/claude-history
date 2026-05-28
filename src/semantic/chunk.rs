@@ -234,6 +234,7 @@ mod tests {
             preview_first: "visible user text".to_string(),
             preview_last: "visible assistant text".to_string(),
             full_text: "title sentinel summary sentinel cwd sentinel project sentinel tool output sentinel full text only sentinel".to_string(),
+            agent_search_text: String::new(),
             semantic_turn_ranges: (1..=semantic_turns.len()).map(MessageRange::single).collect(),
             semantic_turns,
             search_text_lower: "title sentinel summary sentinel cwd sentinel project sentinel tool output sentinel full text only sentinel".to_string(),

@@ -4,6 +4,7 @@ use crate::claude::{
 };
 use crate::error::Result;
 use crate::history::{extract_skill_preview, is_clear_metadata_message};
+use serde_json::Value;
 use std::collections::HashMap;
 use std::fs::File;
 use std::io::{BufRead, BufReader};
@@ -376,6 +377,69 @@ fn blocks_to_parts(
             ContentBlock::Image { .. } => None,
         })
         .collect()
+}
+
+pub(crate) fn content_blocks_count_as_agent_message(blocks: &[ContentBlock]) -> bool {
+    blocks.iter().any(|block| match block {
+        ContentBlock::Text { text } => !text.trim().is_empty(),
+        ContentBlock::ToolUse { .. } | ContentBlock::ToolResult { .. } => true,
+        ContentBlock::Thinking { thinking, .. } => !thinking.trim().is_empty(),
+        ContentBlock::Image { .. } => false,
+    })
+}
+
+pub(crate) fn agent_search_text_from_blocks(blocks: &[ContentBlock]) -> String {
+    blocks
+        .iter()
+        .filter_map(agent_search_text_from_block)
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn agent_search_text_from_block(block: &ContentBlock) -> Option<String> {
+    match block {
+        ContentBlock::Text { text } => non_empty_text(text),
+        ContentBlock::ToolUse { name, input, .. } => Some(format_tool_summary(name, input)),
+        ContentBlock::ToolResult { content, .. } => content
+            .as_ref()
+            .map(tool_result_text)
+            .and_then(|text| non_empty_text(&text)),
+        ContentBlock::Thinking { thinking, .. } => non_empty_text(thinking),
+        ContentBlock::Image { .. } => None,
+    }
+}
+
+fn non_empty_text(text: &str) -> Option<String> {
+    (!text.trim().is_empty()).then(|| text.to_string())
+}
+
+fn format_tool_summary(name: &str, input: &Value) -> String {
+    match input {
+        Value::Object(map) => {
+            let keys = map.keys().cloned().collect::<Vec<_>>().join(",");
+            format!("tool {name} input_keys={keys}")
+        }
+        _ => format!("tool {name}"),
+    }
+}
+
+fn tool_result_text(content: &Value) -> String {
+    match content {
+        Value::String(text) => text.clone(),
+        Value::Array(items) => items
+            .iter()
+            .filter_map(|item| match item {
+                Value::String(text) => Some(text.clone()),
+                Value::Object(map) => map
+                    .get("text")
+                    .and_then(|value| value.as_str())
+                    .map(ToOwned::to_owned),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+            .join("\n"),
+        _ => content.to_string(),
+    }
 }
 
 fn source(

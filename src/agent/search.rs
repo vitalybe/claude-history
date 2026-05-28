@@ -653,6 +653,7 @@ mod tests {
             preview_first: title.to_string(),
             preview_last: title.to_string(),
             full_text: title.to_string(),
+            agent_search_text: String::new(),
             semantic_turns: vec![title.to_string()],
             semantic_turn_ranges: vec![MessageRange::single(1)],
             search_text_lower: title.to_string(),

@@ -2844,6 +2844,7 @@ mod tests {
             preview_first: "lexical preview sentinel".to_string(),
             preview_last: "lexical preview sentinel".to_string(),
             full_text: "tool output sentinel summary sentinel cwd sentinel".to_string(),
+            agent_search_text: String::new(),
             semantic_turns: vec!["semantic visible text".to_string()],
             semantic_turn_ranges: vec![crate::agent::refs::MessageRange::single(1)],
             search_text_lower: "lexical preview sentinel".to_string(),
