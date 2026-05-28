@@ -1604,6 +1604,39 @@ mod tests {
     }
 
     #[test]
+    fn assistant_id_registers_tool_only_chunk_before_text_chunk() {
+        let content = [
+            user_msg("question", None),
+            serde_json::json!({
+                "type": "assistant",
+                "timestamp": "2024-01-01T00:00:00Z",
+                "message": {"id": "msg_1", "role": "assistant", "content": [{"type": "tool_use", "id": "toolu_1", "name": "Bash", "input": {"command": "pwd"}}]}
+            })
+            .to_string(),
+            serde_json::json!({
+                "type": "assistant",
+                "timestamp": "2024-01-01T00:00:01Z",
+                "message": {"id": "msg_1", "role": "assistant", "content": [{"type": "text", "text": "final"}]}
+            })
+            .to_string(),
+            user_msg("next", None),
+        ]
+        .join("\n");
+
+        let conv = parse_jsonl(&content).unwrap().unwrap();
+
+        assert_eq!(conv.semantic_turns, vec!["question", "final", "next"]);
+        assert_eq!(
+            conv.semantic_turn_ranges,
+            vec![
+                MessageRange::single(1),
+                MessageRange::single(2),
+                MessageRange::single(3),
+            ]
+        );
+    }
+
+    #[test]
     fn duplicate_assistant_ids_preserve_semantic_message_range() {
         let content = [
             user_msg("question", None),
