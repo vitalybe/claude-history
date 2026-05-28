@@ -457,9 +457,8 @@ fn unquoted_terms(unquoted: &str) -> Vec<&str> {
 }
 
 fn message_matches_words(normalized: &str, words: &[String]) -> bool {
-    let has_cjk = words.iter().any(|word| contains_cjk(word));
     words.iter().all(|word| {
-        contains_prefix_match(normalized, word) || (has_cjk && normalized.contains(word))
+        contains_prefix_match(normalized, word) || (contains_cjk(word) && normalized.contains(word))
     })
 }
 
@@ -472,10 +471,10 @@ fn collect_match_ranges(
     let mut body_offset = 0usize;
     for segment in segments {
         for (term_index, word) in query_words.iter().enumerate() {
-            for (start, end) in normalized_match_ranges(&segment.text, word) {
+            if normalized_word_matches(&segment.normalized, word) {
                 ranges.push(MatchRange {
-                    start: body_offset + start,
-                    end: body_offset + end,
+                    start: body_offset,
+                    end: body_offset + segment.text.len(),
                     term_index,
                     source: segment.source,
                     render_options: segment.render_options,
@@ -500,31 +499,9 @@ fn collect_match_ranges(
     ranges
 }
 
-fn normalized_match_ranges(text: &str, word: &str) -> Vec<(usize, usize)> {
-    if word.is_empty() {
-        return Vec::new();
-    }
-
-    let normalized_text = normalize_for_search(text);
-    let use_substring = contains_cjk(word) && !contains_prefix_match(&normalized_text, word);
-    let mut ranges = Vec::new();
-    let mut start = 0usize;
-    while let Some(pos) = normalized_text[start..].find(word) {
-        let actual = start + pos;
-        if use_substring || contains_prefix_match_at(&normalized_text, actual) {
-            ranges.push((actual, actual + word.len()));
-        }
-        start = actual + word.len().max(1);
-    }
-    ranges
-}
-
-fn contains_prefix_match_at(text: &str, pos: usize) -> bool {
-    pos == 0
-        || text[..pos]
-            .chars()
-            .next_back()
-            .is_some_and(|ch| !ch.is_alphanumeric())
+fn normalized_word_matches(normalized_text: &str, word: &str) -> bool {
+    contains_prefix_match(normalized_text, word)
+        || (contains_cjk(word) && normalized_text.contains(word))
 }
 
 fn adjacency_score(body: &str, query_words: &[String]) -> usize {
