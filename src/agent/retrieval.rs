@@ -1,7 +1,10 @@
 #![allow(dead_code)]
 
 use crate::agent::refs::MessageRange;
-use crate::agent::transcript::{AgentMessage, AgentMessagePart, AgentTranscript};
+use crate::agent::transcript::{
+    AgentMessage, AgentMessagePart, AgentTranscript, MAX_AGENT_SEGMENT_CHARS,
+    bounded_tool_result_text, truncate_chars,
+};
 use crate::search::literal::Literal;
 use crate::search::query::ParsedQuery;
 use crate::text_match::{contains_cjk, contains_prefix_match, normalize_for_search};
@@ -9,7 +12,6 @@ use chrono::{DateTime, Local};
 use serde_json::Value;
 use std::cmp::Ordering;
 
-const MAX_SEGMENT_CHARS: usize = 16 * 1024;
 const MAX_PREVIEW_CHARS: usize = 160;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -394,7 +396,10 @@ fn segment_for_part(message: &AgentMessage, part: &AgentMessagePart) -> Option<S
             },
         ),
         AgentMessagePart::ToolResult { content, .. } => (
-            content.as_ref().map(tool_result_text).unwrap_or_default(),
+            content
+                .as_ref()
+                .and_then(bounded_tool_result_text)
+                .unwrap_or_default(),
             AgentHitSource::Tool,
             AgentHitRenderOptions {
                 tool_results: true,
@@ -412,7 +417,7 @@ fn segment_for_part(message: &AgentMessage, part: &AgentMessagePart) -> Option<S
             },
         ),
     };
-    let text = truncate_chars(&text, MAX_SEGMENT_CHARS);
+    let text = truncate_chars(&text, MAX_AGENT_SEGMENT_CHARS);
     if text.trim().is_empty() {
         return None;
     }
@@ -559,10 +564,6 @@ fn ceil_char_boundary(text: &str, mut index: usize) -> usize {
     index
 }
 
-fn truncate_chars(text: &str, max_chars: usize) -> String {
-    text.chars().take(max_chars).collect()
-}
-
 fn sort_candidates(candidates: &mut [Candidate]) {
     candidates.sort_by(|a, b| {
         b.hit
@@ -592,25 +593,6 @@ fn format_tool_summary(name: &str, input: &Value) -> String {
             format!("tool {name} input_keys={keys}")
         }
         _ => format!("tool {name}"),
-    }
-}
-
-fn tool_result_text(content: &Value) -> String {
-    match content {
-        Value::String(text) => text.clone(),
-        Value::Array(items) => items
-            .iter()
-            .filter_map(|item| match item {
-                Value::String(text) => Some(text.clone()),
-                Value::Object(map) => map
-                    .get("text")
-                    .and_then(|value| value.as_str())
-                    .map(ToOwned::to_owned),
-                _ => None,
-            })
-            .collect::<Vec<_>>()
-            .join("\n"),
-        _ => content.to_string(),
     }
 }
 
@@ -794,6 +776,24 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec!["ch_new", "ch_a", "ch_b", "ch_old"]
         );
+    }
+
+    #[test]
+    fn exact_tool_result_search_uses_bounded_head_and_tail() {
+        let long = format!("HEAD{}TAIL", "x".repeat(MAX_AGENT_SEGMENT_CHARS * 2));
+        let transcript = transcript(vec![tool_result_message(1, json!(long))]);
+
+        let head = retrieve_agent_hits(&transcript, "\"HEAD\"", options());
+        let tail = retrieve_agent_hits(&transcript, "\"TAIL\"", options());
+        let middle = retrieve_agent_hits(
+            &transcript,
+            &format!("\"{}\"", "x".repeat(MAX_AGENT_SEGMENT_CHARS + 1)),
+            options(),
+        );
+
+        assert_eq!(head.len(), 1);
+        assert_eq!(tail.len(), 1);
+        assert!(middle.is_empty());
     }
 
     #[test]

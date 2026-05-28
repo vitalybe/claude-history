@@ -388,6 +388,8 @@ pub(crate) fn content_blocks_count_as_agent_message(blocks: &[ContentBlock]) -> 
     })
 }
 
+pub(crate) const MAX_AGENT_SEGMENT_CHARS: usize = 16 * 1024;
+
 pub(crate) fn agent_search_text_from_blocks(
     role: AgentMessageRole,
     blocks: &[ContentBlock],
@@ -407,14 +409,19 @@ fn agent_search_text_from_block(role: AgentMessageRole, block: &ContentBlock) ->
             } else {
                 text.clone()
             };
-            non_empty_text(&text)
+            non_empty_text(&truncate_chars(&text, MAX_AGENT_SEGMENT_CHARS))
         }
-        ContentBlock::ToolUse { name, input, .. } => Some(format_tool_summary(name, input)),
+        ContentBlock::ToolUse { name, input, .. } => non_empty_text(&truncate_chars(
+            &format_tool_summary(name, input),
+            MAX_AGENT_SEGMENT_CHARS,
+        )),
         ContentBlock::ToolResult { content, .. } => content
             .as_ref()
-            .map(tool_result_text)
+            .and_then(bounded_tool_result_text)
             .and_then(|text| non_empty_text(&text)),
-        ContentBlock::Thinking { thinking, .. } => non_empty_text(thinking),
+        ContentBlock::Thinking { thinking, .. } => {
+            non_empty_text(&truncate_chars(thinking, MAX_AGENT_SEGMENT_CHARS))
+        }
         ContentBlock::Image { .. } => None,
     }
 }
@@ -433,23 +440,52 @@ fn format_tool_summary(name: &str, input: &Value) -> String {
     }
 }
 
-fn tool_result_text(content: &Value) -> String {
-    match content {
+pub(crate) fn bounded_tool_result_text(content: &Value) -> Option<String> {
+    let text = match content {
         Value::String(text) => text.clone(),
         Value::Array(items) => items
             .iter()
             .filter_map(|item| match item {
                 Value::String(text) => Some(text.clone()),
-                Value::Object(map) => map
-                    .get("text")
-                    .and_then(|value| value.as_str())
-                    .map(ToOwned::to_owned),
+                Value::Object(map) => {
+                    let ty = map.get("type").and_then(|value| value.as_str());
+                    if ty.is_none() || ty == Some("text") {
+                        map.get("text")
+                            .and_then(|value| value.as_str())
+                            .map(ToOwned::to_owned)
+                    } else {
+                        None
+                    }
+                }
                 _ => None,
             })
             .collect::<Vec<_>>()
             .join("\n"),
-        _ => content.to_string(),
+        _ => return None,
+    };
+    non_empty_text(&truncate_head_and_tail(&text, MAX_AGENT_SEGMENT_CHARS))
+}
+
+pub(crate) fn truncate_chars(text: &str, max_chars: usize) -> String {
+    text.chars().take(max_chars).collect()
+}
+
+fn truncate_head_and_tail(text: &str, max_chars: usize) -> String {
+    if text.chars().count() <= max_chars {
+        return text.to_owned();
     }
+    let head_chars = max_chars * 3 / 4;
+    let tail_chars = max_chars.saturating_sub(head_chars + 1);
+    let head = text.chars().take(head_chars).collect::<String>();
+    let tail = text
+        .chars()
+        .rev()
+        .take(tail_chars)
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .collect::<String>();
+    format!("{head} {tail}")
 }
 
 fn source(
@@ -594,6 +630,52 @@ mod tests {
             &transcript.messages[1].parts[0],
             AgentMessagePart::Text { text, source } if text == "final" && source.jsonl_line == 3
         ));
+    }
+
+    #[test]
+    fn agent_search_text_ignores_non_text_tool_result_json() {
+        let blocks = vec![ContentBlock::ToolResult {
+            tool_use_id: "toolu_1".to_string(),
+            content: Some(serde_json::json!({"secret":"object_needle"})),
+        }];
+
+        let text = agent_search_text_from_blocks(AgentMessageRole::User, &blocks);
+
+        assert!(text.is_empty());
+    }
+
+    #[test]
+    fn agent_search_text_caps_long_tool_use_summaries() {
+        let mut input = serde_json::Map::new();
+        for index in 0..MAX_AGENT_SEGMENT_CHARS {
+            input.insert(format!("long_key_{index}"), Value::Bool(true));
+        }
+        let blocks = vec![ContentBlock::ToolUse {
+            id: "toolu_1".to_string(),
+            name: "Bash".to_string(),
+            input: Value::Object(input),
+        }];
+
+        let text = agent_search_text_from_blocks(AgentMessageRole::Assistant, &blocks);
+
+        assert!(text.chars().count() <= MAX_AGENT_SEGMENT_CHARS);
+        assert!(text.starts_with("tool Bash input_keys="));
+    }
+
+    #[test]
+    fn agent_search_text_caps_long_tool_results_with_head_and_tail() {
+        let long = format!("HEAD{}TAIL", "x".repeat(MAX_AGENT_SEGMENT_CHARS * 2));
+        let blocks = vec![ContentBlock::ToolResult {
+            tool_use_id: "toolu_1".to_string(),
+            content: Some(Value::String(long.clone())),
+        }];
+
+        let text = agent_search_text_from_blocks(AgentMessageRole::User, &blocks);
+
+        assert!(text.len() < long.len());
+        assert!(text.starts_with("HEAD"));
+        assert!(text.ends_with("TAIL"));
+        assert!(!text.contains(&"x".repeat(MAX_AGENT_SEGMENT_CHARS + 1)));
     }
 
     #[test]

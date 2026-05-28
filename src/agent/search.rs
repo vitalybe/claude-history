@@ -438,7 +438,14 @@ fn semantic_output_hits(
                 score: semantic_score(hit.score_breakdown),
                 source: AgentHitKind::Semantic,
                 evidence_source: AgentHitSource::Dialogue,
-                render_options: AgentHitRenderOptions::default(),
+                render_options: AgentHitRenderOptions {
+                    subagents: !input
+                        .conversation
+                        .semantic_turn_ranges
+                        .iter()
+                        .any(|range| hit.message_range.contains(range)),
+                    ..AgentHitRenderOptions::default()
+                },
                 preview: hit.snippet.clone(),
                 focus_range: hit.message_range,
                 read_range: hit.message_range,
@@ -784,6 +791,50 @@ mod tests {
         assert_eq!(output.hits.len(), 2);
         assert_eq!(output.hits[0].focus_range, MessageRange::single(1));
         assert_eq!(output.hits[1].focus_range, MessageRange::single(3));
+    }
+
+    #[test]
+    fn semantic_visible_multi_turn_range_does_not_enable_subagents() {
+        let conv = conversation("session.jsonl", "semantic title");
+        let resolved = resolved("session.jsonl");
+        let hits = semantic_output_hits(
+            &[semantic_hit(
+                0,
+                MessageRange { start: 1, end: 1 },
+                "first",
+                0.8,
+            )],
+            1,
+            &[AgentConversationInput {
+                conversation: &conv,
+                resolved,
+                original_index: 0,
+            }],
+        );
+
+        assert!(!hits[0].render_options.subagents);
+    }
+
+    #[test]
+    fn semantic_hidden_range_enables_subagents() {
+        let conv = conversation("session.jsonl", "semantic title");
+        let resolved = resolved("session.jsonl");
+        let hits = semantic_output_hits(
+            &[semantic_hit(
+                0,
+                MessageRange { start: 2, end: 3 },
+                "subagent",
+                0.8,
+            )],
+            1,
+            &[AgentConversationInput {
+                conversation: &conv,
+                resolved,
+                original_index: 0,
+            }],
+        );
+
+        assert!(hits[0].render_options.subagents);
     }
 
     #[test]

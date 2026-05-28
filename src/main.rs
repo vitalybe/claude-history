@@ -599,20 +599,14 @@ fn run_agent_semantic_hits(
     query: &str,
     inputs: &[agent::search::AgentConversationInput<'_>],
 ) -> Result<Vec<semantic::types::SemanticHit>> {
-    let candidates = inputs
-        .iter()
-        .map(|input| semantic::index::SemanticIndexCandidate {
-            index: input.original_index,
-            conversation: std::sync::Arc::new(input.conversation.clone()),
-        })
-        .collect::<Vec<_>>();
+    let candidates = agent_semantic_candidates(inputs)?;
     let parsed = search::query::ParsedQuery::parse(query);
     let request = semantic::index::SemanticIndexRequest {
         query: parsed.semantic_text(),
         literal_filters: parsed.literals(),
         full_corpus: &candidates,
         scope: &candidates,
-        corpus_version: 2,
+        corpus_version: 3,
         prewarm: false,
     };
     let mut state = semantic::index::SemanticIndexState::new();
@@ -626,6 +620,69 @@ fn run_agent_semantic_hits(
         semantic::cache::write_embedding_cache,
     )?;
     Ok(response.chunk_hits)
+}
+
+fn agent_semantic_candidates(
+    inputs: &[agent::search::AgentConversationInput<'_>],
+) -> Result<Vec<semantic::index::SemanticIndexCandidate>> {
+    let mut candidates = Vec::new();
+    for input in inputs {
+        candidates.push(semantic::index::SemanticIndexCandidate {
+            index: input.original_index,
+            conversation: std::sync::Arc::new(input.conversation.clone()),
+        });
+        let transcript = agent::transcript::AgentTranscript::load(&input.resolved.key.path)?;
+        if let Some(progress_conversation) =
+            agent_progress_semantic_conversation(input.conversation, &transcript)
+        {
+            candidates.push(semantic::index::SemanticIndexCandidate {
+                index: input.original_index,
+                conversation: std::sync::Arc::new(progress_conversation),
+            });
+        }
+    }
+    Ok(candidates)
+}
+
+fn agent_progress_semantic_conversation(
+    conversation: &history::Conversation,
+    transcript: &agent::transcript::AgentTranscript,
+) -> Option<history::Conversation> {
+    let mut semantic_turns = Vec::new();
+    let mut semantic_turn_ranges = Vec::new();
+    for message in &transcript.messages {
+        if message.parent_tool_use_id.is_none() {
+            continue;
+        }
+        for part in &message.parts {
+            if let agent::transcript::AgentMessagePart::Text { text, .. } = part {
+                let role = match message.role {
+                    agent::transcript::AgentMessageRole::User => {
+                        semantic::filter::SemanticTurnRole::User
+                    }
+                    agent::transcript::AgentMessageRole::Assistant => {
+                        semantic::filter::SemanticTurnRole::Assistant
+                    }
+                };
+                if let Some(turn) = semantic::filter::filter_turn(role, text) {
+                    semantic_turns.push(turn);
+                    semantic_turn_ranges.push(agent::refs::MessageRange::single(message.ordinal));
+                }
+            }
+        }
+    }
+    if semantic_turns.is_empty() {
+        return None;
+    }
+    let mut conversation = conversation.clone();
+    let file_name = conversation
+        .path
+        .file_name()
+        .map(|name| format!("{}.agent-semantic", name.to_string_lossy()))?;
+    conversation.path = conversation.path.with_file_name(file_name);
+    conversation.semantic_turns = semantic_turns;
+    conversation.semantic_turn_ranges = semantic_turn_ranges;
+    Some(conversation)
 }
 
 fn run_agent_within_semantic(
@@ -1399,6 +1456,135 @@ mod agent_command_tests {
         let read_output = run_agent_read(&read_args_from_line(read_line), Some(&keys)).unwrap();
 
         assert!(read_output.contains("subagent_unique_needle"));
+    }
+
+    #[test]
+    fn agent_semantic_candidates_include_progress_only_subagent_text() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = write_jsonl(
+            &dir,
+            "session.jsonl",
+            &[
+                user("question"),
+                r#"{"type":"progress","data":{"type":"agent_progress","agentId":"agent-abcdef","message":{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"progress_only_semantic_needle"}]}}}}"#.to_string(),
+                assistant("done"),
+            ],
+        );
+        let key = AgentConversationKey::new("project-a", "session.jsonl", path.clone());
+        let resolved = agent::refs::ResolvedConversation {
+            key: key.clone(),
+            reference: key.conversation_ref(),
+        };
+        let conversation = history::parser::process_conversation_reader(
+            path.clone(),
+            std::io::Cursor::new(std::fs::read_to_string(&path).unwrap()),
+            None,
+            None,
+        )
+        .unwrap()
+        .unwrap();
+        assert!(
+            !conversation
+                .semantic_turns
+                .join(" ")
+                .contains("progress_only_semantic_needle")
+        );
+        let input = agent::search::AgentConversationInput {
+            conversation: &conversation,
+            resolved,
+            original_index: 0,
+        };
+
+        let candidates = agent_semantic_candidates(&[input]).unwrap();
+        let candidate = candidates[1].conversation.as_ref();
+
+        assert_eq!(candidates.len(), 2);
+        assert!(
+            candidate
+                .semantic_turns
+                .join(" ")
+                .contains("progress_only_semantic_needle")
+        );
+        assert_eq!(
+            candidate.semantic_turn_ranges.last().copied(),
+            Some(agent::refs::MessageRange::single(2))
+        );
+        assert!(
+            !conversation
+                .semantic_turns
+                .join(" ")
+                .contains("progress_only_semantic_needle")
+        );
+    }
+
+    #[test]
+    fn semantic_progress_hit_read_recipe_enables_subagents() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = write_jsonl(
+            &dir,
+            "session.jsonl",
+            &[
+                user("question"),
+                r#"{"type":"progress","data":{"type":"agent_progress","agentId":"agent-abcdef","message":{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"progress_only_semantic_needle"}]}}}}"#.to_string(),
+                assistant("done"),
+            ],
+        );
+        let key = AgentConversationKey::new("project-a", "session.jsonl", path.clone());
+        let resolved = agent::refs::ResolvedConversation {
+            key: key.clone(),
+            reference: key.conversation_ref(),
+        };
+        let conversation = history::parser::process_conversation_reader(
+            path.clone(),
+            std::io::Cursor::new(std::fs::read_to_string(&path).unwrap()),
+            None,
+            None,
+        )
+        .unwrap()
+        .unwrap();
+        let transcript = agent::transcript::AgentTranscript::load(&resolved.key.path).unwrap();
+        let semantic_hit = crate::semantic::types::SemanticHit::new(
+            crate::semantic::types::SemanticScoreBreakdown {
+                hybrid: 0.9,
+                semantic: 0.9,
+                lexical: 0.0,
+            },
+            crate::semantic::types::SemanticExplanation {
+                quality: crate::semantic::types::SemanticQuality::Good,
+                quality_label: "good",
+                matched_terms: vec![],
+                evidence_preview: "progress_only_semantic_needle".to_string(),
+                rationale_kind: crate::semantic::types::SemanticRationaleKind::SemanticOnly,
+                chunk: crate::semantic::types::SemanticChunkIdentity {
+                    conversation_index: 0,
+                    session: "session".to_string(),
+                    chunk_index: 0,
+                    message_range: agent::refs::MessageRange::single(2),
+                },
+            },
+        );
+        let within_request = agent::search::AgentWithinRequest {
+            query: "progress semantic".to_string(),
+            top: 1,
+            cli_mode: Some(SearchMode::Semantic),
+            config_mode: None,
+            tui_semantic_search: None,
+        };
+        let rendered = agent::search::format_agent_output(&agent::search::run_within_search(
+            &within_request,
+            &conversation,
+            &resolved,
+            &transcript,
+            &[semantic_hit],
+        ));
+
+        assert!(rendered.contains("focus=m2..m2 subagents=true"));
+        let read_line = rendered
+            .lines()
+            .find(|line| line.starts_with("read ref="))
+            .expect("within output should include a read ref");
+        let read_output = run_agent_read(&read_args_from_line(read_line), Some(&[key])).unwrap();
+        assert!(read_output.contains("progress_only_semantic_needle"));
     }
 
     #[test]
