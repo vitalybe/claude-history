@@ -1,3 +1,4 @@
+use crate::agent::refs::MessageRange;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::{
@@ -55,6 +56,7 @@ pub struct SemanticChunk {
     pub chunk_index: usize,
     pub key: String,
     pub text: String,
+    pub message_range: MessageRange,
     pub metadata: Option<FileMetadata>,
 }
 
@@ -65,6 +67,7 @@ pub struct EmbeddedChunk {
     pub chunk_index: usize,
     pub key: String,
     pub text: String,
+    pub message_range: MessageRange,
     pub embedding: Vec<f32>,
 }
 
@@ -106,6 +109,7 @@ pub struct SemanticChunkIdentity {
     pub conversation_index: usize,
     pub session: String,
     pub chunk_index: usize,
+    pub message_range: MessageRange,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -129,6 +133,7 @@ pub struct SemanticHit {
     pub score_breakdown: SemanticScoreBreakdown,
     pub explanation: SemanticExplanation,
     pub snippet: String,
+    pub message_range: MessageRange,
 }
 
 impl SemanticHit {
@@ -142,6 +147,7 @@ impl SemanticHit {
             lexical_score: score_breakdown.lexical,
             hybrid_score: score_breakdown.hybrid,
             snippet: explanation.evidence_preview.clone(),
+            message_range: chunk.message_range,
             score_breakdown,
             explanation,
         }

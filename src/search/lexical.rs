@@ -502,6 +502,7 @@ mod tests {
             preview_last: text.to_string(),
             full_text: full_text.clone(),
             semantic_turns: vec![text.to_string()],
+            semantic_turn_ranges: vec![crate::agent::refs::MessageRange::single(1)],
             search_text_lower: normalize_for_search(&full_text),
             project_name: project.map(|s| s.to_string()),
             project_path: None,

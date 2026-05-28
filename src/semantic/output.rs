@@ -71,6 +71,7 @@ mod tests {
                 conversation_index: 0,
                 session: session.to_string(),
                 chunk_index: 0,
+                message_range: crate::agent::refs::MessageRange::single(1),
             },
         };
         SemanticHit::new(score_breakdown, explanation)
@@ -86,6 +87,7 @@ mod tests {
             preview_last: "preview title".to_string(),
             full_text: String::new(),
             semantic_turns: vec![],
+            semantic_turn_ranges: vec![],
             search_text_lower: String::new(),
             project_name: Some("project-a".to_string()),
             project_path: None,

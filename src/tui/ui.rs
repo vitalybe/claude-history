@@ -2845,6 +2845,7 @@ mod tests {
             preview_last: "lexical preview sentinel".to_string(),
             full_text: "tool output sentinel summary sentinel cwd sentinel".to_string(),
             semantic_turns: vec!["semantic visible text".to_string()],
+            semantic_turn_ranges: vec![crate::agent::refs::MessageRange::single(1)],
             search_text_lower: "lexical preview sentinel".to_string(),
             project_name: Some("project sentinel".to_string()),
             project_path: None,
@@ -2931,6 +2932,7 @@ mod tests {
                     conversation_index: 0,
                     session: "test-session".to_string(),
                     chunk_index: 0,
+                    message_range: crate::agent::refs::MessageRange::single(1),
                 },
             },
         }

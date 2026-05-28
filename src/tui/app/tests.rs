@@ -15,6 +15,7 @@ fn conversation(project: Option<&str>, project_dir: &str, uuid: &str, text: &str
         preview_last: text.to_string(),
         full_text: text.to_string(),
         semantic_turns: vec![text.to_string()],
+        semantic_turn_ranges: vec![crate::agent::refs::MessageRange::single(1)],
         search_text_lower: search::normalize_for_search(text),
         project_name: project.map(str::to_string),
         project_path: None,
@@ -81,6 +82,7 @@ fn test_semantic_metadata(
                 conversation_index,
                 session: "test-session".to_string(),
                 chunk_index: 0,
+                message_range: crate::agent::refs::MessageRange::single(1),
             },
         },
     }

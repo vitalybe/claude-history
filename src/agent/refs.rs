@@ -1,5 +1,6 @@
 use crate::error::{AppError, Result};
 use crate::history::Conversation;
+use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
 const REF_NAMESPACE: &str = "agent-v1";
@@ -93,7 +94,7 @@ pub struct ResolvedConversation {
     pub reference: AgentConversationRef,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct MessageRange {
     pub start: usize,
     pub end: usize,
@@ -109,6 +110,13 @@ impl MessageRange {
 
     pub fn contains(&self, other: &MessageRange) -> bool {
         self.start <= other.start && self.end >= other.end
+    }
+
+    pub fn union(&self, other: &MessageRange) -> Self {
+        Self {
+            start: self.start.min(other.start),
+            end: self.end.max(other.end),
+        }
     }
 }
 

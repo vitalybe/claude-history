@@ -40,6 +40,7 @@ pub fn embed_chunks_with_progress_and_save(
                 chunk_index: chunk.chunk_index,
                 key: chunk.key,
                 text: entry.text.clone(),
+                message_range: chunk.message_range,
                 embedding: entry.embedding.clone(),
             });
         } else {
@@ -78,6 +79,7 @@ pub fn embed_chunks_with_progress_and_save(
                 chunk_index: chunk.chunk_index,
                 key,
                 text: chunk.text,
+                message_range: chunk.message_range,
                 embedding,
             });
         }
@@ -113,6 +115,7 @@ pub fn cached_chunks(
                 chunk_index: chunk.chunk_index,
                 key: chunk.key,
                 text: entry.text.clone(),
+                message_range: chunk.message_range,
                 embedding: entry.embedding.clone(),
             });
         } else {
@@ -301,6 +304,7 @@ mod tests {
             chunk_index,
             key: key.to_string(),
             text: text.to_string(),
+            message_range: crate::agent::refs::MessageRange::single(1),
             metadata: Some(metadata()),
         }
     }

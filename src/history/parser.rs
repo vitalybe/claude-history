@@ -4,6 +4,7 @@
 //! conversation metadata like preview text, message counts, and working directory.
 
 use super::{Conversation, ParseError};
+use crate::agent::refs::MessageRange;
 use crate::claude::{
     LogEntry, TokenUsage, extract_search_text_from_assistant, extract_search_text_from_user,
     extract_text_from_assistant, extract_text_from_user,
@@ -63,6 +64,7 @@ pub(crate) fn process_conversation_reader<R: BufRead>(
 
     let mut all_parts = Vec::new();
     let mut semantic_turns = Vec::new();
+    let mut semantic_turn_ranges = Vec::new();
     let mut preview_parts = Vec::new();
     let mut user_messages = Vec::new();
     let mut seen_real_user_message = false;
@@ -75,6 +77,9 @@ pub(crate) fn process_conversation_reader<R: BufRead>(
     let mut extracted_model: Option<String> = None;
     // Track token usage per message ID to avoid double-counting streaming entries
     let mut token_usage_by_msg: HashMap<String, TokenUsage> = HashMap::new();
+    let mut assistant_id_ordinals: HashMap<String, usize> = HashMap::new();
+    let mut assistant_id_semantic_indices: HashMap<String, usize> = HashMap::new();
+    let mut assistant_id_preview_indices: HashMap<String, usize> = HashMap::new();
     let mut anonymous_token_count: u64 = 0;
     // Track first and last message timestamps for conversation duration
     let mut first_timestamp: Option<chrono::DateTime<chrono::FixedOffset>> = None;
@@ -165,9 +170,11 @@ pub(crate) fn process_conversation_reader<R: BufRead>(
                         if is_warmup {
                             skip_next_assistant = true;
                         } else if !effective_preview.is_empty() {
+                            let message_range = MessageRange::single(message_count + 1);
                             if let Some(turn) = filter_turn(SemanticTurnRole::User, &semantic_input)
                             {
                                 semantic_turns.push(turn);
+                                semantic_turn_ranges.push(message_range);
                             }
                             message_count += 1;
                             preview_parts.push(effective_preview);
@@ -177,6 +184,11 @@ pub(crate) fn process_conversation_reader<R: BufRead>(
                     LogEntry::Assistant {
                         message, timestamp, ..
                     } => {
+                        let assistant_message_id = message.id.clone();
+                        let canonical_ordinal = assistant_message_id
+                            .as_ref()
+                            .and_then(|id| assistant_id_ordinals.get(id).copied())
+                            .unwrap_or(message_count + 1);
                         // Track timestamps for conversation duration
                         if let Some(ref ts_str) = timestamp
                             && let Ok(ts) = chrono::DateTime::parse_from_rfc3339(ts_str)
@@ -220,14 +232,47 @@ pub(crate) fn process_conversation_reader<R: BufRead>(
                         if skip_next_assistant {
                             skip_next_assistant = false;
                         } else if seen_real_user_message && !preview_text.is_empty() {
-                            if let Some(turn) =
-                                filter_turn(SemanticTurnRole::Assistant, &preview_text)
-                            {
-                                semantic_turns.push(turn);
+                            let message_range = MessageRange::single(canonical_ordinal);
+                            let semantic_turn =
+                                filter_turn(SemanticTurnRole::Assistant, &preview_text);
+                            if let Some(id) = assistant_message_id.as_ref() {
+                                if let Some(existing_index) =
+                                    assistant_id_semantic_indices.get(id).copied()
+                                {
+                                    if let Some(turn) = semantic_turn {
+                                        semantic_turns[existing_index] = turn;
+                                        semantic_turn_ranges[existing_index] = message_range;
+                                    } else {
+                                        semantic_turns[existing_index].clear();
+                                    }
+                                } else if let Some(turn) = semantic_turn {
+                                    assistant_id_semantic_indices
+                                        .insert(id.clone(), semantic_turns.len());
+                                    semantic_turns.push(turn);
+                                    semantic_turn_ranges.push(message_range);
+                                }
+
+                                if let Some(existing_index) =
+                                    assistant_id_preview_indices.get(id).copied()
+                                {
+                                    preview_parts[existing_index] = preview_text;
+                                } else {
+                                    assistant_id_preview_indices
+                                        .insert(id.clone(), preview_parts.len());
+                                    preview_parts.push(preview_text);
+                                }
+                                assistant_id_ordinals.insert(id.clone(), canonical_ordinal);
+                            } else {
+                                if let Some(turn) = semantic_turn {
+                                    semantic_turns.push(turn);
+                                    semantic_turn_ranges.push(message_range);
+                                }
+                                preview_parts.push(preview_text);
                             }
                             // Only add assistant messages to preview after we've seen a real user message
-                            message_count += 1;
-                            preview_parts.push(preview_text);
+                            if canonical_ordinal == message_count + 1 {
+                                message_count += 1;
+                            }
                         }
                     }
                     LogEntry::Summary { summary } => {
@@ -341,6 +386,14 @@ pub(crate) fn process_conversation_reader<R: BufRead>(
     // Pre-normalize search text to avoid re-normalizing on every startup
     let search_text_lower = normalize_for_search(&full_text);
 
+    let semantic_pairs = semantic_turns
+        .into_iter()
+        .zip(semantic_turn_ranges)
+        .filter(|(turn, _)| !turn.is_empty())
+        .collect::<Vec<_>>();
+    let (semantic_turns, semantic_turn_ranges): (Vec<_>, Vec<_>) =
+        semantic_pairs.into_iter().unzip();
+
     // Sum token usage from deduplicated messages (all token types)
     let total_tokens: u64 = token_usage_by_msg
         .values()
@@ -376,6 +429,7 @@ pub(crate) fn process_conversation_reader<R: BufRead>(
         preview_last,
         full_text,
         semantic_turns,
+        semantic_turn_ranges,
         search_text_lower,
         project_name: None,
         project_path: None,
@@ -1518,6 +1572,105 @@ mod tests {
         assert!(!semantic.contains("pasted UI mockup"));
         assert!(!semantic.contains("╭─ Search"));
         assert!(!semantic.contains("```"));
+    }
+
+    #[test]
+    fn duplicate_assistant_ids_preserve_semantic_message_range() {
+        let content = [
+            user_msg("question", None),
+            serde_json::json!({
+                "type": "assistant",
+                "timestamp": "2024-01-01T00:00:00Z",
+                "message": {"id": "msg_1", "role": "assistant", "content": [{"type": "text", "text": "draft"}]}
+            })
+            .to_string(),
+            serde_json::json!({
+                "type": "assistant",
+                "timestamp": "2024-01-01T00:00:01Z",
+                "message": {"id": "msg_1", "role": "assistant", "content": [{"type": "text", "text": "final"}]}
+            })
+            .to_string(),
+            user_msg("next", None),
+        ]
+        .join("\n");
+
+        let conv = parse_jsonl(&content).unwrap().unwrap();
+
+        assert_eq!(conv.semantic_turns, vec!["question", "final", "next"]);
+        assert_eq!(
+            conv.semantic_turn_ranges,
+            vec![
+                MessageRange::single(1),
+                MessageRange::single(2),
+                MessageRange::single(3),
+            ]
+        );
+    }
+
+    #[test]
+    fn duplicate_assistant_filtering_does_not_shift_later_ranges() {
+        let content = [
+            user_msg("question", None),
+            serde_json::json!({
+                "type": "assistant",
+                "timestamp": "2024-01-01T00:00:00Z",
+                "message": {"id": "msg_1", "role": "assistant", "content": [{"type": "text", "text": "first"}]}
+            })
+            .to_string(),
+            serde_json::json!({
+                "type": "assistant",
+                "timestamp": "2024-01-01T00:00:01Z",
+                "message": {"id": "msg_2", "role": "assistant", "content": [{"type": "text", "text": "second draft"}]}
+            })
+            .to_string(),
+            serde_json::json!({
+                "type": "assistant",
+                "timestamp": "2024-01-01T00:00:02Z",
+                "message": {"id": "msg_1", "role": "assistant", "content": [{"type": "text", "text": "<system-reminder>hidden</system-reminder>"}]}
+            })
+            .to_string(),
+            serde_json::json!({
+                "type": "assistant",
+                "timestamp": "2024-01-01T00:00:03Z",
+                "message": {"id": "msg_2", "role": "assistant", "content": [{"type": "text", "text": "second final"}]}
+            })
+            .to_string(),
+        ]
+        .join("\n");
+
+        let conv = parse_jsonl(&content).unwrap().unwrap();
+
+        assert_eq!(conv.semantic_turns, vec!["question", "second final"]);
+        assert_eq!(
+            conv.semantic_turn_ranges,
+            vec![MessageRange::single(1), MessageRange::single(3)]
+        );
+    }
+
+    #[test]
+    fn semantic_turn_ranges_track_visible_dialogue_only() {
+        let content = [
+            user_msg("first visible", None),
+            user_msg_with_tool_result("second visible", "tool output only literal"),
+            assistant_msg("third visible"),
+        ]
+        .join("\n");
+
+        let conv = parse_jsonl(&content).unwrap().unwrap();
+
+        assert_eq!(
+            conv.semantic_turns,
+            vec!["first visible", "second visible", "third visible"]
+        );
+        assert_eq!(
+            conv.semantic_turn_ranges,
+            vec![
+                MessageRange::single(1),
+                MessageRange::single(2),
+                MessageRange::single(3),
+            ]
+        );
+        assert!(!conv.semantic_turns.join(" ").contains("tool output"));
     }
 
     #[test]

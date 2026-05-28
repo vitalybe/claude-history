@@ -17,6 +17,7 @@ fn test_conversation(path: PathBuf, custom_title: Option<String>) -> Conversatio
         preview_last: "hello body".to_string(),
         search_text_lower: search::normalize_for_search(&full_text),
         semantic_turns: vec!["hello body".to_string()],
+        semantic_turn_ranges: vec![crate::agent::refs::MessageRange::single(1)],
         full_text,
         project_name: Some("project".to_string()),
         project_path: None,
@@ -135,6 +136,7 @@ fn test_semantic_metadata(
                 conversation_index,
                 session: "test-session".to_string(),
                 chunk_index: 0,
+                message_range: crate::agent::refs::MessageRange::single(1),
             },
         },
     }

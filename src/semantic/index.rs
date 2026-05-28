@@ -1,6 +1,6 @@
 use crate::error::{AppError, Result};
 use crate::history::Conversation;
-use crate::search::literal::{Literal, conversation_matches_all_literals};
+use crate::search::literal::Literal;
 use crate::semantic::cache::{
     cache_miss_count, embed_chunks_with_progress_and_save, read_embedding_cache,
 };
@@ -11,7 +11,7 @@ use crate::semantic::types::{
     ChunkConfig, EmbeddedChunk, EmbeddingCache, SemanticCancellationToken, SemanticChunk,
     SemanticHit,
 };
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -59,6 +59,7 @@ struct ConversationSignature {
     index: usize,
     path: PathBuf,
     semantic_turns: Vec<String>,
+    semantic_turn_ranges: Vec<crate::agent::refs::MessageRange>,
 }
 
 #[derive(Clone)]
@@ -232,15 +233,13 @@ impl SemanticIndexState {
             });
         };
 
-        let hits = filter_hits_by_literals(
-            rank_chunks(
-                request.query,
-                &query_embedding,
-                &scoped_chunks,
-                cancellation,
-            )?,
-            request,
-        );
+        let scoped_chunks = filter_chunks_by_literals(scoped_chunks, request.literal_filters);
+        let hits = rank_chunks(
+            request.query,
+            &query_embedding,
+            &scoped_chunks,
+            cancellation,
+        )?;
         let progress = SemanticIndexProgress::Complete;
 
         Ok(SemanticIndexResponse {
@@ -287,9 +286,23 @@ impl Default for SemanticIndexState {
 
 impl SemanticIndexState {
     fn signature_matches(&self, request: &SemanticIndexRequest<'_>) -> bool {
-        self.signature
-            .as_ref()
-            .is_some_and(|signature| signature.corpus_version == request.corpus_version)
+        let Some(signature) = &self.signature else {
+            return false;
+        };
+        signature.corpus_version == request.corpus_version
+            && signature.chunk_config == self.chunk_config
+            && signature.conversations.len() == request.full_corpus.len()
+            && signature
+                .conversations
+                .iter()
+                .zip(request.full_corpus)
+                .all(|(stored, candidate)| {
+                    stored.index == candidate.index
+                        && stored.path == candidate.conversation.path
+                        && stored.semantic_turns == candidate.conversation.semantic_turns
+                        && stored.semantic_turn_ranges
+                            == candidate.conversation.semantic_turn_ranges
+                })
     }
 
     fn scoped_embedded_chunks(
@@ -342,27 +355,20 @@ fn candidate_chunks(
     )
 }
 
-fn filter_hits_by_literals(
-    hits: Vec<SemanticHit>,
-    request: &SemanticIndexRequest<'_>,
-) -> Vec<SemanticHit> {
-    if request.literal_filters.is_empty() {
-        return hits;
+fn filter_chunks_by_literals(
+    chunks: Vec<EmbeddedChunk>,
+    literal_filters: &[Literal],
+) -> Vec<EmbeddedChunk> {
+    if literal_filters.is_empty() {
+        return chunks;
     }
 
-    let conversation_by_index = request
-        .full_corpus
-        .iter()
-        .map(|candidate| (candidate.index, candidate.conversation.as_ref()))
-        .collect::<HashMap<_, _>>();
-
-    hits.into_iter()
-        .filter(|hit| {
-            conversation_by_index
-                .get(&hit.conversation_index)
-                .is_some_and(|conversation| {
-                    conversation_matches_all_literals(conversation, request.literal_filters)
-                })
+    chunks
+        .into_iter()
+        .filter(|chunk| {
+            literal_filters
+                .iter()
+                .all(|literal| literal.matches(&chunk.text))
         })
         .collect()
 }
@@ -378,6 +384,7 @@ fn semantic_index_signature(
             index: candidate.index,
             path: candidate.conversation.path.clone(),
             semantic_turns: candidate.conversation.semantic_turns.clone(),
+            semantic_turn_ranges: candidate.conversation.semantic_turn_ranges.clone(),
         })
         .collect();
 
@@ -449,6 +456,9 @@ mod tests {
             full_text:
                 "title sentinel summary sentinel cwd sentinel project sentinel tool output sentinel"
                     .to_string(),
+            semantic_turn_ranges: (1..=semantic_turns.len())
+                .map(crate::agent::refs::MessageRange::single)
+                .collect(),
             semantic_turns: semantic_turns.into_iter().map(str::to_string).collect(),
             search_text_lower:
                 "title sentinel summary sentinel cwd sentinel project sentinel tool output sentinel"
@@ -582,12 +592,10 @@ mod tests {
     }
 
     #[test]
-    fn literal_filters_use_conversation_text_and_semantic_query_text() {
+    fn literal_filters_require_hit_local_text() {
         let mut first = conversation("/projects/project-a/session-a.jsonl", vec!["visible alpha"]);
-        first.full_text = "conversation-level literal needle".to_string();
-        let mut second = conversation("/projects/project-a/session-b.jsonl", vec!["visible beta"]);
-        second.full_text = "missing literal".to_string();
-        let conversations = vec![first, second];
+        first.full_text = "visible alpha conversation-level literal needle".to_string();
+        let conversations = vec![first];
         let all = candidates_from(&conversations);
         let literals = vec![Literal::new("literal needle".to_string())];
         let query = "alpha".to_string();
@@ -616,9 +624,62 @@ mod tests {
 
         assert_eq!(embedder.query_calls, 1);
         assert_eq!(response.progress, SemanticIndexProgress::Complete);
+        assert!(response.hits.is_empty());
+    }
+
+    #[test]
+    fn lower_scoring_literal_chunk_can_survive_filtering() {
+        let conversations = vec![conversation(
+            "/projects/project-a/session-a.jsonl",
+            vec!["visible alpha", "visible gamma literal needle"],
+        )];
+        let all = candidates_from(&conversations);
+        let literals = vec![Literal::new("literal needle".to_string())];
+        let query = "alpha".to_string();
+        let request = SemanticIndexRequest {
+            query: &query,
+            literal_filters: &literals,
+            full_corpus: &all,
+            scope: &all,
+            corpus_version: 1,
+            prewarm: false,
+        };
+        let config = ChunkConfig {
+            target_chars: 30,
+            overlap_chars: 0,
+            context_turns: 0,
+        };
+        let mut cache = empty_embedding_cache(config);
+        for chunk in full_corpus_chunks(&request, config) {
+            let embedding = if chunk.text.contains("alpha") {
+                vec![1.0, 0.0]
+            } else {
+                vec![0.5, 0.5]
+            };
+            cache_passage(&mut cache, chunk.key, chunk.text, embedding);
+        }
+        let mut state = SemanticIndexState::with_cache(config, cache);
+        let mut embedder = FakeEmbedder::new();
+
+        let response = state
+            .refresh_or_prewarm(
+                &request,
+                &mut embedder,
+                &SemanticCancellationToken::new(),
+                |_| {},
+                |_| {},
+            )
+            .expect("rank succeeds");
+
         assert_eq!(response.hits.len(), 1);
-        assert_eq!(response.hits[0].conversation_index, 0);
-        assert_eq!(response.hits[0].explanation.matched_terms, vec!["alpha"]);
+        assert_eq!(
+            response.hits[0].explanation.evidence_preview,
+            "visible gamma literal needle"
+        );
+        assert_eq!(
+            response.hits[0].message_range,
+            crate::agent::refs::MessageRange::single(2)
+        );
     }
 
     #[test]
@@ -654,6 +715,36 @@ mod tests {
 
         assert!(response.hits.is_empty());
         assert_eq!(response.progress, SemanticIndexProgress::Complete);
+    }
+
+    #[test]
+    fn cache_hits_preserve_message_ranges() {
+        let conversations = vec![conversation(
+            "/projects/project-a/session-a.jsonl",
+            vec!["visible alpha"],
+        )];
+        let (query, candidates) = request("alpha", conversations, vec![0]);
+        let request = index_request(&query, &candidates);
+        let mut cache = empty_embedding_cache(ChunkConfig::default());
+        cache_request_passages(&mut cache, &request);
+        let mut state = SemanticIndexState::with_cache(ChunkConfig::default(), cache);
+        let mut embedder = FakeEmbedder::new();
+
+        let response = state
+            .refresh_or_prewarm(
+                &request,
+                &mut embedder,
+                &SemanticCancellationToken::new(),
+                |_| {},
+                |_| {},
+            )
+            .expect("cached rank succeeds");
+
+        assert_eq!(embedder.passage_calls, 0);
+        assert_eq!(
+            response.hits[0].message_range,
+            crate::agent::refs::MessageRange::single(1)
+        );
     }
 
     #[test]

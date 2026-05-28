@@ -5,6 +5,7 @@
 //! search text normalization on startup for unchanged files.
 
 use super::{Conversation, ParseError};
+use crate::agent::refs::MessageRange;
 use chrono::{Local, TimeZone};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -13,7 +14,7 @@ use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 const CACHE_MAGIC: [u8; 8] = *b"CLHIST01";
-const SCHEMA_VERSION: u32 = 5;
+const SCHEMA_VERSION: u32 = 6;
 
 #[derive(Serialize, Deserialize)]
 struct ProjectCache {
@@ -38,6 +39,8 @@ pub struct CacheEntry {
     pub full_text: String,
     #[serde(default)]
     pub semantic_turns: Vec<String>,
+    #[serde(default)]
+    pub semantic_turn_ranges: Vec<MessageRange>,
     pub search_text_lower: String,
     pub cwd: Option<PathBuf>,
     pub message_count: usize,
@@ -137,6 +140,7 @@ pub fn empty_entry(file_size: u64, mtime: SystemTime) -> CacheEntry {
         preview_last: String::new(),
         full_text: String::new(),
         semantic_turns: Vec::new(),
+        semantic_turn_ranges: Vec::new(),
         search_text_lower: String::new(),
         cwd: None,
         message_count: 0,
@@ -166,6 +170,7 @@ pub fn entry_from_conversation(
         preview_last: conv.preview_last.clone(),
         full_text: conv.full_text.clone(),
         semantic_turns: conv.semantic_turns.clone(),
+        semantic_turn_ranges: conv.semantic_turn_ranges.clone(),
         search_text_lower: conv.search_text_lower.clone(),
         cwd: conv.cwd.clone(),
         message_count: conv.message_count,
@@ -209,6 +214,7 @@ pub fn conversation_from_entry(entry: &CacheEntry, path: PathBuf, show_last: boo
         preview_last: entry.preview_last.clone(),
         full_text: entry.full_text.clone(),
         semantic_turns: entry.semantic_turns.clone(),
+        semantic_turn_ranges: entry.semantic_turn_ranges.clone(),
         search_text_lower: entry.search_text_lower.clone(),
         project_name: None,
         project_path: None,
@@ -258,6 +264,7 @@ mod tests {
             preview_last: "Hi there ... Hello world".to_string(),
             full_text: "Hello world Hi there".to_string(),
             semantic_turns: vec!["Hello world".to_string(), "Hi there".to_string()],
+            semantic_turn_ranges: vec![MessageRange::single(1), MessageRange::single(2)],
             search_text_lower: normalize_for_search("Hello world Hi there"),
             project_name: Some("test-project".to_string()),
             project_path: Some(PathBuf::from("/test/project")),
@@ -297,6 +304,7 @@ mod tests {
         assert_eq!(restored.preview_last, conv.preview_last);
         assert_eq!(restored.full_text, conv.full_text);
         assert_eq!(restored.semantic_turns, conv.semantic_turns);
+        assert_eq!(restored.semantic_turn_ranges, conv.semantic_turn_ranges);
         assert_eq!(restored.search_text_lower, conv.search_text_lower);
         assert_eq!(restored.cwd, conv.cwd);
         assert_eq!(restored.message_count, conv.message_count);

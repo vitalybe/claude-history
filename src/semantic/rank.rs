@@ -36,6 +36,7 @@ pub fn rank_chunks(
                 conversation_index: chunk.conversation_index,
                 session: chunk.session.clone(),
                 chunk_index: chunk.chunk_index,
+                message_range: chunk.message_range,
             },
         };
         let hit = SemanticHit::new(score_breakdown, explanation);
@@ -147,6 +148,7 @@ mod tests {
             chunk_index,
             key: format!("{session}:{chunk_index}"),
             text: text.to_string(),
+            message_range: crate::agent::refs::MessageRange::single(chunk_index + 1),
             embedding,
         }
     }
@@ -172,6 +174,34 @@ mod tests {
         assert_eq!(hits[0].snippet, "rust cache");
         assert!(hits[0].semantic_score > hits[1].semantic_score);
         assert_eq!(hits[0].lexical_score, 0.2);
+    }
+
+    #[test]
+    fn ranking_preserves_message_range() {
+        let chunks = vec![embedded(
+            "session-a",
+            0,
+            3,
+            "range evidence",
+            vec![1.0, 0.0],
+        )];
+
+        let hits = rank_chunks(
+            "range",
+            &[1.0, 0.0],
+            &chunks,
+            &SemanticCancellationToken::new(),
+        )
+        .unwrap();
+
+        assert_eq!(
+            hits[0].message_range,
+            crate::agent::refs::MessageRange::single(4)
+        );
+        assert_eq!(
+            hits[0].explanation.chunk.message_range,
+            crate::agent::refs::MessageRange::single(4)
+        );
     }
 
     #[test]

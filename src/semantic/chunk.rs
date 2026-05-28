@@ -1,3 +1,4 @@
+use crate::agent::refs::MessageRange;
 use crate::history::Conversation;
 use crate::semantic::types::{ChunkConfig, FileMetadata, SemanticChunk};
 use std::path::{Path, PathBuf};
@@ -16,7 +17,11 @@ where
         let semantic_turns = conversation
             .semantic_turns
             .iter()
-            .map(String::as_str)
+            .zip(conversation.semantic_turn_ranges.iter())
+            .map(|(text, range)| SemanticTurn {
+                text: text.as_str(),
+                range: *range,
+            })
             .collect::<Vec<_>>();
 
         for (chunk_index, chunk) in group_turns(&semantic_turns, config).into_iter().enumerate() {
@@ -32,64 +37,106 @@ where
     chunks
 }
 
-fn group_turns(turns: &[&str], config: ChunkConfig) -> Vec<String> {
+#[derive(Clone, Copy)]
+struct SemanticTurn<'a> {
+    text: &'a str,
+    range: MessageRange,
+}
+
+struct ChunkText {
+    text: String,
+    message_range: MessageRange,
+}
+
+fn group_turns(turns: &[SemanticTurn<'_>], config: ChunkConfig) -> Vec<ChunkText> {
     let mut chunks = Vec::new();
     let mut current = String::new();
+    let mut current_range = None;
 
     for (index, turn) in turns.iter().enumerate() {
-        let turn = turn.trim();
-        if turn.is_empty() {
+        let text = turn.text.trim();
+        if text.is_empty() {
             continue;
         }
 
-        if turn.len() > config.target_chars {
-            flush_chunk(&mut chunks, &mut current);
-            split_long_text(turn, &mut chunks, config);
+        if text.len() > config.target_chars {
+            flush_chunk(&mut chunks, &mut current, &mut current_range);
+            split_long_text(text, turn.range, &mut chunks, config);
             continue;
         }
 
         let separator_len = if current.is_empty() { 0 } else { 2 };
-        if !current.is_empty() && current.len() + separator_len + turn.len() > config.target_chars {
-            flush_chunk(&mut chunks, &mut current);
-            append_context(turns, index, &mut current, config);
+        if !current.is_empty() && current.len() + separator_len + text.len() > config.target_chars {
+            flush_chunk(&mut chunks, &mut current, &mut current_range);
+            append_context(turns, index, &mut current, &mut current_range, config);
         }
 
-        if !current.is_empty() {
-            current.push_str("\n\n");
-        }
-        current.push_str(turn);
+        append_turn_text(&mut current, text);
+        current_range = Some(union_range(current_range, turn.range));
     }
 
-    flush_chunk(&mut chunks, &mut current);
+    flush_chunk(&mut chunks, &mut current, &mut current_range);
     chunks
 }
 
-fn append_context(turns: &[&str], index: usize, current: &mut String, config: ChunkConfig) {
+fn append_context(
+    turns: &[SemanticTurn<'_>],
+    index: usize,
+    current: &mut String,
+    current_range: &mut Option<MessageRange>,
+    config: ChunkConfig,
+) {
     let start = index.saturating_sub(config.context_turns);
     for turn in &turns[start..index] {
-        let turn = turn.trim();
-        if turn.is_empty() || turn.len() + current.len() > config.overlap_chars {
+        let text = turn.text.trim();
+        if text.is_empty() || text.len() + current.len() > config.overlap_chars {
             continue;
         }
-        if !current.is_empty() {
-            current.push_str("\n\n");
-        }
-        current.push_str(turn);
+        append_turn_text(current, text);
+        *current_range = Some(union_range(*current_range, turn.range));
     }
 }
 
-fn flush_chunk(chunks: &mut Vec<String>, current: &mut String) {
-    if !current.trim().is_empty() {
-        chunks.push(std::mem::take(current));
+fn append_turn_text(current: &mut String, turn: &str) {
+    if !current.is_empty() {
+        current.push_str("\n\n");
+    }
+    current.push_str(turn);
+}
+
+fn flush_chunk(
+    chunks: &mut Vec<ChunkText>,
+    current: &mut String,
+    current_range: &mut Option<MessageRange>,
+) {
+    if !current.trim().is_empty()
+        && let Some(message_range) = current_range.take()
+    {
+        chunks.push(ChunkText {
+            text: std::mem::take(current),
+            message_range,
+        });
     }
 }
 
-fn split_long_text(mut text: &str, chunks: &mut Vec<String>, config: ChunkConfig) {
+fn split_long_text(
+    mut text: &str,
+    message_range: MessageRange,
+    chunks: &mut Vec<ChunkText>,
+    config: ChunkConfig,
+) {
     while !text.is_empty() {
         let (chunk, rest) = split_chunk(text, config);
-        chunks.push(chunk.to_owned());
+        chunks.push(ChunkText {
+            text: chunk.to_owned(),
+            message_range,
+        });
         text = rest;
     }
+}
+
+fn union_range(current: Option<MessageRange>, next: MessageRange) -> MessageRange {
+    current.map_or(next, |current| current.union(&next))
 }
 
 fn push_chunk(
@@ -97,9 +144,9 @@ fn push_chunk(
     conversation: &Conversation,
     conversation_index: usize,
     chunk_index: usize,
-    chunk: &str,
+    chunk: &ChunkText,
 ) {
-    let text = normalize_snippet(chunk);
+    let text = normalize_snippet(&chunk.text);
     if !text.is_empty() {
         let session = conversation
             .path
@@ -114,6 +161,7 @@ fn push_chunk(
             chunk_index,
             key,
             text,
+            message_range: chunk.message_range,
             metadata: file_metadata(conversation),
         });
     }
@@ -186,6 +234,7 @@ mod tests {
             preview_first: "visible user text".to_string(),
             preview_last: "visible assistant text".to_string(),
             full_text: "title sentinel summary sentinel cwd sentinel project sentinel tool output sentinel full text only sentinel".to_string(),
+            semantic_turn_ranges: (1..=semantic_turns.len()).map(MessageRange::single).collect(),
             semantic_turns,
             search_text_lower: "title sentinel summary sentinel cwd sentinel project sentinel tool output sentinel full text only sentinel".to_string(),
             project_name: Some("project sentinel".to_string()),
@@ -221,6 +270,28 @@ mod tests {
         assert!(!chunks[0].text.contains("project sentinel"));
         assert!(!chunks[0].text.contains("tool output sentinel"));
         assert!(!chunks[0].text.contains("full text only sentinel"));
+    }
+
+    #[test]
+    fn semantic_chunks_record_message_ranges() {
+        let conversation = test_conversation(
+            "/projects/project-a/session-1.jsonl",
+            vec![
+                "first".to_string(),
+                "second".to_string(),
+                "third".to_string(),
+            ],
+        );
+        let config = ChunkConfig {
+            target_chars: 13,
+            overlap_chars: 0,
+            context_turns: 0,
+        };
+
+        let chunks = build_chunks(&[&conversation], config);
+
+        assert_eq!(chunks[0].message_range, MessageRange { start: 1, end: 2 });
+        assert_eq!(chunks[1].message_range, MessageRange::single(3));
     }
 
     #[test]

@@ -184,9 +184,9 @@ The first semantic search may download the local model and generate embeddings,
 which can take a while for large histories.
 
 Quoted text works in semantic mode too. For example,
-`deployment "DEPLOYMENT_TOKEN"` finds conversations about deployment that also
-contain the exact identifier. A quoted-only semantic search, such as
-`"DEPLOYMENT_TOKEN"`, returns exact matches newest-first.
+`deployment "DEPLOYMENT_TOKEN"` finds conversations where the matching visible
+semantic evidence also contains the exact identifier. A quoted-only semantic
+search, such as `"DEPLOYMENT_TOKEN"`, returns exact matches newest-first.
 
 Press `Ctrl+T` in the conversation list to switch between lexical and semantic
 search. To start in semantic mode by default, set:

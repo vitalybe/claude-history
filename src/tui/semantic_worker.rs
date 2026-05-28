@@ -344,31 +344,19 @@ fn rank_or_prewarm_semantic_request(
 fn semantic_search_response(
     generation: u64,
     response: SemanticIndexResponse,
-    conversations: &[SemanticIndexCandidate],
-    parsed: &ParsedQuery,
+    _conversations: &[SemanticIndexCandidate],
+    _parsed: &ParsedQuery,
 ) -> SemanticSearchResponse {
     let filtered = response
         .hits
         .iter()
         .map(|hit| hit.conversation_index)
         .collect::<Vec<_>>();
-    let conversation_by_index = conversations
-        .iter()
-        .map(|candidate| (candidate.index, candidate.conversation.as_ref()))
-        .collect::<HashMap<_, _>>();
     let metadata = response
         .hits
         .into_iter()
         .map(|hit| {
-            let mut explanation = hit.explanation;
-            if !conversation_matches_all_literals_in_text(
-                &explanation.evidence_preview,
-                parsed.literals(),
-            ) && let Some(conversation) = conversation_by_index.get(&hit.conversation_index)
-            {
-                explanation.evidence_preview =
-                    literal_evidence_preview(conversation, parsed, &explanation.evidence_preview);
-            }
+            let explanation = hit.explanation;
             (
                 hit.conversation_index,
                 SemanticResultMetadata {
@@ -437,13 +425,6 @@ fn exact_literal_semantic_response(
         progress: SemanticProgress::Complete,
         prewarm,
     }
-}
-
-fn conversation_matches_all_literals_in_text(
-    text: &str,
-    literals: &[crate::search::literal::Literal],
-) -> bool {
-    literals.iter().all(|literal| literal.matches(text))
 }
 
 fn literal_evidence_preview(
@@ -527,6 +508,7 @@ fn exact_literal_metadata(
                     .unwrap_or("?")
                     .to_string(),
                 chunk_index: 0,
+                message_range: crate::agent::refs::MessageRange::single(1),
             },
         },
     }
@@ -583,6 +565,9 @@ mod tests {
             full_text:
                 "title sentinel summary sentinel cwd sentinel project sentinel tool output sentinel"
                     .to_string(),
+            semantic_turn_ranges: (1..=semantic_turns.len())
+                .map(crate::agent::refs::MessageRange::single)
+                .collect(),
             semantic_turns: semantic_turns.into_iter().map(str::to_string).collect(),
             search_text_lower: normalize_for_search(
                 "title sentinel summary sentinel cwd sentinel project sentinel tool output sentinel",
@@ -625,6 +610,7 @@ mod tests {
                             conversation_index: 42,
                             session: "session-b".to_string(),
                             chunk_index: 0,
+                            message_range: crate::agent::refs::MessageRange::single(1),
                         },
                     },
                 )],

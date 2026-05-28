@@ -57,6 +57,7 @@ pub struct Conversation {
     pub preview_last: String,
     pub full_text: String,
     pub semantic_turns: Vec<String>,
+    pub semantic_turn_ranges: Vec<crate::agent::refs::MessageRange>,
     /// Pre-normalized lowercase search text (avoids re-normalizing on every startup)
     pub search_text_lower: String,
     pub project_name: Option<String>,
