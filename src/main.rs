@@ -19,11 +19,13 @@ mod tui;
 mod update;
 
 use clap::Parser;
-use cli::{AgentCommand, AgentReadArgs, Args, Commands};
+use cli::{AgentCommand, AgentOutlineArgs, AgentReadArgs, Args, Commands};
 use error::{AppError, Result};
 use search::mode::{SearchModeResolution, TuiSearchMode};
 use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
+
+type ResolvedReadRefs = Vec<(agent::refs::ReadRef, agent::refs::ResolvedConversation)>;
 use std::process::Command;
 use tui::ListSearchMode;
 
@@ -431,28 +433,93 @@ fn run_agent_command(command: AgentCommand) -> Result<()> {
     match command {
         AgentCommand::Search(args) => {
             let _ = (args.scope(), args.mode_override());
+            Err(AppError::NotImplemented(
+                "agent search is not implemented yet".to_string(),
+            ))
         }
         AgentCommand::Within(args) => {
             let _ = args.mode_override();
-            resolve_agent_conversation_arg(&args.conversation)?;
+            resolve_agent_conversation_arg(&args.conversation, None)?;
+            Err(AppError::NotImplemented(
+                "agent within is not implemented yet".to_string(),
+            ))
         }
-        AgentCommand::Read(args) => {
-            validate_agent_read_args(&args, None)?;
-        }
-        AgentCommand::Outline(args) => {
-            resolve_agent_conversation_arg(&args.conversation)?;
-        }
+        AgentCommand::Read(args) => run_agent_read(&args, None).map(|output| {
+            print!("{output}");
+        }),
+        AgentCommand::Outline(args) => run_agent_outline(&args, None).map(|output| {
+            print!("{output}");
+        }),
     }
+}
 
-    Err(AppError::NotImplemented(
-        "agent commands are not implemented yet".to_string(),
+fn run_agent_read(
+    args: &AgentReadArgs,
+    keys: Option<&[agent::refs::AgentConversationKey]>,
+) -> Result<String> {
+    let (resolved_refs, focus) = resolve_agent_read_args(args, keys)?;
+    let options = agent_protocol_options(
+        args.no_budget,
+        args.budget,
+        args.tools,
+        args.tool_results,
+        args.thinking,
+        args.subagents,
+    );
+    let transcripts = resolved_refs
+        .iter()
+        .map(|(_, resolved)| agent::transcript::AgentTranscript::load(&resolved.key.path))
+        .collect::<Result<Vec<_>>>()?;
+    let requests = resolved_refs
+        .iter()
+        .zip(transcripts.iter())
+        .map(
+            |((read_ref, resolved), transcript)| agent::protocol::ReadRequest {
+                resolved,
+                transcript,
+                range: read_ref.range,
+            },
+        )
+        .collect::<Vec<_>>();
+    let protocol_focus = focus.map(|focus| {
+        let conversation_full_ref = focus.conversation.as_ref().and_then(|conversation| {
+            resolved_refs
+                .iter()
+                .find(|(_, resolved)| resolved.reference.full_ref().starts_with(conversation))
+                .map(|(_, resolved)| resolved.reference.full_ref())
+        });
+        agent::protocol::ProtocolFocus {
+            conversation_full_ref,
+            range: focus.range,
+        }
+    });
+    agent::protocol::format_read(&requests, protocol_focus, options)
+}
+
+fn run_agent_outline(
+    args: &AgentOutlineArgs,
+    keys: Option<&[agent::refs::AgentConversationKey]>,
+) -> Result<String> {
+    let resolved = resolve_agent_conversation_arg(&args.conversation, keys)?;
+    let transcript = agent::transcript::AgentTranscript::load(&resolved.key.path)?;
+    Ok(agent::protocol::format_outline(
+        &resolved,
+        &transcript,
+        agent_protocol_options(
+            args.no_budget,
+            args.budget,
+            args.tools,
+            args.tool_results,
+            args.thinking,
+            args.subagents,
+        ),
     ))
 }
 
-fn validate_agent_read_args(
+fn resolve_agent_read_args(
     args: &AgentReadArgs,
     keys: Option<&[agent::refs::AgentConversationKey]>,
-) -> Result<()> {
+) -> Result<(ResolvedReadRefs, Option<agent::refs::FocusRef>)> {
     let refs = args
         .refs
         .iter()
@@ -473,8 +540,12 @@ fn validate_agent_read_args(
                 .map(|resolved| (reference.clone(), resolved))
         })
         .collect::<Result<Vec<_>>>()?;
-    if let Some(focus) = &args.focus {
-        let focus = agent::refs::parse_focus_ref(focus)?;
+    let focus = args
+        .focus
+        .as_deref()
+        .map(agent::refs::parse_focus_ref)
+        .transpose()?;
+    if let Some(focus) = &focus {
         let focus_conversation = focus
             .conversation
             .as_ref()
@@ -482,17 +553,43 @@ fn validate_agent_read_args(
             .transpose()?;
         agent::refs::validate_resolved_focus_in_ranges(
             &resolved_refs,
-            &focus,
+            focus,
             focus_conversation.as_ref(),
         )?;
     }
-    Ok(())
+    Ok((resolved_refs, focus))
 }
 
-fn resolve_agent_conversation_arg(reference: &str) -> Result<agent::refs::ResolvedConversation> {
-    let conversations = history::load_all_conversations(false, None)?;
-    let keys = agent::refs::conversation_keys_from_conversations(&conversations)?;
-    agent::refs::resolve_conversation_ref(&keys, reference)
+fn agent_protocol_options(
+    no_budget: bool,
+    budget: usize,
+    tools: bool,
+    tool_results: bool,
+    thinking: bool,
+    subagents: bool,
+) -> agent::protocol::ProtocolOptions {
+    agent::protocol::ProtocolOptions {
+        budget: (!no_budget).then_some(budget),
+        tools,
+        tool_results,
+        thinking,
+        subagents,
+    }
+}
+
+fn resolve_agent_conversation_arg(
+    reference: &str,
+    keys: Option<&[agent::refs::AgentConversationKey]>,
+) -> Result<agent::refs::ResolvedConversation> {
+    let loaded_keys;
+    let keys = if let Some(keys) = keys {
+        keys
+    } else {
+        let conversations = history::load_all_conversations(false, None)?;
+        loaded_keys = agent::refs::conversation_keys_from_conversations(&conversations)?;
+        &loaded_keys
+    };
+    agent::refs::resolve_conversation_ref(keys, reference)
 }
 
 #[cfg(test)]
@@ -522,8 +619,122 @@ mod agent_command_tests {
             thinking: false,
             subagents: false,
         };
-        let err = validate_agent_read_args(&args, Some(&keys)).unwrap_err();
+        let err = resolve_agent_read_args(&args, Some(&keys)).unwrap_err();
         assert!(err.to_string().contains("outside"));
+    }
+
+    fn write_jsonl(dir: &tempfile::TempDir, filename: &str, lines: &[String]) -> PathBuf {
+        let path = dir.path().join(filename);
+        std::fs::write(&path, lines.join("\n")).unwrap();
+        path
+    }
+
+    fn user(text: &str) -> String {
+        serde_json::json!({
+            "type": "user",
+            "timestamp": "2024-01-01T00:00:00Z",
+            "message": {"role": "user", "content": text}
+        })
+        .to_string()
+    }
+
+    fn assistant(text: &str) -> String {
+        serde_json::json!({
+            "type": "assistant",
+            "timestamp": "2024-01-01T00:00:01Z",
+            "message": {"role": "assistant", "content": [{"type": "text", "text": text}]}
+        })
+        .to_string()
+    }
+
+    #[test]
+    fn read_command_loads_transcript_and_formats_protocol() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = write_jsonl(
+            &dir,
+            "session.jsonl",
+            &[user("question"), assistant("answer")],
+        );
+        let keys = vec![AgentConversationKey::new(
+            "project-a",
+            "session.jsonl",
+            path,
+        )];
+        let conversation = keys[0].conversation_ref().canonical();
+        let args = AgentReadArgs {
+            refs: vec![format!("{conversation}:m1..m2")],
+            focus: None,
+            budget: 6000,
+            no_budget: false,
+            tools: false,
+            tool_results: false,
+            thinking: false,
+            subagents: false,
+        };
+
+        let output = run_agent_read(&args, Some(&keys)).unwrap();
+
+        assert!(output.starts_with("protocol agent-read v=1"));
+        assert!(output.contains("message m1 role=user line=1"));
+        assert!(output.contains("| question\n"));
+        assert!(output.contains("message m2 role=assistant line=2"));
+        assert!(!output.contains("not implemented"));
+    }
+
+    #[test]
+    fn outline_command_loads_transcript_and_formats_protocol() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = write_jsonl(
+            &dir,
+            "session.jsonl",
+            &[user("question"), assistant("answer")],
+        );
+        let keys = vec![AgentConversationKey::new(
+            "project-a",
+            "session.jsonl",
+            path,
+        )];
+        let args = AgentOutlineArgs {
+            conversation: keys[0].conversation_ref().canonical(),
+            budget: 6000,
+            no_budget: false,
+            tools: false,
+            tool_results: false,
+            thinking: false,
+            subagents: false,
+        };
+
+        let output = run_agent_outline(&args, Some(&keys)).unwrap();
+
+        assert!(output.starts_with("protocol agent-outline v=1"));
+        assert!(output.contains("m1 role=user c~8 question\n"));
+        assert!(output.contains("m2 role=assistant c~6 answer\n"));
+    }
+
+    #[test]
+    fn read_command_rejects_out_of_range_loaded_messages() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = write_jsonl(&dir, "session.jsonl", &[user("question")]);
+        let keys = vec![AgentConversationKey::new(
+            "project-a",
+            "session.jsonl",
+            path,
+        )];
+        let conversation = keys[0].conversation_ref().canonical();
+        let args = AgentReadArgs {
+            refs: vec![format!("{conversation}:m1..m2")],
+            focus: None,
+            budget: 6000,
+            no_budget: false,
+            tools: false,
+            tool_results: false,
+            thinking: false,
+            subagents: false,
+        };
+
+        let err = run_agent_read(&args, Some(&keys)).unwrap_err();
+
+        assert!(err.to_string().contains("exceeds transcript length"));
     }
 }
 
