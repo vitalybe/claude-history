@@ -27,7 +27,9 @@ pub use loader::{
     delete_session_by_uuid, find_jsonl_by_uuid, load_all_conversations,
     load_all_conversations_streaming,
 };
-pub use parser::process_conversation_file;
+pub(crate) use parser::{
+    extract_skill_preview, is_clear_metadata_message, process_conversation_file,
+};
 pub use path::{convert_path_to_project_dir_name, format_short_name_from_path, is_same_project};
 pub use rename::append_session_rename;
 

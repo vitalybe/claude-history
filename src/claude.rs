@@ -76,21 +76,21 @@ pub enum LogEntry {
     },
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Clone)]
 pub struct UserMessage {
     #[allow(dead_code)]
     pub role: String,
     pub content: UserContent,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Clone)]
 #[serde(untagged)]
 pub enum UserContent {
     String(String),
     Blocks(Vec<ContentBlock>),
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Clone)]
 pub struct AssistantMessage {
     #[allow(dead_code)]
     pub role: String,
@@ -113,7 +113,7 @@ pub struct TokenUsage {
     pub cache_read_input_tokens: u64,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Clone)]
 #[serde(tag = "type")]
 #[serde(rename_all = "snake_case")]
 pub enum ContentBlock {

@@ -1,3 +1,4 @@
+mod agent;
 mod claude;
 mod cli;
 mod config;
@@ -18,7 +19,7 @@ mod tui;
 mod update;
 
 use clap::Parser;
-use cli::{AgentCommand, Args, Commands};
+use cli::{AgentCommand, AgentReadArgs, Args, Commands};
 use error::{AppError, Result};
 use search::mode::{SearchModeResolution, TuiSearchMode};
 use std::io::IsTerminal;
@@ -433,13 +434,97 @@ fn run_agent_command(command: AgentCommand) -> Result<()> {
         }
         AgentCommand::Within(args) => {
             let _ = args.mode_override();
+            resolve_agent_conversation_arg(&args.conversation)?;
         }
-        AgentCommand::Read(_) | AgentCommand::Outline(_) => {}
+        AgentCommand::Read(args) => {
+            validate_agent_read_args(&args, None)?;
+        }
+        AgentCommand::Outline(args) => {
+            resolve_agent_conversation_arg(&args.conversation)?;
+        }
     }
 
     Err(AppError::NotImplemented(
         "agent commands are not implemented yet".to_string(),
     ))
+}
+
+fn validate_agent_read_args(
+    args: &AgentReadArgs,
+    keys: Option<&[agent::refs::AgentConversationKey]>,
+) -> Result<()> {
+    let refs = args
+        .refs
+        .iter()
+        .map(|reference| agent::refs::parse_read_ref(reference))
+        .collect::<Result<Vec<_>>>()?;
+    let loaded_keys;
+    let keys = if let Some(keys) = keys {
+        keys
+    } else {
+        let conversations = history::load_all_conversations(false, None)?;
+        loaded_keys = agent::refs::conversation_keys_from_conversations(&conversations)?;
+        &loaded_keys
+    };
+    let resolved_refs = refs
+        .iter()
+        .map(|reference| {
+            agent::refs::resolve_conversation_ref(keys, &reference.conversation)
+                .map(|resolved| (reference.clone(), resolved))
+        })
+        .collect::<Result<Vec<_>>>()?;
+    if let Some(focus) = &args.focus {
+        let focus = agent::refs::parse_focus_ref(focus)?;
+        let focus_conversation = focus
+            .conversation
+            .as_ref()
+            .map(|conversation| agent::refs::resolve_conversation_ref(keys, conversation))
+            .transpose()?;
+        agent::refs::validate_resolved_focus_in_ranges(
+            &resolved_refs,
+            &focus,
+            focus_conversation.as_ref(),
+        )?;
+    }
+    Ok(())
+}
+
+fn resolve_agent_conversation_arg(reference: &str) -> Result<agent::refs::ResolvedConversation> {
+    let conversations = history::load_all_conversations(false, None)?;
+    let keys = agent::refs::conversation_keys_from_conversations(&conversations)?;
+    agent::refs::resolve_conversation_ref(&keys, reference)
+}
+
+#[cfg(test)]
+mod agent_command_tests {
+    use super::*;
+    use crate::agent::refs::AgentConversationKey;
+
+    fn key(project: &str, filename: &str) -> AgentConversationKey {
+        AgentConversationKey::new(
+            project,
+            filename,
+            PathBuf::from(format!("/{project}/{filename}")),
+        )
+    }
+
+    #[test]
+    fn read_validation_rejects_focus_outside_range() {
+        let keys = vec![key("project-a", "session.jsonl")];
+        let conversation = keys[0].conversation_ref().canonical();
+        let args = AgentReadArgs {
+            refs: vec![format!("{conversation}:m2..m4")],
+            focus: Some("m5".to_string()),
+            budget: 6000,
+            no_budget: false,
+            tools: false,
+            tool_results: false,
+            thinking: false,
+            subagents: false,
+        };
+        let err = validate_agent_read_args(&args, Some(&keys)).unwrap_err();
+        assert!(err.to_string().contains("outside"));
+    }
 }
 
 fn tui_search_mode(mode: TuiSearchMode) -> ListSearchMode {
