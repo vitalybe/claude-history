@@ -73,6 +73,15 @@ pub struct AgentSearchArgs {
     /// Maximum number of results
     #[arg(long, default_value_t = 20, value_parser = non_zero_usize)]
     pub top: usize,
+    /// Return flat message-hit results instead of grouped conversation results
+    #[arg(long)]
+    pub flat: bool,
+    /// Maximum evidence hits to show per conversation in grouped output
+    #[arg(long, default_value_t = 2, value_parser = non_zero_usize)]
+    pub hits_per_conv: usize,
+    /// Disable duplicate suppression inside grouped conversation results
+    #[arg(long)]
+    pub all_hits: bool,
     /// Search only the current workspace
     #[arg(long, group = "agent_search_scope")]
     pub local: bool,
@@ -444,6 +453,9 @@ mod tests {
             } => {
                 assert_eq!(search.query, "cache warming");
                 assert_eq!(search.top, 7);
+                assert!(!search.flat);
+                assert_eq!(search.hits_per_conv, 2);
+                assert!(!search.all_hits);
                 assert_eq!(search.scope(), AgentScope::Local);
                 assert_eq!(search.mode_override(), Some(SearchMode::Hybrid));
             }
@@ -460,11 +472,55 @@ mod tests {
                 command: AgentCommand::Search(search),
             } => {
                 assert_eq!(search.top, 20);
+                assert!(!search.flat);
+                assert_eq!(search.hits_per_conv, 2);
+                assert!(!search.all_hits);
                 assert_eq!(search.scope(), AgentScope::Global);
                 assert_eq!(search.mode_override(), None);
             }
             other => panic!("unexpected command: {other:?}"),
         }
+    }
+
+    #[test]
+    fn agent_search_captures_browsing_flags() {
+        let args = Args::try_parse_from([
+            "claude-history",
+            "agent",
+            "search",
+            "cache",
+            "--flat",
+            "--hits-per-conv",
+            "5",
+            "--all-hits",
+        ])
+        .unwrap();
+
+        match args.command.unwrap() {
+            Commands::Agent {
+                command: AgentCommand::Search(search),
+            } => {
+                assert!(search.flat);
+                assert_eq!(search.hits_per_conv, 5);
+                assert!(search.all_hits);
+            }
+            other => panic!("unexpected command: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn agent_within_rejects_search_browsing_flags() {
+        let err = Args::try_parse_from([
+            "claude-history",
+            "agent",
+            "within",
+            "ch_abc123",
+            "cache",
+            "--flat",
+        ])
+        .expect_err("search-only flag should fail for within");
+
+        assert!(err.to_string().contains("unexpected argument '--flat'"));
     }
 
     #[test]

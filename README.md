@@ -249,10 +249,11 @@ $ claude-history agent search --lexical "auth cache bug" --top 2
 ```
 
 ```text
-protocol agent-search v=1 mode=lexical hits=1
+protocol agent-search v=2 mode=lexical groups=1 hits=1
 query text=auth%20cache%20bug hits=1
-title ref=ch_1234abcd5678 text=fix%20auth%20cache
-hit ref=ch_1234abcd5678 source=lexical score=12.500000 focus=m8..m8 preview=auth%20cache%20bug%20repro
+groups count=1
+conversation rank=1 ref=ch_1234abcd5678 score=12.500000 hits=1 total=1 | fix auth cache
+hit ref=ch_1234abcd5678 source=lexical score=12.500000 focus=m8..m8 | auth cache bug repro
 read ref=ch_1234abcd5678:m7..m9 focus=m8..m8
 ```
 
@@ -292,13 +293,16 @@ addresses. If you read ranges from more than one conversation in a single
 command, qualify focus as `--focus ch_1234abcd5678:m8..m8`, or run one read
 command per emitted read line.
 
-Header values such as `query`, `title`, `preview`, and `path` are
-percent-encoded atoms. Refs and focus ranges are safe to copy as opaque fields;
-decode other metadata only if you need to display it.
+Header atoms such as `query text=` and `path=` are percent-encoded. Search,
+within, and outline snippets appear after `|` as normalized single-line text.
+Refs and focus ranges are safe to copy as opaque fields.
 
-Agent search is global by default. Pass `--local` to search only the current
-workspace, or `--all` to be explicit about global scope. `--top 20` is the default
-result limit. Search mode follows `[search].mode` unless `--lexical`, `--exact`,
+Agent search is global by default and grouped by conversation. Pass `--local` to
+search only the current workspace, or `--all` to be explicit about global scope.
+`--top 20` is the default conversation limit, and `--hits-per-conv 2` is the
+default evidence limit per conversation. Use `--flat` for flat message-hit output
+or `--all-hits` to disable duplicate suppression while keeping the per-conversation
+cap. Search mode follows `[search].mode` unless `--lexical`, `--exact`,
 `--semantic`, or `--hybrid` is passed; the deprecated `[tui].semantic_search`
 setting is only a compatibility fallback when `[search].mode` is unset. Quoted-only
 queries use exact mode regardless of config.

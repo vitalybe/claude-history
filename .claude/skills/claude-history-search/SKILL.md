@@ -10,7 +10,18 @@ Start with a bounded lexical search so user search configuration cannot accident
 claude-history agent search --lexical "auth cache bug"
 ```
 
-The output is protocol text, not JSON. Copy the emitted `read ref=... focus=...` line as an instruction for the next command. Do not treat hit order, scores, ranks, or chunks as stable addresses.
+The output is protocol text, not JSON. Global search is grouped by conversation, with readable snippets after `|` and copyable `read ref=... focus=...` lines:
+
+```text
+protocol agent-search v=2 mode=lexical groups=1 hits=1
+query text=auth%20cache%20bug hits=1
+groups count=1
+conversation rank=1 ref=ch_1234abcd5678 score=12.500000 hits=1 total=1 | fix auth cache
+hit ref=ch_1234abcd5678 source=lexical score=12.500000 focus=m8..m8 | auth cache bug repro
+read ref=ch_1234abcd5678:m7..m9 focus=m8..m8
+```
+
+Copy the emitted `read ref=... focus=...` line as an instruction for the next command. Do not treat hit order, scores, ranks, or chunks as stable addresses.
 
 If the top hit is probably the right conversation but you need better evidence inside it, narrow first:
 
@@ -32,7 +43,7 @@ claude-history agent read ch_1234abcd5678:m7..m9 --focus m8..m8
 
 Use one `agent read` command per emitted `read` line unless you qualify focus with the conversation ref, for example `--focus ch_1234abcd5678:m8..m8`. A bare `--focus m8..m8` is only unambiguous when reading one conversation.
 
-Do not read a full transcript by default. Prefer `search`, then `within` or `outline`, then a bounded `read` range. Use `--tools`, `--tool-results`, `--thinking`, or `--subagents` only when that hidden content is relevant.
+Do not read a full transcript by default. Prefer `search`, then `within` or `outline`, then a bounded `read` range. Use `--flat` only when you need raw message-hit ordering, `--hits-per-conv` when you need more evidence from each conversation, and `--all-hits` only when duplicate suppression hides relevant tool-heavy evidence. Use `--tools`, `--tool-results`, `--thinking`, or `--subagents` only when that hidden content is relevant.
 
 ## Query mode guidance
 

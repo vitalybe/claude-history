@@ -475,6 +475,9 @@ fn run_agent_search(args: &cli::AgentSearchArgs) -> Result<String> {
         cli_mode: args.mode_override(),
         config_mode: search_config.mode,
         tui_semantic_search: tui_config.semantic_search,
+        flat: args.flat,
+        hits_per_conversation: args.hits_per_conv,
+        all_hits: args.all_hits,
     };
     let mode = agent::search::effective_agent_mode(
         &request.query,
@@ -1048,12 +1051,14 @@ mod agent_command_tests {
                 focus_range: agent::refs::MessageRange::single(2),
                 read_range: agent::refs::MessageRange { start: 1, end: 3 },
             }],
+            groups: vec![],
+            flat: true,
             stats: agent::search::AgentSearchStats::default(),
         };
 
         let rendered = agent::search::format_agent_output(&output);
 
-        assert!(rendered.starts_with("protocol agent-search v=1 mode=lexical hits=1\n"));
+        assert!(rendered.starts_with("protocol agent-search v=2 mode=lexical hits=1\n"));
         assert!(rendered.contains("hit ref=ch_123456789abc"));
         assert!(rendered.contains("read ref=ch_123456789abc:m1..m3 focus=m2..m2\n"));
     }
@@ -1480,6 +1485,9 @@ mod agent_command_tests {
             cli_mode: None,
             config_mode: None,
             tui_semantic_search: None,
+            flat: false,
+            hits_per_conversation: 2,
+            all_hits: false,
         };
         let output = agent::search::run_global_lexical_search(
             &request,
@@ -1491,6 +1499,8 @@ mod agent_command_tests {
         .unwrap();
         let rendered = agent::search::format_agent_output(&output);
 
+        assert!(rendered.contains("protocol agent-search v=2"));
+        assert!(rendered.contains("conversation rank=1"));
         assert!(rendered.contains("subagents=true"));
         let read_line = rendered
             .lines()

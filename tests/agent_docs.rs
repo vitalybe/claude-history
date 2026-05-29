@@ -40,6 +40,8 @@ fn readme_agent_examples_show_bounded_protocol_workflow() {
     assert!(shell_blocks.contains("claude-history agent read"));
     assert!(shell_blocks.contains(":m"));
     assert!(shell_blocks.contains("--focus m"));
+    assert!(text_blocks.contains("protocol agent-search v=2"));
+    assert!(text_blocks.contains("conversation rank="));
     assert!(text_blocks.contains("message m"));
     assert!(text_blocks.contains("| "));
     assert!(!readme.contains("u1"));
@@ -67,7 +69,10 @@ fn readme_documents_agent_defaults_config_and_caveats() {
         "tools, tool results, thinking, and subagent internals are hidden by default",
         "[search].mode",
         "[tui].semantic_search",
-        "percent-encoded",
+        "after `|` as normalized single-line text",
+        "--flat",
+        "--hits-per-conv 2",
+        "--all-hits",
         "Do not treat ranks",
         ".claude/skills/claude-history-search",
     ] {
