@@ -4,10 +4,18 @@ Use this skill when you need to find, narrow, or quote prior Claude Code convers
 
 ## Workflow
 
-Start with a bounded lexical search so user search configuration cannot accidentally switch the agent into a slower mode:
+Start with the search mode that matches the task. For conceptual recall, prefer semantic or hybrid:
+
+```sh
+claude-history agent search --hybrid "deployment rollback decision"
+claude-history agent search --semantic "why the cache invalidation approach changed"
+```
+
+For exact terms, identifiers, filenames, commands, error messages, or stack traces, use lexical or exact:
 
 ```sh
 claude-history agent search --lexical "auth cache bug"
+claude-history agent search --exact "DEPLOYMENT_TOKEN"
 ```
 
 The output is protocol text, not JSON. Global search is grouped by conversation, with readable snippets after `|` and copyable `read ref=... focus=...` lines:
@@ -47,11 +55,15 @@ Do not read a full transcript by default. Prefer `search`, then `within` or `out
 
 ## Query mode guidance
 
-Use `--lexical` for normal search and identifier-like terms such as `api_key`, `build_id`, or `AgentSearchRequest`. Use `--exact` or quoted text for exact tokens, secrets, IDs, error strings, and case-sensitive identifiers:
+Use `--semantic` when the user asks to find what was discussed, decided, designed, or debugged and the exact wording may differ. Use `--hybrid` when semantic recall is useful but concrete terms still matter, such as product names, technologies, or domain words.
+
+Use `--lexical` for identifier-like terms such as `api_key`, `build_id`, or `AgentSearchRequest`. Use `--exact` or quoted text for exact tokens, secrets, IDs, error strings, and case-sensitive identifiers:
 
 ```sh
+claude-history agent search --hybrid "deployment rollback decision"
+claude-history agent search --semantic "why the cache invalidation approach changed"
 claude-history agent search --exact "DEPLOYMENT_TOKEN"
 claude-history agent within ch_1234abcd5678 --lexical "api_key"
 ```
 
-Use `--semantic` only when conceptual wording matters more than exact text. Use `--hybrid` when semantic recall is useful but exact terms still matter.
+After a broad semantic or hybrid search finds a likely conversation, use `within` with lexical, exact, semantic, or hybrid based on what evidence you need next. Lexical narrowing is often best when the global hit includes useful concrete terms.

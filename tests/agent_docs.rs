@@ -88,7 +88,7 @@ fn companion_skill_starts_with_search_and_preserves_focus() {
         .find(|line| line.contains("claude-history agent"))
         .expect("skill has an agent command");
 
-    assert!(first_command.contains("claude-history agent search --lexical"));
+    assert!(first_command.contains("claude-history agent search --hybrid"));
     assert!(skill.contains("focus="));
     assert!(skill.contains("--focus"));
     assert!(skill.contains("one `agent read` command per emitted `read` line"));
