@@ -71,7 +71,7 @@ pub struct AgentSearchArgs {
     #[arg(value_parser = non_empty_string)]
     pub query: String,
     /// Maximum number of results
-    #[arg(long, default_value_t = 20, value_parser = non_zero_usize)]
+    #[arg(long, default_value_t = 10, value_parser = non_zero_usize)]
     pub top: usize,
     /// Return flat message-hit results instead of grouped conversation results
     #[arg(long)]
@@ -464,14 +464,14 @@ mod tests {
     }
 
     #[test]
-    fn agent_search_defaults_to_global_scope_top_twenty_and_config_mode() {
+    fn agent_search_defaults_to_global_scope_top_ten_and_config_mode() {
         let args = Args::try_parse_from(["claude-history", "agent", "search", "cache"]).unwrap();
 
         match args.command.unwrap() {
             Commands::Agent {
                 command: AgentCommand::Search(search),
             } => {
-                assert_eq!(search.top, 20);
+                assert_eq!(search.top, 10);
                 assert!(!search.flat);
                 assert_eq!(search.hits_per_conv, 2);
                 assert!(!search.all_hits);

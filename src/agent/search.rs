@@ -17,6 +17,8 @@ const SHORTLIST_MIN: usize = 50;
 const SHORTLIST_FACTOR: usize = 5;
 const SHORTLIST_MAX: usize = 500;
 const RRF_K: f64 = 60.0;
+const AGENT_SEARCH_TITLE_CHARS: usize = 240;
+const AGENT_SEARCH_HIT_CHARS: usize = 500;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum AgentSearchScope {
@@ -167,7 +169,7 @@ pub fn format_agent_output(output: &AgentSearchOutput) -> String {
                 group.score,
                 group.hits.len(),
                 group.total_hits,
-                normalize_protocol_text(&group.title)
+                protocol_snippet(&group.title, AGENT_SEARCH_TITLE_CHARS)
             ));
             for hit in &group.hits {
                 push_hit_lines(&mut rendered, hit);
@@ -180,7 +182,7 @@ pub fn format_agent_output(output: &AgentSearchOutput) -> String {
         rendered.push_str(&format!(
             "title ref={} | {}\n",
             crate::agent::protocol::escape_atom(&hit.conversation_ref),
-            normalize_protocol_text(&hit.title)
+            protocol_snippet(&hit.title, AGENT_SEARCH_TITLE_CHARS)
         ));
         push_hit_lines(&mut rendered, hit);
     }
@@ -207,7 +209,7 @@ fn push_hit_lines(rendered: &mut String, hit: &AgentOutputHit) {
         hit.score,
         hit.focus_range.start,
         hit.focus_range.end,
-        normalize_protocol_text(&hit.preview)
+        protocol_snippet(&hit.preview, AGENT_SEARCH_HIT_CHARS)
     ));
     rendered.push_str(&format!(
         "read ref={}:m{}..m{} focus=m{}..m{}{}\n",
@@ -220,8 +222,18 @@ fn push_hit_lines(rendered: &mut String, hit: &AgentOutputHit) {
     ));
 }
 
-fn normalize_protocol_text(text: &str) -> String {
-    text.split_whitespace().collect::<Vec<_>>().join(" ")
+fn protocol_snippet(text: &str, limit: usize) -> String {
+    let normalized = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    if normalized.chars().count() <= limit {
+        normalized
+    } else {
+        let mut snippet = normalized
+            .chars()
+            .take(limit.saturating_sub(3))
+            .collect::<String>();
+        snippet.push_str("...");
+        snippet
+    }
 }
 
 pub fn run_within_search(

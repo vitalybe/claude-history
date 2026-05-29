@@ -299,8 +299,9 @@ Refs and focus ranges are safe to copy as opaque fields.
 
 Agent search is global by default and grouped by conversation. Pass `--local` to
 search only the current workspace, or `--all` to be explicit about global scope.
-`--top 20` is the default conversation limit, and `--hits-per-conv 2` is the
-default evidence limit per conversation. Use `--flat` for flat message-hit output
+`--top 10` is the default conversation limit, and `--hits-per-conv 2` is the
+default evidence limit per conversation. Search titles and hit snippets are
+truncated by default to keep agent output bounded. Use `--flat` for flat message-hit output
 or `--all-hits` to disable duplicate suppression while keeping the per-conversation
 cap. Search mode follows `[search].mode` unless `--lexical`, `--exact`,
 `--semantic`, or `--hybrid` is passed; the deprecated `[tui].semantic_search`

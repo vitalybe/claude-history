@@ -64,7 +64,7 @@ fn readme_documents_agent_defaults_config_and_caveats() {
     for required in [
         "global by default",
         "--local",
-        "--top 20",
+        "--top 10",
         "budget is 6000",
         "tools, tool results, thinking, and subagent internals are hidden by default",
         "[search].mode",

@@ -7,8 +7,8 @@ Use this skill when you need to find, narrow, or quote prior Claude Code convers
 Start with the search mode that matches the task. For conceptual recall, prefer semantic or hybrid:
 
 ```sh
-claude-history agent search --hybrid "deployment rollback decision"
-claude-history agent search --semantic "why the cache invalidation approach changed"
+claude-history agent search --hybrid "deployment rollback decision" --top 5
+claude-history agent search --semantic "why the cache invalidation approach changed" --top 5
 ```
 
 For exact terms, identifiers, filenames, commands, error messages, or stack traces, use lexical or exact:
@@ -60,8 +60,8 @@ Use `--semantic` when the user asks to find what was discussed, decided, designe
 Use `--lexical` for identifier-like terms such as `api_key`, `build_id`, or `AgentSearchRequest`. Use `--exact` or quoted text for exact tokens, secrets, IDs, error strings, and case-sensitive identifiers:
 
 ```sh
-claude-history agent search --hybrid "deployment rollback decision"
-claude-history agent search --semantic "why the cache invalidation approach changed"
+claude-history agent search --hybrid "deployment rollback decision" --top 5
+claude-history agent search --semantic "why the cache invalidation approach changed" --top 5
 claude-history agent search --exact "DEPLOYMENT_TOKEN"
 claude-history agent within ch_1234abcd5678 --lexical "api_key"
 ```
