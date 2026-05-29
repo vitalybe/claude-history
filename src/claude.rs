@@ -1,4 +1,4 @@
-use crate::agent::transcript::{bounded_head_tail_text, bounded_tool_result_text};
+use crate::agent::transcript::bounded_tool_result_text;
 use serde::Deserialize;
 
 #[derive(Debug, Deserialize)]
@@ -144,9 +144,6 @@ pub enum ContentBlock {
     },
 }
 
-/// Maximum characters to index per tool result to bound memory/CPU
-const MAX_TOOL_RESULT_CHARS: usize = 16 * 1024;
-
 /// Extract only Text blocks (for previews and user-facing display)
 pub fn extract_text_from_blocks(blocks: &[ContentBlock]) -> String {
     blocks
@@ -166,7 +163,7 @@ pub fn extract_search_text_from_blocks(blocks: &[ContentBlock]) -> String {
     for block in blocks {
         match block {
             ContentBlock::Text { text } => {
-                parts.push(bounded_head_tail_text(text, MAX_TOOL_RESULT_CHARS));
+                parts.push(text.clone());
             }
             ContentBlock::ToolResult {
                 content: Some(content),
@@ -338,28 +335,6 @@ mod tests {
             content: Some(json!("")),
         }];
         assert_eq!(extract_search_text_from_blocks(&blocks), "");
-    }
-
-    #[test]
-    fn bounded_head_tail_short_text_unchanged() {
-        let text = "short text";
-        assert_eq!(bounded_head_tail_text(text, 100), "short text");
-    }
-
-    #[test]
-    fn bounded_head_tail_long_text_truncated() {
-        let text = "a".repeat(20000);
-        let result = bounded_head_tail_text(&text, MAX_TOOL_RESULT_CHARS);
-        assert!(result.len() <= MAX_TOOL_RESULT_CHARS + 10);
-        assert!(result.len() < text.len());
-    }
-
-    #[test]
-    fn bounded_head_tail_preserves_head_and_tail() {
-        let text = format!("HEAD{}{}", "x".repeat(1000), "TAIL");
-        let result = bounded_head_tail_text(&text, 100);
-        assert!(result.starts_with("HEAD"));
-        assert!(result.ends_with("TAIL"));
     }
 
     #[test]

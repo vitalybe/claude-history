@@ -493,12 +493,6 @@ pub(crate) fn truncate_chars(text: &str, max_chars: usize) -> String {
     text.chars().take(max_chars).collect()
 }
 
-pub(crate) fn bounded_head_tail_text(text: &str, max_chars: usize) -> String {
-    let mut acc = BoundedHeadTail::new(max_chars);
-    acc.push_str(text);
-    acc.finish()
-}
-
 #[derive(Debug)]
 pub(crate) struct BoundedHeadTail {
     max_chars: usize,
@@ -554,7 +548,7 @@ impl BoundedHeadTail {
         self.seen_chars += 1;
     }
 
-    fn finish(mut self) -> String {
+    fn finish(self) -> String {
         if self.seen_chars <= self.max_chars {
             let mut output = self.head;
             output.extend(self.tail);
@@ -563,12 +557,27 @@ impl BoundedHeadTail {
         if self.max_chars == 0 {
             return String::new();
         }
-        let mut output = self.head;
-        output.push(' ');
-        if output.chars().count() + self.tail.len() > self.max_chars {
-            self.tail.pop_front();
+        let head_len = self.head.chars().count();
+        let mut tail = self.tail;
+        let mut include_separator = !tail.is_empty();
+        while head_len + usize::from(include_separator) + tail.len() > self.max_chars {
+            if include_separator && head_len + tail.len() <= self.max_chars {
+                include_separator = false;
+                break;
+            }
+            if tail.pop_front().is_none() {
+                include_separator = false;
+                break;
+            }
         }
-        output.extend(self.tail);
+        if tail.is_empty() {
+            include_separator = false;
+        }
+        let mut output = self.head;
+        if include_separator {
+            output.push(' ');
+        }
+        output.extend(tail);
         output
     }
 
@@ -836,6 +845,31 @@ mod tests {
         acc.push_str("abcd");
 
         assert!(acc.finish().is_empty());
+    }
+
+    #[test]
+    fn bounded_head_tail_respects_small_limits() {
+        for max in 0..=8 {
+            let mut acc = BoundedHeadTail::new(max);
+            acc.push_str("αβγδεζηθ");
+
+            let output = acc.finish();
+
+            assert!(
+                output.chars().count() <= max,
+                "max {max} produced {output:?}"
+            );
+            assert!(
+                !output.ends_with(' '),
+                "max {max} produced dangling separator in {output:?}"
+            );
+            if max >= 4 {
+                assert!(
+                    output.ends_with('θ'),
+                    "max {max} lost tail evidence in {output:?}"
+                );
+            }
+        }
     }
 
     #[test]

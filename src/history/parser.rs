@@ -1373,6 +1373,34 @@ mod tests {
     }
 
     #[test]
+    fn long_normal_dialogue_middle_text_remains_searchable() {
+        let middle = "middlenormaldialogueuniqueneedle";
+        let long_text = format!(
+            "HEAD {} {middle} {} TAIL",
+            "a".repeat(20_000),
+            "b".repeat(20_000)
+        );
+        let content = [
+            user_msg("question", None),
+            serde_json::json!({
+                "type": "assistant",
+                "timestamp": "2024-01-01T00:00:00Z",
+                "message": {
+                    "role": "assistant",
+                    "content": [{"type": "text", "text": long_text}]
+                }
+            })
+            .to_string(),
+        ]
+        .join("\n");
+
+        let conv = parse_jsonl(&content).unwrap().unwrap();
+
+        assert!(conv.full_text.contains(middle));
+        assert!(conv.search_text_lower.contains(middle));
+    }
+
+    #[test]
     fn semantic_turns_exclude_parser_metadata_while_lexical_text_keeps_search_payloads() {
         let content = [
             r#"{"type":"summary","summary":"summary lexical sentinel","leafUuid":"abc"}"#
