@@ -1,6 +1,7 @@
 use crate::agent::refs::{MessageRange, ResolvedConversation};
 use crate::agent::transcript::{
-    AgentMessage, AgentMessagePart, AgentMessageRole, AgentTranscript, bounded_tool_summary,
+    AgentMessage, AgentMessagePart, AgentMessageRole, AgentTranscript, MAX_AGENT_SEGMENT_CHARS,
+    bounded_tool_summary,
 };
 use crate::error::{AppError, Result};
 use serde_json::Value;
@@ -211,7 +212,7 @@ fn render_message<'a>(
         match part {
             AgentMessagePart::Text { text, .. } => parts.push(text.clone()),
             AgentMessagePart::ToolUse { name, input, .. } if options.tools => {
-                parts.push(bounded_tool_summary(name, input, usize::MAX));
+                parts.push(bounded_tool_summary(name, input, MAX_AGENT_SEGMENT_CHARS));
             }
             AgentMessagePart::ToolResult {
                 content: Some(content),

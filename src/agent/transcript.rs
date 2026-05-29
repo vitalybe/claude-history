@@ -507,12 +507,13 @@ pub(crate) struct BoundedHeadTail {
     head: String,
     tail: std::collections::VecDeque<char>,
     seen_chars: usize,
+    head_seen_chars: usize,
 }
 
 impl BoundedHeadTail {
     pub(crate) fn new(max_chars: usize) -> Self {
-        let head_chars = max_chars * 3 / 4;
-        let tail_chars = max_chars.saturating_sub(head_chars + usize::from(max_chars > 0));
+        let head_chars = max_chars.saturating_sub(max_chars / 4);
+        let tail_chars = max_chars.saturating_sub(head_chars);
         Self {
             max_chars,
             head_chars,
@@ -520,6 +521,7 @@ impl BoundedHeadTail {
             head: String::new(),
             tail: std::collections::VecDeque::new(),
             seen_chars: 0,
+            head_seen_chars: 0,
         }
     }
 
@@ -540,8 +542,9 @@ impl BoundedHeadTail {
             self.seen_chars += 1;
             return;
         }
-        if self.head.chars().count() < self.head_chars {
+        if self.head_seen_chars < self.head_chars {
             self.head.push(ch);
+            self.head_seen_chars += 1;
         } else if self.tail_chars > 0 {
             if self.tail.len() == self.tail_chars {
                 self.tail.pop_front();
@@ -551,14 +554,20 @@ impl BoundedHeadTail {
         self.seen_chars += 1;
     }
 
-    fn finish(self) -> String {
+    fn finish(mut self) -> String {
         if self.seen_chars <= self.max_chars {
             let mut output = self.head;
             output.extend(self.tail);
             return output;
         }
+        if self.max_chars == 0 {
+            return String::new();
+        }
         let mut output = self.head;
         output.push(' ');
+        if output.chars().count() + self.tail.len() > self.max_chars {
+            self.tail.pop_front();
+        }
         output.extend(self.tail);
         output
     }
@@ -568,7 +577,7 @@ impl BoundedHeadTail {
     }
 
     fn head_is_full(&self) -> bool {
-        self.head.chars().count() >= self.head_chars
+        self.head_seen_chars >= self.head_chars
     }
 
     fn truncate_to(&mut self, len: usize) {
@@ -579,6 +588,7 @@ impl BoundedHeadTail {
         self.head.clear();
         self.tail.clear();
         self.seen_chars = 0;
+        self.head_seen_chars = 0;
         self.push_str(&current.chars().take(len).collect::<String>());
     }
 
@@ -810,6 +820,22 @@ mod tests {
         assert!(text.chars().count() <= 128);
         assert!(text.starts_with("tool Bash input_keys=key_00000"));
         assert!(!text.contains("key_10000"));
+    }
+
+    #[test]
+    fn bounded_head_tail_preserves_exact_limit_text() {
+        let mut acc = BoundedHeadTail::new(4);
+        acc.push_str("abcd");
+
+        assert_eq!(acc.finish(), "abcd");
+    }
+
+    #[test]
+    fn bounded_head_tail_handles_zero_limit() {
+        let mut acc = BoundedHeadTail::new(0);
+        acc.push_str("abcd");
+
+        assert!(acc.finish().is_empty());
     }
 
     #[test]
