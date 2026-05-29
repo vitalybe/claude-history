@@ -176,7 +176,9 @@ impl AgentTranscript {
                 | LogEntry::FileHistorySnapshot { .. }
                 | LogEntry::System { .. }
                 | LogEntry::CustomTitle { .. }
-                | LogEntry::AgentName { .. } => {}
+                | LogEntry::AgentName { .. }
+                | LogEntry::PermissionMode { .. }
+                | LogEntry::Unknown => {}
             }
         }
 

@@ -32,7 +32,9 @@ pub(super) fn render_entry(
         | LogEntry::FileHistorySnapshot { .. }
         | LogEntry::System { .. }
         | LogEntry::CustomTitle { .. }
-        | LogEntry::AgentName { .. } => {}
+        | LogEntry::AgentName { .. }
+        | LogEntry::PermissionMode { .. }
+        | LogEntry::Unknown => {}
         LogEntry::Progress { data, .. } => {
             if options.show_thinking
                 && let Some(agent_progress) = crate::claude::parse_agent_progress(data)

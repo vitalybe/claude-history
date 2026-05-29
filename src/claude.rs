@@ -75,6 +75,14 @@ pub enum LogEntry {
         #[serde(rename = "agentName")]
         agent_name: String,
     },
+    #[serde(rename = "permission-mode")]
+    PermissionMode {
+        #[allow(dead_code)]
+        #[serde(flatten)]
+        extra: serde_json::Value,
+    },
+    #[serde(other)]
+    Unknown,
 }
 
 #[derive(Debug, Deserialize, Clone)]

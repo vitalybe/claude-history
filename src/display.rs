@@ -608,7 +608,9 @@ fn process_entry<F: OutputFormatter>(
         | LogEntry::FileHistorySnapshot { .. }
         | LogEntry::System { .. }
         | LogEntry::CustomTitle { .. }
-        | LogEntry::AgentName { .. } => {
+        | LogEntry::AgentName { .. }
+        | LogEntry::PermissionMode { .. }
+        | LogEntry::Unknown => {
             // Skip metadata entries
         }
         LogEntry::Progress { data, .. } => {
