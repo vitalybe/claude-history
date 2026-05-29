@@ -600,12 +600,19 @@ fn run_agent_semantic_hits(
     inputs: &[agent::search::AgentConversationInput<'_>],
 ) -> Result<Vec<semantic::types::SemanticHit>> {
     let candidates = agent_semantic_candidates(inputs)?;
+    run_agent_semantic_hits_for_candidates(query, &candidates)
+}
+
+fn run_agent_semantic_hits_for_candidates(
+    query: &str,
+    candidates: &[semantic::index::SemanticIndexCandidate],
+) -> Result<Vec<semantic::types::SemanticHit>> {
     let parsed = search::query::ParsedQuery::parse(query);
     let request = semantic::index::SemanticIndexRequest {
         query: parsed.semantic_text(),
         literal_filters: parsed.literals(),
-        full_corpus: &candidates,
-        scope: &candidates,
+        full_corpus: candidates,
+        scope: candidates,
         corpus_version: 3,
         prewarm: false,
     };
@@ -627,21 +634,31 @@ fn agent_semantic_candidates(
 ) -> Result<Vec<semantic::index::SemanticIndexCandidate>> {
     let mut candidates = Vec::new();
     for input in inputs {
-        candidates.push(semantic::index::SemanticIndexCandidate {
-            index: input.original_index,
-            conversation: std::sync::Arc::new(input.conversation.clone()),
-        });
         let transcript = agent::transcript::AgentTranscript::load(&input.resolved.key.path)?;
-        if let Some(progress_conversation) =
-            agent_progress_semantic_conversation(input.conversation, &transcript)
-        {
-            candidates.push(semantic::index::SemanticIndexCandidate {
-                index: input.original_index,
-                conversation: std::sync::Arc::new(progress_conversation),
-            });
-        }
+        push_agent_semantic_candidates(&mut candidates, input, &transcript);
     }
     Ok(candidates)
+}
+
+fn push_agent_semantic_candidates(
+    candidates: &mut Vec<semantic::index::SemanticIndexCandidate>,
+    input: &agent::search::AgentConversationInput<'_>,
+    transcript: &agent::transcript::AgentTranscript,
+) {
+    candidates.push(semantic::index::SemanticIndexCandidate {
+        index: input.original_index,
+        source: semantic::types::SemanticChunkSource::VisibleDialogue,
+        conversation: std::sync::Arc::new(input.conversation.clone()),
+    });
+    if let Some(progress_conversation) =
+        agent_progress_semantic_conversation(input.conversation, transcript)
+    {
+        candidates.push(semantic::index::SemanticIndexCandidate {
+            index: input.original_index,
+            source: semantic::types::SemanticChunkSource::AgentSubagentDialogue,
+            conversation: std::sync::Arc::new(progress_conversation),
+        });
+    }
 }
 
 fn agent_progress_semantic_conversation(
@@ -696,7 +713,9 @@ fn run_agent_within_semantic(
         resolved: resolved.clone(),
         original_index: 0,
     };
-    let semantic = run_agent_semantic_hits(&request.query, &[input])?;
+    let mut candidates = Vec::new();
+    push_agent_semantic_candidates(&mut candidates, &input, transcript);
+    let semantic = run_agent_semantic_hits_for_candidates(&request.query, &candidates)?;
     Ok(agent::search::run_within_search(
         request,
         conversation,
@@ -1273,6 +1292,7 @@ mod agent_command_tests {
                 rationale_kind: crate::semantic::types::SemanticRationaleKind::SemanticOnly,
                 chunk: crate::semantic::types::SemanticChunkIdentity {
                     conversation_index: 0,
+                    source: crate::semantic::types::SemanticChunkSource::VisibleDialogue,
                     session: "session".to_string(),
                     chunk_index: 0,
                     message_range: semantic_range,
@@ -1359,6 +1379,7 @@ mod agent_command_tests {
                 rationale_kind: crate::semantic::types::SemanticRationaleKind::SemanticOnly,
                 chunk: crate::semantic::types::SemanticChunkIdentity {
                     conversation_index: 0,
+                    source: crate::semantic::types::SemanticChunkSource::VisibleDialogue,
                     session: "session".to_string(),
                     chunk_index: 0,
                     message_range: semantic_range,
@@ -1557,6 +1578,7 @@ mod agent_command_tests {
                 rationale_kind: crate::semantic::types::SemanticRationaleKind::SemanticOnly,
                 chunk: crate::semantic::types::SemanticChunkIdentity {
                     conversation_index: 0,
+                    source: crate::semantic::types::SemanticChunkSource::AgentSubagentDialogue,
                     session: "session".to_string(),
                     chunk_index: 0,
                     message_range: agent::refs::MessageRange::single(2),

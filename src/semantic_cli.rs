@@ -415,6 +415,7 @@ fn semantic_index_candidates(
         .map(
             |(index, conversation)| crate::semantic::index::SemanticIndexCandidate {
                 index,
+                source: crate::semantic::types::SemanticChunkSource::VisibleDialogue,
                 conversation: std::sync::Arc::new((*conversation).clone()),
             },
         )
@@ -772,6 +773,7 @@ mod tests {
             .map(
                 |(conversation_index, conversation)| crate::semantic::types::EmbeddedChunk {
                     conversation_index,
+                    source: crate::semantic::types::SemanticChunkSource::VisibleDialogue,
                     session: format!("session-{}", conversation_index + 1),
                     chunk_index: 0,
                     key: format!("session-{conversation_index}:0"),

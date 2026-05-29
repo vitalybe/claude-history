@@ -394,31 +394,32 @@ pub(crate) fn agent_search_text_from_blocks(
     role: AgentMessageRole,
     blocks: &[ContentBlock],
 ) -> String {
-    blocks
-        .iter()
-        .filter_map(|block| agent_search_text_from_block(role, block))
-        .collect::<Vec<_>>()
-        .join(" ")
+    let mut acc = BoundedHeadTail::new(MAX_AGENT_SEGMENT_CHARS * blocks.len().max(1));
+    for block in blocks {
+        if let Some(text) = agent_search_text_from_block(role, block) {
+            acc.push_separator(' ');
+            acc.push_str(&text);
+        }
+    }
+    acc.finish()
 }
 
 fn agent_search_text_from_block(role: AgentMessageRole, block: &ContentBlock) -> Option<String> {
     match block {
         ContentBlock::Text { text } => {
-            let text = if role == AgentMessageRole::User {
-                extract_skill_preview(text).unwrap_or_else(|| text.clone())
-            } else {
-                text.clone()
-            };
-            non_empty_text(&truncate_chars(&text, MAX_AGENT_SEGMENT_CHARS))
+            if role == AgentMessageRole::User
+                && let Some(preview) = extract_skill_preview(text)
+            {
+                return non_empty_text(&truncate_chars(&preview, MAX_AGENT_SEGMENT_CHARS));
+            }
+            non_empty_text(&truncate_chars(text, MAX_AGENT_SEGMENT_CHARS))
         }
-        ContentBlock::ToolUse { name, input, .. } => non_empty_text(&truncate_chars(
-            &format_tool_summary(name, input),
-            MAX_AGENT_SEGMENT_CHARS,
-        )),
-        ContentBlock::ToolResult { content, .. } => content
-            .as_ref()
-            .and_then(bounded_tool_result_text)
-            .and_then(|text| non_empty_text(&text)),
+        ContentBlock::ToolUse { name, input, .. } => {
+            non_empty_text(&format_tool_summary(name, input, MAX_AGENT_SEGMENT_CHARS))
+        }
+        ContentBlock::ToolResult { content, .. } => {
+            content.as_ref().and_then(bounded_tool_result_text)
+        }
         ContentBlock::Thinking { thinking, .. } => {
             non_empty_text(&truncate_chars(thinking, MAX_AGENT_SEGMENT_CHARS))
         }
@@ -430,62 +431,162 @@ fn non_empty_text(text: &str) -> Option<String> {
     (!text.trim().is_empty()).then(|| text.to_string())
 }
 
-fn format_tool_summary(name: &str, input: &Value) -> String {
-    match input {
-        Value::Object(map) => {
-            let keys = map.keys().cloned().collect::<Vec<_>>().join(",");
-            format!("tool {name} input_keys={keys}")
+pub(crate) fn bounded_tool_summary(name: &str, input: &Value, max_chars: usize) -> String {
+    format_tool_summary(name, input, max_chars)
+}
+
+fn format_tool_summary(name: &str, input: &Value, max_chars: usize) -> String {
+    let mut acc = BoundedHeadTail::new(max_chars);
+    acc.push_str("tool ");
+    acc.push_str(name);
+    if let Value::Object(map) = input {
+        let prefix_len = acc.len_chars();
+        acc.push_str(" input_keys=");
+        let mut wrote_key = false;
+        for key in map.keys() {
+            if acc.head_is_full() && wrote_key {
+                break;
+            }
+            if wrote_key {
+                acc.push_str(",");
+            }
+            acc.push_str(key);
+            wrote_key = true;
         }
-        _ => format!("tool {name}"),
+        if !wrote_key {
+            acc.truncate_to(prefix_len);
+        }
     }
+    acc.finish()
 }
 
 pub(crate) fn bounded_tool_result_text(content: &Value) -> Option<String> {
-    let text = match content {
-        Value::String(text) => text.clone(),
-        Value::Array(items) => items
-            .iter()
-            .filter_map(|item| match item {
-                Value::String(text) => Some(text.clone()),
-                Value::Object(map) => {
-                    let ty = map.get("type").and_then(|value| value.as_str());
-                    if ty.is_none() || ty == Some("text") {
-                        map.get("text")
-                            .and_then(|value| value.as_str())
-                            .map(ToOwned::to_owned)
-                    } else {
-                        None
+    let mut acc = BoundedHeadTail::new(MAX_AGENT_SEGMENT_CHARS);
+    match content {
+        Value::String(text) => acc.push_str(text),
+        Value::Array(items) => {
+            for item in items {
+                let text = match item {
+                    Value::String(text) => Some(text.as_str()),
+                    Value::Object(map) => {
+                        let ty = map.get("type").and_then(|value| value.as_str());
+                        if ty.is_none() || ty == Some("text") {
+                            map.get("text").and_then(|value| value.as_str())
+                        } else {
+                            None
+                        }
                     }
+                    _ => None,
+                };
+                if let Some(text) = text {
+                    acc.push_separator('\n');
+                    acc.push_str(text);
                 }
-                _ => None,
-            })
-            .collect::<Vec<_>>()
-            .join("\n"),
+            }
+        }
         _ => return None,
-    };
-    non_empty_text(&truncate_head_and_tail(&text, MAX_AGENT_SEGMENT_CHARS))
+    }
+    non_empty_text(&acc.finish())
 }
 
 pub(crate) fn truncate_chars(text: &str, max_chars: usize) -> String {
     text.chars().take(max_chars).collect()
 }
 
-fn truncate_head_and_tail(text: &str, max_chars: usize) -> String {
-    if text.chars().count() <= max_chars {
-        return text.to_owned();
+pub(crate) fn bounded_head_tail_text(text: &str, max_chars: usize) -> String {
+    let mut acc = BoundedHeadTail::new(max_chars);
+    acc.push_str(text);
+    acc.finish()
+}
+
+#[derive(Debug)]
+pub(crate) struct BoundedHeadTail {
+    max_chars: usize,
+    head_chars: usize,
+    tail_chars: usize,
+    head: String,
+    tail: std::collections::VecDeque<char>,
+    seen_chars: usize,
+}
+
+impl BoundedHeadTail {
+    pub(crate) fn new(max_chars: usize) -> Self {
+        let head_chars = max_chars * 3 / 4;
+        let tail_chars = max_chars.saturating_sub(head_chars + usize::from(max_chars > 0));
+        Self {
+            max_chars,
+            head_chars,
+            tail_chars,
+            head: String::new(),
+            tail: std::collections::VecDeque::new(),
+            seen_chars: 0,
+        }
     }
-    let head_chars = max_chars * 3 / 4;
-    let tail_chars = max_chars.saturating_sub(head_chars + 1);
-    let head = text.chars().take(head_chars).collect::<String>();
-    let tail = text
-        .chars()
-        .rev()
-        .take(tail_chars)
-        .collect::<Vec<_>>()
-        .into_iter()
-        .rev()
-        .collect::<String>();
-    format!("{head} {tail}")
+
+    pub(crate) fn push_str(&mut self, text: &str) {
+        for ch in text.chars() {
+            self.push_char(ch);
+        }
+    }
+
+    pub(crate) fn push_separator(&mut self, separator: char) {
+        if self.seen_chars > 0 {
+            self.push_char(separator);
+        }
+    }
+
+    fn push_char(&mut self, ch: char) {
+        if self.max_chars == 0 {
+            self.seen_chars += 1;
+            return;
+        }
+        if self.head.chars().count() < self.head_chars {
+            self.head.push(ch);
+        } else if self.tail_chars > 0 {
+            if self.tail.len() == self.tail_chars {
+                self.tail.pop_front();
+            }
+            self.tail.push_back(ch);
+        }
+        self.seen_chars += 1;
+    }
+
+    fn finish(self) -> String {
+        if self.seen_chars <= self.max_chars {
+            let mut output = self.head;
+            output.extend(self.tail);
+            return output;
+        }
+        let mut output = self.head;
+        output.push(' ');
+        output.extend(self.tail);
+        output
+    }
+
+    fn len_chars(&self) -> usize {
+        self.seen_chars
+    }
+
+    fn head_is_full(&self) -> bool {
+        self.head.chars().count() >= self.head_chars
+    }
+
+    fn truncate_to(&mut self, len: usize) {
+        if len >= self.seen_chars {
+            return;
+        }
+        let current = self.clone_string();
+        self.head.clear();
+        self.tail.clear();
+        self.seen_chars = 0;
+        self.push_str(&current.chars().take(len).collect::<String>());
+    }
+
+    fn clone_string(&self) -> String {
+        let mut output = self.head.clone();
+        output.extend(self.tail.iter().copied());
+        output
+    }
 }
 
 fn source(
@@ -676,6 +777,39 @@ mod tests {
         assert!(text.starts_with("HEAD"));
         assert!(text.ends_with("TAIL"));
         assert!(!text.contains(&"x".repeat(MAX_AGENT_SEGMENT_CHARS + 1)));
+    }
+
+    #[test]
+    fn agent_search_text_caps_tool_result_arrays_without_joining_full_payload() {
+        let blocks = vec![ContentBlock::ToolResult {
+            tool_use_id: "toolu_1".to_string(),
+            content: Some(Value::Array(vec![
+                Value::String("HEAD".to_string()),
+                Value::String("x".repeat(MAX_AGENT_SEGMENT_CHARS * 2)),
+                serde_json::json!({"type":"text","text":"TAIL"}),
+            ])),
+        }];
+
+        let text = agent_search_text_from_blocks(AgentMessageRole::User, &blocks);
+
+        assert!(text.chars().count() <= MAX_AGENT_SEGMENT_CHARS);
+        assert!(text.starts_with("HEAD"));
+        assert!(text.ends_with("TAIL"));
+        assert!(!text.contains(&"x".repeat(MAX_AGENT_SEGMENT_CHARS + 1)));
+    }
+
+    #[test]
+    fn bounded_tool_summary_stops_before_late_keys() {
+        let mut input = serde_json::Map::new();
+        for index in 0..MAX_AGENT_SEGMENT_CHARS {
+            input.insert(format!("key_{index:05}"), Value::Bool(true));
+        }
+
+        let text = bounded_tool_summary("Bash", &Value::Object(input), 128);
+
+        assert!(text.chars().count() <= 128);
+        assert!(text.starts_with("tool Bash input_keys=key_00000"));
+        assert!(!text.contains("key_10000"));
     }
 
     #[test]

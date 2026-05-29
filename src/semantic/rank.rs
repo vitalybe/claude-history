@@ -55,6 +55,7 @@ pub fn rank_chunk_hits(
             rationale_kind: rationale_kind(score_breakdown),
             chunk: SemanticChunkIdentity {
                 conversation_index: chunk.conversation_index,
+                source: chunk.source,
                 session: chunk.session.clone(),
                 chunk_index: chunk.chunk_index,
                 message_range: chunk.message_range,
@@ -156,6 +157,7 @@ mod tests {
     ) -> EmbeddedChunk {
         EmbeddedChunk {
             conversation_index,
+            source: crate::semantic::types::SemanticChunkSource::VisibleDialogue,
             session: session.to_string(),
             chunk_index,
             key: format!("{session}:{chunk_index}"),

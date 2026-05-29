@@ -292,6 +292,7 @@ impl SemanticWorkerState {
             .enumerate()
             .map(|(index, conversation)| SemanticIndexCandidate {
                 index,
+                source: crate::semantic::types::SemanticChunkSource::VisibleDialogue,
                 conversation: conversation.clone(),
             })
             .collect()
@@ -305,6 +306,7 @@ impl SemanticWorkerState {
                     .get(index)
                     .map(|conversation| SemanticIndexCandidate {
                         index,
+                        source: crate::semantic::types::SemanticChunkSource::VisibleDialogue,
                         conversation: conversation.clone(),
                     })
             })
@@ -501,6 +503,7 @@ fn exact_literal_metadata(
             rationale_kind: SemanticRationaleKind::LexicalBoosted,
             chunk: SemanticChunkIdentity {
                 conversation_index: conversation.index,
+                source: crate::semantic::types::SemanticChunkSource::VisibleDialogue,
                 session: conversation
                     .path
                     .file_stem()
@@ -609,6 +612,7 @@ mod tests {
                         rationale_kind: SemanticRationaleKind::LexicalBoosted,
                         chunk: SemanticChunkIdentity {
                             conversation_index: 42,
+                            source: crate::semantic::types::SemanticChunkSource::VisibleDialogue,
                             session: "session-b".to_string(),
                             chunk_index: 0,
                             message_range: crate::agent::refs::MessageRange::single(1),

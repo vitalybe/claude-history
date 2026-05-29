@@ -1,5 +1,7 @@
 use crate::agent::refs::{MessageRange, ResolvedConversation};
-use crate::agent::transcript::{AgentMessage, AgentMessagePart, AgentMessageRole, AgentTranscript};
+use crate::agent::transcript::{
+    AgentMessage, AgentMessagePart, AgentMessageRole, AgentTranscript, bounded_tool_summary,
+};
 use crate::error::{AppError, Result};
 use serde_json::Value;
 use std::collections::BTreeSet;
@@ -209,7 +211,7 @@ fn render_message<'a>(
         match part {
             AgentMessagePart::Text { text, .. } => parts.push(text.clone()),
             AgentMessagePart::ToolUse { name, input, .. } if options.tools => {
-                parts.push(format_tool_summary(name, input));
+                parts.push(bounded_tool_summary(name, input, usize::MAX));
             }
             AgentMessagePart::ToolResult {
                 content: Some(content),
@@ -409,16 +411,6 @@ fn budget_atom(budget: Option<usize>) -> String {
     budget
         .map(|budget| budget.to_string())
         .unwrap_or_else(|| "none".to_string())
-}
-
-fn format_tool_summary(name: &str, input: &Value) -> String {
-    match input {
-        Value::Object(map) => {
-            let keys = map.keys().cloned().collect::<Vec<_>>().join(",");
-            format!("tool {name} input_keys={keys}")
-        }
-        _ => format!("tool {name}"),
-    }
 }
 
 fn tool_result_text(content: &Value) -> String {

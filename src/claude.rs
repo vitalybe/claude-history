@@ -1,3 +1,4 @@
+use crate::agent::transcript::{bounded_head_tail_text, bounded_tool_result_text};
 use serde::Deserialize;
 
 #[derive(Debug, Deserialize)]
@@ -164,13 +165,15 @@ pub fn extract_search_text_from_blocks(blocks: &[ContentBlock]) -> String {
 
     for block in blocks {
         match block {
-            ContentBlock::Text { text } => parts.push(text.clone()),
+            ContentBlock::Text { text } => {
+                parts.push(bounded_head_tail_text(text, MAX_TOOL_RESULT_CHARS));
+            }
             ContentBlock::ToolResult {
                 content: Some(content),
                 ..
             } => {
-                if let Some(text) = extract_tool_result_text(content) {
-                    parts.push(truncate_for_search(&text, MAX_TOOL_RESULT_CHARS));
+                if let Some(text) = bounded_tool_result_text(content) {
+                    parts.push(text);
                 }
             }
             _ => {}
@@ -178,73 +181,6 @@ pub fn extract_search_text_from_blocks(blocks: &[ContentBlock]) -> String {
     }
 
     parts.join(" ")
-}
-
-/// Extract text from a ToolResult content value.
-/// Supports both plain string and array-of-blocks formats.
-fn extract_tool_result_text(content: &serde_json::Value) -> Option<String> {
-    match content {
-        serde_json::Value::String(s) => {
-            if s.trim().is_empty() {
-                None
-            } else {
-                Some(s.clone())
-            }
-        }
-        serde_json::Value::Array(items) => {
-            let parts: Vec<&str> = items
-                .iter()
-                .filter_map(|item| match item {
-                    serde_json::Value::Object(map) => {
-                        let ty = map.get("type").and_then(|v| v.as_str());
-                        if ty.is_none() || ty == Some("text") {
-                            map.get("text").and_then(|v| v.as_str())
-                        } else {
-                            None
-                        }
-                    }
-                    serde_json::Value::String(s) => Some(s.as_str()),
-                    _ => None,
-                })
-                .collect();
-            let joined = parts.join(" ");
-            if joined.trim().is_empty() {
-                None
-            } else {
-                Some(joined)
-            }
-        }
-        _ => None,
-    }
-}
-
-/// Truncate text for search indexing, keeping head and tail portions
-fn truncate_for_search(s: &str, max: usize) -> String {
-    if s.len() <= max {
-        return s.to_owned();
-    }
-    // Find char boundaries for head (75%) and tail (25%)
-    let head_target = max * 3 / 4;
-    let tail_target = max / 4;
-    let head_end = floor_char_boundary(s, head_target);
-    let tail_start = ceil_char_boundary(s, s.len().saturating_sub(tail_target));
-    format!("{} {}", &s[..head_end], &s[tail_start..])
-}
-
-fn floor_char_boundary(s: &str, index: usize) -> usize {
-    let mut i = index.min(s.len());
-    while i > 0 && !s.is_char_boundary(i) {
-        i -= 1;
-    }
-    i
-}
-
-fn ceil_char_boundary(s: &str, index: usize) -> usize {
-    let mut i = index.min(s.len());
-    while i < s.len() && !s.is_char_boundary(i) {
-        i += 1;
-    }
-    i
 }
 
 pub fn extract_text_from_user(message: &UserMessage) -> String {
@@ -405,39 +341,38 @@ mod tests {
     }
 
     #[test]
-    fn truncate_for_search_short_text_unchanged() {
+    fn bounded_head_tail_short_text_unchanged() {
         let text = "short text";
-        assert_eq!(truncate_for_search(text, 100), "short text");
+        assert_eq!(bounded_head_tail_text(text, 100), "short text");
     }
 
     #[test]
-    fn truncate_for_search_long_text_truncated() {
+    fn bounded_head_tail_long_text_truncated() {
         let text = "a".repeat(20000);
-        let result = truncate_for_search(&text, MAX_TOOL_RESULT_CHARS);
-        assert!(result.len() <= MAX_TOOL_RESULT_CHARS + 10); // +10 for the space separator
+        let result = bounded_head_tail_text(&text, MAX_TOOL_RESULT_CHARS);
+        assert!(result.len() <= MAX_TOOL_RESULT_CHARS + 10);
         assert!(result.len() < text.len());
     }
 
     #[test]
-    fn truncate_for_search_preserves_head_and_tail() {
+    fn bounded_head_tail_preserves_head_and_tail() {
         let text = format!("HEAD{}{}", "x".repeat(1000), "TAIL");
-        let result = truncate_for_search(&text, 100);
+        let result = bounded_head_tail_text(&text, 100);
         assert!(result.starts_with("HEAD"));
         assert!(result.ends_with("TAIL"));
     }
 
     #[test]
-    fn extract_tool_result_text_array_with_plain_strings() {
+    fn bounded_tool_result_text_array_with_plain_strings() {
         let content = json!(["line one", "line two"]);
-        let result = extract_tool_result_text(&content);
-        assert_eq!(result, Some("line one line two".into()));
+        let result = bounded_tool_result_text(&content);
+        assert_eq!(result, Some("line one\nline two".into()));
     }
 
     #[test]
-    fn extract_tool_result_text_object_without_type() {
-        // Some tool results have blocks without explicit "type" field
+    fn bounded_tool_result_text_object_without_type() {
         let content = json!([{"text": "no type field"}]);
-        let result = extract_tool_result_text(&content);
+        let result = bounded_tool_result_text(&content);
         assert_eq!(result, Some("no type field".into()));
     }
 }

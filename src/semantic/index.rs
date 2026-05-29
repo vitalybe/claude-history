@@ -4,12 +4,12 @@ use crate::search::literal::Literal;
 use crate::semantic::cache::{
     cache_miss_count, embed_chunks_with_progress_and_save, read_embedding_cache,
 };
-use crate::semantic::chunk::build_chunks_with_indices;
+use crate::semantic::chunk::build_chunks_with_sources;
 use crate::semantic::embed::SemanticEmbedder;
 use crate::semantic::rank::{rank_chunk_hits, rank_chunks};
 use crate::semantic::types::{
     ChunkConfig, EmbeddedChunk, EmbeddingCache, SemanticCancellationToken, SemanticChunk,
-    SemanticHit,
+    SemanticChunkSource, SemanticHit,
 };
 use std::collections::HashSet;
 use std::path::PathBuf;
@@ -18,6 +18,7 @@ use std::sync::Arc;
 #[derive(Clone)]
 pub struct SemanticIndexCandidate {
     pub index: usize,
+    pub source: SemanticChunkSource,
     pub conversation: Arc<Conversation>,
 }
 
@@ -61,6 +62,7 @@ struct ConversationSignature {
     path: PathBuf,
     semantic_turns: Vec<String>,
     semantic_turn_ranges: Vec<crate::agent::refs::MessageRange>,
+    source: SemanticChunkSource,
 }
 
 #[derive(Clone)]
@@ -311,6 +313,7 @@ impl SemanticIndexState {
                 .zip(request.full_corpus)
                 .all(|(stored, candidate)| {
                     stored.index == candidate.index
+                        && stored.source == candidate.source
                         && stored.path == candidate.conversation.path
                         && stored.semantic_turns == candidate.conversation.semantic_turns
                         && stored.semantic_turn_ranges
@@ -326,14 +329,14 @@ impl SemanticIndexState {
         let scope = request
             .scope
             .iter()
-            .map(|candidate| candidate.index)
+            .map(|candidate| (candidate.index, candidate.source))
             .collect::<HashSet<_>>();
         let mut chunks = Vec::new();
         for chunk in &self.embedded_chunks {
             if cancellation.is_cancelled() {
                 return Err(AppError::SemanticSearchCancelled);
             }
-            if scope.contains(&chunk.embedded.conversation_index) {
+            if scope.contains(&(chunk.embedded.conversation_index, chunk.embedded.source)) {
                 chunks.push(chunk.embedded.clone());
             }
         }
@@ -360,10 +363,14 @@ fn candidate_chunks(
     candidates: &[SemanticIndexCandidate],
     chunk_config: ChunkConfig,
 ) -> Vec<SemanticChunk> {
-    build_chunks_with_indices(
-        candidates
-            .iter()
-            .map(|candidate| (candidate.index, candidate.conversation.as_ref())),
+    build_chunks_with_sources(
+        candidates.iter().map(|candidate| {
+            (
+                candidate.index,
+                candidate.source,
+                candidate.conversation.as_ref(),
+            )
+        }),
         chunk_config,
     )
 }
@@ -395,6 +402,7 @@ fn semantic_index_signature(
         .iter()
         .map(|candidate| ConversationSignature {
             index: candidate.index,
+            source: candidate.source,
             path: candidate.conversation.path.clone(),
             semantic_turns: candidate.conversation.semantic_turns.clone(),
             semantic_turn_ranges: candidate.conversation.semantic_turn_ranges.clone(),
@@ -499,6 +507,7 @@ mod tests {
             .into_iter()
             .map(|index| SemanticIndexCandidate {
                 index,
+                source: SemanticChunkSource::VisibleDialogue,
                 conversation: Arc::new(conversations[index].clone()),
             })
             .collect();
@@ -539,6 +548,7 @@ mod tests {
             .enumerate()
             .map(|(index, conversation)| SemanticIndexCandidate {
                 index,
+                source: SemanticChunkSource::VisibleDialogue,
                 conversation: Arc::new(conversation),
             })
             .collect()
@@ -762,6 +772,82 @@ mod tests {
     }
 
     #[test]
+    fn cache_hits_preserve_candidate_source() {
+        let conversations = vec![conversation(
+            "/projects/project-a/session-a.jsonl",
+            vec!["visible alpha"],
+        )];
+        let mut candidates = candidates_from(&conversations);
+        candidates[0].source = SemanticChunkSource::AgentSubagentDialogue;
+        let query = "alpha".to_string();
+        let request = index_request(&query, &candidates);
+        let mut cache = empty_embedding_cache(ChunkConfig::default());
+        cache_request_passages(&mut cache, &request);
+        let mut state = SemanticIndexState::with_cache(ChunkConfig::default(), cache);
+        let mut embedder = FakeEmbedder::new();
+
+        let response = state
+            .refresh_or_prewarm(
+                &request,
+                &mut embedder,
+                &SemanticCancellationToken::new(),
+                |_| {},
+                |_| {},
+            )
+            .expect("cached rank succeeds");
+
+        assert_eq!(embedder.passage_calls, 0);
+        assert_eq!(
+            response.hits[0].explanation.chunk.source,
+            SemanticChunkSource::AgentSubagentDialogue
+        );
+    }
+
+    #[test]
+    fn source_aware_scope_filters_same_conversation_index_chunks() {
+        let conversations = vec![conversation(
+            "/projects/project-a/session-a.jsonl",
+            vec!["visible alpha"],
+        )];
+        let visible = candidates_from(&conversations);
+        let mut subagent = visible.clone();
+        subagent[0].source = SemanticChunkSource::AgentSubagentDialogue;
+        let mut all = visible.clone();
+        all.extend(subagent);
+        let query = "alpha".to_string();
+        let request = SemanticIndexRequest {
+            query: &query,
+            literal_filters: &[],
+            full_corpus: &all,
+            scope: &visible,
+            corpus_version: 1,
+            prewarm: false,
+        };
+        let mut cache = empty_embedding_cache(ChunkConfig::default());
+        cache_request_passages(&mut cache, &request);
+        let mut state = SemanticIndexState::with_cache(ChunkConfig::default(), cache);
+        let mut embedder = FakeEmbedder::new();
+
+        let response = state
+            .refresh_or_prewarm(
+                &request,
+                &mut embedder,
+                &SemanticCancellationToken::new(),
+                |_| {},
+                |_| {},
+            )
+            .expect("scoped rank succeeds");
+
+        assert!(!response.hits.is_empty());
+        assert!(
+            response
+                .hits
+                .iter()
+                .all(|hit| hit.explanation.chunk.source == SemanticChunkSource::VisibleDialogue)
+        );
+    }
+
+    #[test]
     fn reuses_passage_embeddings_for_same_candidate_signature() {
         let conversations = vec![
             conversation("/projects/project-a/session-a.jsonl", vec!["visible alpha"]),
@@ -833,6 +919,7 @@ mod tests {
             .expect("same signature rank succeeds");
         candidates = vec![SemanticIndexCandidate {
             index: 0,
+            source: SemanticChunkSource::VisibleDialogue,
             conversation: Arc::new(conversation(
                 "/projects/project-a/session-a.jsonl",
                 vec!["visible beta"],
@@ -1184,6 +1271,7 @@ mod tests {
         let all = (0..conversations.len())
             .map(|index| SemanticIndexCandidate {
                 index,
+                source: SemanticChunkSource::VisibleDialogue,
                 conversation: Arc::new(conversations[index].clone()),
             })
             .collect::<Vec<_>>();

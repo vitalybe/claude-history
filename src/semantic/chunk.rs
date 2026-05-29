@@ -1,6 +1,6 @@
 use crate::agent::refs::MessageRange;
 use crate::history::Conversation;
-use crate::semantic::types::{ChunkConfig, FileMetadata, SemanticChunk};
+use crate::semantic::types::{ChunkConfig, FileMetadata, SemanticChunk, SemanticChunkSource};
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -12,8 +12,20 @@ pub fn build_chunks_with_indices<'a, I>(conversations: I, config: ChunkConfig) -
 where
     I: IntoIterator<Item = (usize, &'a Conversation)>,
 {
+    build_chunks_with_sources(
+        conversations.into_iter().map(|(index, conversation)| {
+            (index, SemanticChunkSource::VisibleDialogue, conversation)
+        }),
+        config,
+    )
+}
+
+pub fn build_chunks_with_sources<'a, I>(conversations: I, config: ChunkConfig) -> Vec<SemanticChunk>
+where
+    I: IntoIterator<Item = (usize, SemanticChunkSource, &'a Conversation)>,
+{
     let mut chunks = Vec::new();
-    for (conversation_index, conversation) in conversations {
+    for (conversation_index, source, conversation) in conversations {
         let semantic_turns = conversation
             .semantic_turns
             .iter()
@@ -29,6 +41,7 @@ where
                 &mut chunks,
                 conversation,
                 conversation_index,
+                source,
                 chunk_index,
                 &chunk,
             );
@@ -143,6 +156,7 @@ fn push_chunk(
     chunks: &mut Vec<SemanticChunk>,
     conversation: &Conversation,
     conversation_index: usize,
+    source: SemanticChunkSource,
     chunk_index: usize,
     chunk: &ChunkText,
 ) {
@@ -157,6 +171,7 @@ fn push_chunk(
         let key = chunk_key(conversation, chunk_index);
         chunks.push(SemanticChunk {
             conversation_index,
+            source,
             session,
             chunk_index,
             key,

@@ -8,7 +8,7 @@ use crate::error::{AppError, Result};
 use crate::history::Conversation;
 use crate::search::mode::{SearchMode, SearchModeResolution, resolve_search_mode};
 use crate::search::query::ParsedQuery;
-use crate::semantic::types::{SemanticHit, SemanticScoreBreakdown};
+use crate::semantic::types::{SemanticChunkSource, SemanticHit, SemanticScoreBreakdown};
 use chrono::{DateTime, Local};
 use std::cmp::Ordering;
 use std::collections::HashMap;
@@ -439,11 +439,8 @@ fn semantic_output_hits(
                 source: AgentHitKind::Semantic,
                 evidence_source: AgentHitSource::Dialogue,
                 render_options: AgentHitRenderOptions {
-                    subagents: !input
-                        .conversation
-                        .semantic_turn_ranges
-                        .iter()
-                        .any(|range| hit.message_range.contains(range)),
+                    subagents: hit.explanation.chunk.source
+                        == SemanticChunkSource::AgentSubagentDialogue,
                     ..AgentHitRenderOptions::default()
                 },
                 preview: hit.snippet.clone(),
@@ -696,6 +693,22 @@ mod tests {
     }
 
     fn semantic_hit(index: usize, range: MessageRange, text: &str, score: f32) -> SemanticHit {
+        semantic_hit_with_source(
+            index,
+            range,
+            text,
+            score,
+            SemanticChunkSource::VisibleDialogue,
+        )
+    }
+
+    fn semantic_hit_with_source(
+        index: usize,
+        range: MessageRange,
+        text: &str,
+        score: f32,
+        source: SemanticChunkSource,
+    ) -> SemanticHit {
         SemanticHit::new(
             SemanticScoreBreakdown {
                 hybrid: score,
@@ -710,6 +723,7 @@ mod tests {
                 rationale_kind: SemanticRationaleKind::SemanticOnly,
                 chunk: SemanticChunkIdentity {
                     conversation_index: index,
+                    source,
                     session: "session".to_string(),
                     chunk_index: range.start,
                     message_range: range,
@@ -816,15 +830,16 @@ mod tests {
     }
 
     #[test]
-    fn semantic_hidden_range_enables_subagents() {
+    fn semantic_progress_source_enables_subagents_for_mixed_range() {
         let conv = conversation("session.jsonl", "semantic title");
         let resolved = resolved("session.jsonl");
         let hits = semantic_output_hits(
-            &[semantic_hit(
+            &[semantic_hit_with_source(
                 0,
-                MessageRange { start: 2, end: 3 },
+                MessageRange { start: 2, end: 4 },
                 "subagent",
                 0.8,
+                SemanticChunkSource::AgentSubagentDialogue,
             )],
             1,
             &[AgentConversationInput {

@@ -3,13 +3,12 @@
 use crate::agent::refs::MessageRange;
 use crate::agent::transcript::{
     AgentMessage, AgentMessagePart, AgentTranscript, MAX_AGENT_SEGMENT_CHARS,
-    bounded_tool_result_text, truncate_chars,
+    bounded_tool_result_text, bounded_tool_summary, truncate_chars,
 };
 use crate::search::literal::Literal;
 use crate::search::query::ParsedQuery;
 use crate::text_match::{contains_cjk, contains_prefix_match, normalize_for_search};
 use chrono::{DateTime, Local};
-use serde_json::Value;
 use std::cmp::Ordering;
 
 const MAX_PREVIEW_CHARS: usize = 160;
@@ -387,7 +386,7 @@ fn segment_for_part(message: &AgentMessage, part: &AgentMessagePart) -> Option<S
             },
         ),
         AgentMessagePart::ToolUse { name, input, .. } => (
-            format_tool_summary(name, input),
+            bounded_tool_summary(name, input, MAX_AGENT_SEGMENT_CHARS),
             AgentHitSource::Tool,
             AgentHitRenderOptions {
                 tools: true,
@@ -586,22 +585,12 @@ fn source_rank(source: AgentHitSource) -> u8 {
     }
 }
 
-fn format_tool_summary(name: &str, input: &Value) -> String {
-    match input {
-        Value::Object(map) => {
-            let keys = map.keys().cloned().collect::<Vec<_>>().join(",");
-            format!("tool {name} input_keys={keys}")
-        }
-        _ => format!("tool {name}"),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::agent::transcript::{AgentMessageRole, AgentPartSource, AgentTranscript};
     use chrono::{Duration, TimeZone};
-    use serde_json::json;
+    use serde_json::{Value, json};
     use std::path::PathBuf;
 
     fn source(role: AgentMessageRole) -> AgentPartSource {

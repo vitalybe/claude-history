@@ -36,6 +36,7 @@ pub fn embed_chunks_with_progress_and_save(
         if let Some(entry) = cached {
             embedded.push(EmbeddedChunk {
                 conversation_index: chunk.conversation_index,
+                source: chunk.source,
                 session: chunk.session,
                 chunk_index: chunk.chunk_index,
                 key: chunk.key,
@@ -75,6 +76,7 @@ pub fn embed_chunks_with_progress_and_save(
             );
             embedded.push(EmbeddedChunk {
                 conversation_index: chunk.conversation_index,
+                source: chunk.source,
                 session: chunk.session,
                 chunk_index: chunk.chunk_index,
                 key,
@@ -111,6 +113,7 @@ pub fn cached_chunks(
         if let Some(entry) = cached {
             embedded.push(EmbeddedChunk {
                 conversation_index: chunk.conversation_index,
+                source: chunk.source,
                 session: chunk.session,
                 chunk_index: chunk.chunk_index,
                 key: chunk.key,
@@ -300,6 +303,7 @@ mod tests {
             .unwrap_or(0);
         SemanticChunk {
             conversation_index: 0,
+            source: crate::semantic::types::SemanticChunkSource::VisibleDialogue,
             session: "session".to_string(),
             chunk_index,
             key: key.to_string(),

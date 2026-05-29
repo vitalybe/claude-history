@@ -49,9 +49,17 @@ impl Default for ChunkConfig {
     }
 }
 
+#[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq)]
+pub enum SemanticChunkSource {
+    #[default]
+    VisibleDialogue,
+    AgentSubagentDialogue,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SemanticChunk {
     pub conversation_index: usize,
+    pub source: SemanticChunkSource,
     pub session: String,
     pub chunk_index: usize,
     pub key: String,
@@ -63,6 +71,7 @@ pub struct SemanticChunk {
 #[derive(Clone, Debug, PartialEq)]
 pub struct EmbeddedChunk {
     pub conversation_index: usize,
+    pub source: SemanticChunkSource,
     pub session: String,
     pub chunk_index: usize,
     pub key: String,
@@ -107,6 +116,7 @@ pub enum SemanticRationaleKind {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SemanticChunkIdentity {
     pub conversation_index: usize,
+    pub source: SemanticChunkSource,
     pub session: String,
     pub chunk_index: usize,
     pub message_range: MessageRange,
