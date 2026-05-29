@@ -188,7 +188,7 @@ pub fn format_agent_output(output: &AgentSearchOutput) -> String {
 }
 
 fn output_hits(output: &AgentSearchOutput) -> Vec<&AgentOutputHit> {
-    if output.protocol == AgentProtocolKind::Search && !output.groups.is_empty() {
+    if output.protocol == AgentProtocolKind::Search && !output.flat && !output.groups.is_empty() {
         output
             .groups
             .iter()
@@ -381,7 +381,7 @@ pub fn run_global_semantic_search(
         request.config_mode,
         request.tui_semantic_search,
     );
-    let hits = semantic_output_hits(semantic_hits, retrieval_candidate_limit(request), inputs);
+    let hits = semantic_output_hits_for_grouped_search(semantic_hits, request.top, inputs);
     let groups = build_conversation_groups(
         hits,
         request.top,
@@ -409,8 +409,9 @@ pub fn run_global_hybrid_search(
     semantic_hits: &[SemanticHit],
     inputs: &[AgentConversationInput<'_>],
 ) -> AgentSearchOutput {
-    let semantic = semantic_output_hits(semantic_hits, retrieval_candidate_limit(request), inputs);
-    let hits = hybrid_hits(lexical.hits, semantic, retrieval_candidate_limit(request));
+    let semantic = semantic_output_hits_for_grouped_search(semantic_hits, request.top, inputs);
+    let lexical_hits = flatten_groups(&lexical.groups, retrieval_candidate_limit(request));
+    let hits = hybrid_hits(lexical_hits, semantic, retrieval_candidate_limit(request));
     let groups = build_conversation_groups(
         hits,
         request.top,
@@ -529,8 +530,36 @@ fn semantic_output_hits(
     limit: usize,
     inputs: &[AgentConversationInput<'_>],
 ) -> Vec<AgentOutputHit> {
-    let mut output = hits
-        .iter()
+    let mut output = semantic_output_hit_candidates(hits, inputs);
+    sort_output_hits(&mut output);
+    output.truncate(limit);
+    output
+}
+
+fn semantic_output_hits_for_grouped_search(
+    hits: &[SemanticHit],
+    top: usize,
+    inputs: &[AgentConversationInput<'_>],
+) -> Vec<AgentOutputHit> {
+    let mut output = semantic_output_hit_candidates(hits, inputs);
+    sort_output_hits(&mut output);
+    let mut selected = Vec::new();
+    let mut conversation_refs = std::collections::HashSet::new();
+    for hit in output {
+        conversation_refs.insert(hit.conversation_ref.clone());
+        selected.push(hit);
+        if conversation_refs.len() >= top {
+            break;
+        }
+    }
+    selected
+}
+
+fn semantic_output_hit_candidates(
+    hits: &[SemanticHit],
+    inputs: &[AgentConversationInput<'_>],
+) -> Vec<AgentOutputHit> {
+    hits.iter()
         .filter_map(|hit| {
             let input = inputs
                 .iter()
@@ -551,10 +580,7 @@ fn semantic_output_hits(
                 read_range: hit.message_range,
             })
         })
-        .collect::<Vec<_>>();
-    sort_output_hits(&mut output);
-    output.truncate(limit);
-    output
+        .collect()
 }
 
 fn build_conversation_groups(
@@ -586,7 +612,12 @@ fn build_conversation_groups(
     for group in &mut by_ref {
         sort_group_hits(&mut group.hits);
         group.hits.truncate(hits_per_conversation);
-        group.score = group.hits.first().map_or(group.score, |hit| hit.score);
+        group.score = group
+            .hits
+            .iter()
+            .map(|hit| hit.score)
+            .max_by(|a, b| a.partial_cmp(b).unwrap_or(Ordering::Equal))
+            .unwrap_or(group.score);
     }
     by_ref.retain(|group| !group.hits.is_empty());
     by_ref.sort_by(|a, b| {
@@ -1303,29 +1334,89 @@ mod tests {
     }
 
     #[test]
-    fn global_flat_output_uses_pipe_snippets_without_groups() {
+    fn grouped_search_ranks_groups_by_best_retained_score() {
         let groups = build_conversation_groups(
-            vec![AgentOutputHit {
-                conversation_ref: "ch_123456789abc".to_string(),
-                title: "cache session".to_string(),
-                score: 12.5,
-                source: AgentHitKind::Lexical,
-                evidence_source: AgentHitSource::Dialogue,
-                render_options: AgentHitRenderOptions::default(),
-                preview: "cache warming answer".to_string(),
-                focus_range: MessageRange::single(2),
-                read_range: MessageRange { start: 1, end: 3 },
-            }],
-            10,
+            vec![
+                AgentOutputHit {
+                    conversation_ref: "ch_a".to_string(),
+                    title: "title a".to_string(),
+                    score: 10.09,
+                    source: AgentHitKind::Lexical,
+                    evidence_source: AgentHitSource::Tool,
+                    render_options: AgentHitRenderOptions::default(),
+                    preview: "best tool evidence".to_string(),
+                    focus_range: MessageRange::single(2),
+                    read_range: MessageRange::single(2),
+                },
+                AgentOutputHit {
+                    conversation_ref: "ch_a".to_string(),
+                    title: "title a".to_string(),
+                    score: 10.01,
+                    source: AgentHitKind::Lexical,
+                    evidence_source: AgentHitSource::Dialogue,
+                    render_options: AgentHitRenderOptions::default(),
+                    preview: "display dialogue evidence".to_string(),
+                    focus_range: MessageRange::single(1),
+                    read_range: MessageRange::single(1),
+                },
+                AgentOutputHit {
+                    conversation_ref: "ch_b".to_string(),
+                    title: "title b".to_string(),
+                    score: 10.05,
+                    source: AgentHitKind::Lexical,
+                    evidence_source: AgentHitSource::Dialogue,
+                    render_options: AgentHitRenderOptions::default(),
+                    preview: "other dialogue evidence".to_string(),
+                    focus_range: MessageRange::single(1),
+                    read_range: MessageRange::single(1),
+                },
+            ],
+            2,
             2,
             false,
         );
+
+        assert_eq!(groups[0].conversation_ref, "ch_a");
+        assert_eq!(groups[0].score, 10.09);
+        assert_eq!(groups[0].hits[0].preview, "display dialogue evidence");
+    }
+
+    #[test]
+    fn global_flat_output_uses_output_hits_not_group_order() {
+        let first = AgentOutputHit {
+            conversation_ref: "ch_a".to_string(),
+            title: "title a".to_string(),
+            score: 12.0,
+            source: AgentHitKind::Lexical,
+            evidence_source: AgentHitSource::Dialogue,
+            render_options: AgentHitRenderOptions::default(),
+            preview: "first flat hit".to_string(),
+            focus_range: MessageRange::single(1),
+            read_range: MessageRange::single(1),
+        };
+        let second = AgentOutputHit {
+            conversation_ref: "ch_b".to_string(),
+            title: "title b".to_string(),
+            score: 11.0,
+            source: AgentHitKind::Lexical,
+            evidence_source: AgentHitSource::Dialogue,
+            render_options: AgentHitRenderOptions::default(),
+            preview: "second flat hit".to_string(),
+            focus_range: MessageRange::single(1),
+            read_range: MessageRange::single(1),
+        };
         let output = AgentSearchOutput {
             protocol: AgentProtocolKind::Search,
             query: "cache warming".to_string(),
             mode: SearchMode::Lexical,
-            hits: flatten_groups(&groups, 10),
-            groups,
+            hits: vec![first.clone()],
+            groups: vec![AgentConversationGroup {
+                conversation_ref: "ch_b".to_string(),
+                title: "title b".to_string(),
+                score: 11.0,
+                total_hits: 1,
+                hits: vec![second],
+            }],
             flat: true,
             stats: AgentSearchStats::default(),
         };
@@ -1334,8 +1425,55 @@ mod tests {
 
         assert!(rendered.starts_with("protocol agent-search v=2 mode=lexical hits=1\n"));
         assert!(!rendered.contains("conversation rank="));
-        assert!(rendered.contains("title ref=ch_123456789abc | cache session\n"));
-        assert!(rendered.contains("hit ref=ch_123456789abc source=lexical score=12.500000 focus=m2..m2 | cache warming answer\n"));
+        assert!(rendered.contains("title ref=ch_a | title a\n"));
+        assert!(rendered.contains("first flat hit"));
+        assert!(!rendered.contains("second flat hit"));
+    }
+
+    #[test]
+    fn grouped_semantic_search_collects_until_top_conversations() {
+        let conv_a = conversation("a.jsonl", "title a");
+        let conv_b = conversation("b.jsonl", "title b");
+        let input_a = AgentConversationInput {
+            conversation: &conv_a,
+            resolved: resolved("a.jsonl"),
+            original_index: 0,
+        };
+        let input_b = AgentConversationInput {
+            conversation: &conv_b,
+            resolved: resolved("b.jsonl"),
+            original_index: 1,
+        };
+        let request = AgentSearchRequest {
+            query: "semantic".to_string(),
+            top: 2,
+            _scope: AgentSearchScope::Global,
+            cli_mode: Some(SearchMode::Semantic),
+            config_mode: None,
+            tui_semantic_search: None,
+            flat: false,
+            hits_per_conversation: 2,
+            all_hits: false,
+        };
+        let mut hits = (1..=20)
+            .map(|index| semantic_hit(0, MessageRange::single(index), "first", 1.0))
+            .collect::<Vec<_>>();
+        hits.push(semantic_hit(1, MessageRange::single(1), "second", 0.1));
+        let expected = vec![
+            input_a.resolved.reference.canonical(),
+            input_b.resolved.reference.canonical(),
+        ];
+
+        let output = run_global_semantic_search(&request, &[input_a, input_b], &hits);
+
+        assert_eq!(
+            output
+                .groups
+                .iter()
+                .map(|group| group.conversation_ref.clone())
+                .collect::<Vec<_>>(),
+            expected
+        );
     }
 
     #[test]
