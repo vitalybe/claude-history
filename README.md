@@ -16,6 +16,10 @@ discover the matching transcript folder automatically.
 > [!TIP]
 > **New:** experimental semantic search is now available. See
 > [Semantic search](#semantic-search) for details.
+>
+> **New:** use the companion Claude Code skill to let agents search your Claude
+> history with the bounded `agent` protocol. See [Agent protocol](#agent-protocol)
+> for the CLI workflow and skill path.
 
 [Install](#install) · [Features](#features) · [Usage](#usage) ·
 [Configuration](#configuration) · [Changelog](CHANGELOG.md)
