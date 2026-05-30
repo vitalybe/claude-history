@@ -316,9 +316,9 @@ tools, tool results, thinking, and subagent internals are hidden by default. Add
 is needed. Use `--no-budget` only when you intentionally want unbounded output.
 
 The companion Claude Code skill lives in
-`.claude/skills/claude-history-search/SKILL.md` in this repository. Copy that
-skill into a project or user skill directory if you installed only the binary and
-want Claude Code to discover the workflow guidance.
+`skills/claude-history-search/SKILL.md` in this repository. Copy that skill into
+a project or user skill directory if you installed only the binary and want
+Claude Code to discover the workflow guidance.
 
 ```
 View Claude conversation history

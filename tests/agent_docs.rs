@@ -74,7 +74,7 @@ fn readme_documents_agent_defaults_config_and_caveats() {
         "--hits-per-conv 2",
         "--all-hits",
         "Do not treat ranks",
-        ".claude/skills/claude-history-search",
+        "skills/claude-history-search",
     ] {
         assert!(agent_section.contains(required), "missing {required}");
     }
@@ -82,7 +82,7 @@ fn readme_documents_agent_defaults_config_and_caveats() {
 
 #[test]
 fn companion_skill_starts_with_search_and_preserves_focus() {
-    let skill = repo_file(".claude/skills/claude-history-search/SKILL.md");
+    let skill = repo_file("skills/claude-history-search/SKILL.md");
     let first_command = skill
         .lines()
         .find(|line| line.contains("claude-history agent"))
@@ -97,7 +97,7 @@ fn companion_skill_starts_with_search_and_preserves_focus() {
 
 #[test]
 fn companion_skill_recommends_lexical_or_exact_for_identifiers() {
-    let skill = repo_file(".claude/skills/claude-history-search/SKILL.md");
+    let skill = repo_file("skills/claude-history-search/SKILL.md");
 
     assert!(skill.contains("api_key"));
     assert!(skill.contains("--lexical"));
