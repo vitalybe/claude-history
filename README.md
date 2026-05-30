@@ -241,88 +241,40 @@ Press `q` or `Esc` to return to the conversation list.
 
 ### Agent protocol
 
-The `agent` namespace prints compact, stable protocol text for agents. It avoids
-ANSI color, pagers, ledger formatting, and JSON-first output so agents can copy
-refs into follow-up commands without reading whole transcripts.
+Use `claude-history agent` when you want Claude Code to look up something from
+your past Claude conversations. It gives agents a search-and-read workflow: find
+the right conversation, narrow to the relevant section, then read only the few
+messages needed as evidence.
 
-Start with global search. For conceptual recall, prefer semantic or hybrid
-search so exact wording does not have to match. Use lexical or exact search for
-identifiers, filenames, commands, error messages, and stack traces:
+The companion Claude Code skill at `skills/claude-history-search/SKILL.md` tells
+agents how to use this workflow without pasting whole transcripts into context.
 
-```sh
-$ claude-history agent search --hybrid "deployment rollback decision" --top 2
-$ claude-history agent search --lexical "auth cache bug" --top 2
-```
-
-```text
-protocol agent-search v=2 mode=hybrid groups=1 hits=1
-query text=deployment%20rollback%20decision hits=1
-groups count=1
-conversation rank=1 ref=ch_1234abcd5678 score=12.500000 hits=1 total=1 | rollback investigation
-hit ref=ch_1234abcd5678 source=semantic score=12.500000 focus=m8..m8 | we decided to roll back because the cache migration changed invalidation behavior
-read ref=ch_1234abcd5678:m7..m9 focus=m8..m8
-```
-
-Then narrow inside the selected conversation or inspect its outline before
-reading:
+The usual flow is:
 
 ```sh
-$ claude-history agent within ch_1234abcd5678 --lexical "auth cache bug"
-$ claude-history agent outline ch_1234abcd5678
-```
-
-Read only the emitted range, and preserve `focus=` as `--focus` so budgeted
-output keeps the evidence message:
-
-```sh
+$ claude-history agent search --hybrid "deployment rollback decision" --top 5
+$ claude-history agent within ch_1234abcd5678 --lexical "rollback"
 $ claude-history agent read ch_1234abcd5678:m7..m9 --focus m8..m8
 ```
 
-```text
-protocol agent-read v=1 cut=none budget=6000
-conversation ref=ch_1234abcd5678 path=session.jsonl
-message m7 role=user line=14
-| auth cache bug repro
-message m8 role=assistant line=15
-| the cache key omits the auth scope
-message m9 role=user line=16
-| please patch it
-```
+Use semantic or hybrid search when you remember the topic but not the exact
+wording. Use lexical or exact search for identifiers, filenames, commands, error
+messages, and stack traces.
 
-Refs are `ch_...` conversation refs plus 1-based `mN` message refs. A read range
-uses `mN..mM`, such as `ch_1234abcd5678:m7..m9`. Search and within output emit
-`read ref=... focus=...` lines; copy those fields. Some hits include extra read
-atoms such as `tool-results=true`, `tools=true`, `thinking=true`, or
-`subagents=true`; pass the matching `agent read` flags so the evidence remains
-visible. Do not treat ranks, scores, or hidden chunk identifiers as stable
-addresses. If you read ranges from more than one conversation in a single
-command, qualify focus as `--focus ch_1234abcd5678:m8..m8`, or run one read
-command per emitted read line.
+Search is global by default. Add `--local` to search only the current workspace.
+Results are grouped by conversation and include copyable `read ref=... focus=...`
+lines for the next command. Reads are budgeted by default so agents get the
+relevant excerpt instead of an entire transcript.
 
-Header atoms such as `query text=` and `path=` are percent-encoded. Search,
-within, and outline snippets appear after `|` as normalized single-line text.
-Refs and focus ranges are safe to copy as opaque fields.
+Useful options:
 
-Agent search is global by default and grouped by conversation. Pass `--local` to
-search only the current workspace, or `--all` to be explicit about global scope.
-`--top 10` is the default conversation limit, and `--hits-per-conv 2` is the
-default evidence limit per conversation. Search titles and hit snippets are
-truncated by default to keep agent output bounded. Use `--flat` for flat message-hit output
-or `--all-hits` to disable duplicate suppression while keeping the per-conversation
-cap. Search mode follows `[search].mode` unless `--lexical`, `--exact`,
-`--semantic`, or `--hybrid` is passed; the deprecated `[tui].semantic_search`
-setting is only a compatibility fallback when `[search].mode` is unset. Quoted-only
-queries use exact mode regardless of config.
+- `--top 10` controls how many conversations global search returns.
+- `--hits-per-conv 2` controls how much evidence appears per conversation.
+- `--tools`, `--tool-results`, `--thinking`, and `--subagents` include content
+  hidden from reads by default.
+- `--no-budget` disables read truncation when you intentionally want unbounded
+  output.
 
-`agent read` and `agent outline` are budgeted by default. The budget is 6000, and
-tools, tool results, thinking, and subagent internals are hidden by default. Add
-`--tools`, `--tool-results`, `--thinking`, or `--subagents` only when that content
-is needed. Use `--no-budget` only when you intentionally want unbounded output.
-
-The companion Claude Code skill lives in
-`skills/claude-history-search/SKILL.md` in this repository. Copy that skill into
-a project or user skill directory if you installed only the binary and want
-Claude Code to discover the workflow guidance.
 
 ```
 View Claude conversation history

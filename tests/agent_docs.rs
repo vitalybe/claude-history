@@ -30,9 +30,8 @@ fn fenced_blocks(markdown: &str, language: &str) -> Vec<String> {
 fn readme_agent_examples_show_bounded_protocol_workflow() {
     let readme = repo_file("README.md");
     let shell_blocks = fenced_blocks(&readme, "sh").join("\n");
-    let text_blocks = fenced_blocks(&readme, "text").join("\n");
 
-    assert!(shell_blocks.contains("claude-history agent search --lexical"));
+    assert!(shell_blocks.contains("claude-history agent search --hybrid"));
     assert!(
         shell_blocks.contains("claude-history agent within")
             || shell_blocks.contains("claude-history agent outline")
@@ -40,10 +39,6 @@ fn readme_agent_examples_show_bounded_protocol_workflow() {
     assert!(shell_blocks.contains("claude-history agent read"));
     assert!(shell_blocks.contains(":m"));
     assert!(shell_blocks.contains("--focus m"));
-    assert!(text_blocks.contains("protocol agent-search v=2"));
-    assert!(text_blocks.contains("conversation rank="));
-    assert!(text_blocks.contains("message m"));
-    assert!(text_blocks.contains("| "));
     assert!(!readme.contains("u1"));
     assert!(!readme.contains("a1"));
     assert!(!readme.contains("uN"));
@@ -65,15 +60,10 @@ fn readme_documents_agent_defaults_config_and_caveats() {
         "global by default",
         "--local",
         "--top 10",
-        "budget is 6000",
-        "tools, tool results, thinking, and subagent internals are hidden by default",
-        "[search].mode",
-        "[tui].semantic_search",
-        "after `|` as normalized single-line text",
-        "--flat",
+        "Use semantic or hybrid search",
+        "Use lexical or exact search",
+        "read ref=... focus=...",
         "--hits-per-conv 2",
-        "--all-hits",
-        "Do not treat ranks",
         "skills/claude-history-search",
     ] {
         assert!(agent_section.contains(required), "missing {required}");
