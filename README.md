@@ -241,19 +241,21 @@ The `agent` namespace prints compact, stable protocol text for agents. It avoids
 ANSI color, pagers, ledger formatting, and JSON-first output so agents can copy
 refs into follow-up commands without reading whole transcripts.
 
-Start with global search. Use `--lexical` for baseline agent searches so the
-command ignores any slower semantic default in local config:
+Start with global search. For conceptual recall, prefer semantic or hybrid
+search so exact wording does not have to match. Use lexical or exact search for
+identifiers, filenames, commands, error messages, and stack traces:
 
 ```sh
+$ claude-history agent search --hybrid "deployment rollback decision" --top 2
 $ claude-history agent search --lexical "auth cache bug" --top 2
 ```
 
 ```text
-protocol agent-search v=2 mode=lexical groups=1 hits=1
-query text=auth%20cache%20bug hits=1
+protocol agent-search v=2 mode=hybrid groups=1 hits=1
+query text=deployment%20rollback%20decision hits=1
 groups count=1
-conversation rank=1 ref=ch_1234abcd5678 score=12.500000 hits=1 total=1 | fix auth cache
-hit ref=ch_1234abcd5678 source=lexical score=12.500000 focus=m8..m8 | auth cache bug repro
+conversation rank=1 ref=ch_1234abcd5678 score=12.500000 hits=1 total=1 | rollback investigation
+hit ref=ch_1234abcd5678 source=semantic score=12.500000 focus=m8..m8 | we decided to roll back because the cache migration changed invalidation behavior
 read ref=ch_1234abcd5678:m7..m9 focus=m8..m8
 ```
 
