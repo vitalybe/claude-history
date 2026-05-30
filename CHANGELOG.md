@@ -1,3 +1,10 @@
+## v0.1.63 (2026-05-30)
+
+- Added `claude-history agent` commands so agents can search, narrow, outline, and read bounded excerpts from your Claude history.
+- Added a companion Claude Code search skill for using the agent protocol without pasting whole transcripts into context.
+- Added `[search].mode` for choosing the default search mode, including lexical, semantic, exact, and hybrid options.
+- Fixed Homebrew upgrade metadata so Apple Silicon installs no longer fail while looking for unavailable Intel macOS bottles ([#50](https://github.com/raine/claude-history/issues/50))
+
 ## v0.1.62 (2026-05-24)
 
 - Identifier searches with underscores now stay precise, so `api_key` matches `api_key` without also matching `api key`.
