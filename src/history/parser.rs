@@ -288,14 +288,17 @@ pub fn process_conversation_reader<R: BufRead>(
                         }
                     }
                     LogEntry::Summary { summary } => {
-                        // Extract summary from the first summary entry
                         if extracted_summary.is_none() {
                             extracted_summary = Some(summary.clone());
                         }
                     }
+                    LogEntry::AiTitle { ai_title } => {
+                        let trimmed = ai_title.trim();
+                        if !trimmed.is_empty() {
+                            extracted_summary = Some(trimmed.to_owned());
+                        }
+                    }
                     LogEntry::CustomTitle { custom_title } => {
-                        // Take the last custom title (user may rename multiple times)
-                        // Empty title clears any previous title
                         let trimmed = custom_title.trim();
                         extracted_custom_title = if trimmed.is_empty() {
                             None
@@ -1089,6 +1092,61 @@ mod tests {
         );
     }
 
+    #[test]
+    fn extracts_ai_title_as_summary() {
+        let content = [
+            r#"{"type":"ai-title","aiTitle":"Plan activities","sessionId":"abc"}"#.to_string(),
+            user_msg("Hello", None),
+            assistant_msg("Hi there"),
+        ]
+        .join("\n");
+
+        let conv = parse_jsonl(&content).unwrap().unwrap();
+        assert_eq!(conv.summary, Some("Plan activities".to_string()));
+    }
+
+    #[test]
+    fn takes_last_ai_title_if_multiple() {
+        let content = [
+            r#"{"type":"ai-title","aiTitle":"First title","sessionId":"abc"}"#.to_string(),
+            user_msg("Hello", None),
+            assistant_msg("Hi there"),
+            r#"{"type":"ai-title","aiTitle":"Final title","sessionId":"abc"}"#.to_string(),
+        ]
+        .join("\n");
+
+        let conv = parse_jsonl(&content).unwrap().unwrap();
+        assert_eq!(conv.summary, Some("Final title".to_string()));
+    }
+
+    #[test]
+    fn ignores_empty_ai_title() {
+        let content = [
+            r#"{"type":"ai-title","aiTitle":"First title","sessionId":"abc"}"#.to_string(),
+            user_msg("Hello", None),
+            r#"{"type":"ai-title","aiTitle":"","sessionId":"abc"}"#.to_string(),
+            assistant_msg("Hi there"),
+        ]
+        .join("\n");
+
+        let conv = parse_jsonl(&content).unwrap().unwrap();
+        assert_eq!(conv.summary, Some("First title".to_string()));
+    }
+
+    #[test]
+    fn ai_title_included_in_full_text() {
+        let content = [
+            r#"{"type":"ai-title","aiTitle":"ai-title-search-sentinel","sessionId":"abc"}"#
+                .to_string(),
+            user_msg("Hello", None),
+            assistant_msg("Hi there"),
+        ]
+        .join("\n");
+
+        let conv = parse_jsonl(&content).unwrap().unwrap();
+        assert!(conv.full_text.contains("ai-title-search-sentinel"));
+    }
+
     // === Model and token extraction ===
 
     #[test]
@@ -1248,6 +1306,21 @@ mod tests {
 
         let conv = parse_jsonl(&content).unwrap().unwrap();
         assert!(conv.custom_title.is_none(), "Should have no custom title");
+    }
+
+    #[test]
+    fn custom_title_takes_precedence_over_ai_title() {
+        let content = [
+            r#"{"type":"ai-title","aiTitle":"auto title","sessionId":"abc"}"#.to_string(),
+            user_msg("Hello", None),
+            assistant_msg("Hi there"),
+            r#"{"type":"custom-title","customTitle":"manual title","sessionId":"abc"}"#.to_string(),
+        ]
+        .join("\n");
+
+        let conv = parse_jsonl(&content).unwrap().unwrap();
+        assert_eq!(conv.custom_title, Some("manual title".to_string()));
+        assert_eq!(conv.summary, Some("auto title".to_string()));
     }
 
     #[test]

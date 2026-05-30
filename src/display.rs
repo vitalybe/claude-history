@@ -608,6 +608,7 @@ fn process_entry<F: OutputFormatter>(
         | LogEntry::FileHistorySnapshot { .. }
         | LogEntry::System { .. }
         | LogEntry::CustomTitle { .. }
+        | LogEntry::AiTitle { .. }
         | LogEntry::AgentName { .. }
         | LogEntry::PermissionMode { .. }
         | LogEntry::Unknown => {

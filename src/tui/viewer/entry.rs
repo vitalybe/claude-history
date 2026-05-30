@@ -32,6 +32,7 @@ pub(super) fn render_entry(
         | LogEntry::FileHistorySnapshot { .. }
         | LogEntry::System { .. }
         | LogEntry::CustomTitle { .. }
+        | LogEntry::AiTitle { .. }
         | LogEntry::AgentName { .. }
         | LogEntry::PermissionMode { .. }
         | LogEntry::Unknown => {}

@@ -69,6 +69,11 @@ pub enum LogEntry {
         #[serde(rename = "customTitle")]
         custom_title: String,
     },
+    #[serde(rename = "ai-title")]
+    AiTitle {
+        #[serde(rename = "aiTitle")]
+        ai_title: String,
+    },
     #[serde(rename = "agent-name")]
     AgentName {
         #[allow(dead_code)]
