@@ -14,10 +14,10 @@ Run it from the project directory you work on with Claude Code and it will
 discover the matching transcript folder automatically.
 
 > [!TIP]
-> **New:** experimental semantic search is now available. See
+> **New:** Experimental semantic search is now available. See
 > [Semantic search](#semantic-search) for details.
 >
-> **New:** use the companion Claude Code skill to let agents search your Claude
+> **New:** Use the companion Claude Code skill to let agents search your Claude
 > history with the bounded `agent` protocol. See [Agent protocol](#agent-protocol)
 > for the CLI workflow and skill path.
 
@@ -82,28 +82,28 @@ the preview.
 
 ### Keyboard navigation (List mode)
 
-| Key                     | Action                          |
-| ----------------------- | ------------------------------- |
-| `↑` / `↓`               | Move selection                  |
-| `←` / `→`               | Move cursor in search           |
-| `Ctrl+P` / `Ctrl+N`     | Move selection (vi-style)       |
-| `Ctrl+D` / `Ctrl+U`     | Half page down/up (vim-style)   |
-| `Page Up` / `Page Down` | Jump by page                    |
-| `Home` / `End`          | Jump to first/last              |
-| `Enter`                 | Open conversation viewer        |
-| Mouse wheel             | Scroll the result list          |
-| Mouse click             | Open conversation under cursor  |
-| `Ctrl+O`                | Select and exit (for scripting) |
-| `Ctrl+W`                | Delete word before cursor       |
-| `Ctrl+R`                | Resume conversation             |
-| `Ctrl+F`                | Fork and resume conversation    |
-| `F2`                    | Rename selected session         |
-| `Ctrl+X`                | Delete conversation             |
-| `Tab`                   | Toggle all / workspace scope    |
+| Key                     | Action                           |
+| ----------------------- | -------------------------------- |
+| `↑` / `↓`               | Move selection                   |
+| `←` / `→`               | Move cursor in search            |
+| `Ctrl+P` / `Ctrl+N`     | Move selection (vi-style)        |
+| `Ctrl+D` / `Ctrl+U`     | Half page down/up (vim-style)    |
+| `Page Up` / `Page Down` | Jump by page                     |
+| `Home` / `End`          | Jump to first/last               |
+| `Enter`                 | Open conversation viewer         |
+| Mouse wheel             | Scroll the result list           |
+| Mouse click             | Open conversation under cursor   |
+| `Ctrl+O`                | Select and exit (for scripting)  |
+| `Ctrl+W`                | Delete word before cursor        |
+| `Ctrl+R`                | Resume conversation              |
+| `Ctrl+F`                | Fork and resume conversation     |
+| `F2`                    | Rename selected session          |
+| `Ctrl+X`                | Delete conversation              |
+| `Tab`                   | Toggle all / workspace scope     |
 | `Ctrl+T`                | Toggle lexical / semantic search |
-| `?`                     | Show keyboard shortcuts         |
-| `Esc`                   | Clear search input, or quit     |
-| `Ctrl+C`                | Quit                            |
+| `?`                     | Show keyboard shortcuts          |
+| `Esc`                   | Clear search input, or quit      |
+| `Ctrl+C`                | Quit                             |
 
 ### Keyboard navigation (Viewer mode)
 
@@ -274,7 +274,6 @@ Useful options:
   hidden from reads by default.
 - `--no-budget` disables read truncation when you intentionally want unbounded
   output.
-
 
 ```
 View Claude conversation history
