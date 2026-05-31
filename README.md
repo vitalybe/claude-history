@@ -246,8 +246,10 @@ your past Claude conversations. It gives agents a search-and-read workflow: find
 the right conversation, narrow to the relevant section, then read only the few
 messages needed as evidence.
 
-The companion Claude Code skill at `skills/claude-history-search/SKILL.md` tells
-agents how to use this workflow without pasting whole transcripts into context.
+The companion Claude Code skill at
+[`skills/claude-history-search/SKILL.md`](skills/claude-history-search/SKILL.md)
+tells agents how to use this workflow without pasting whole transcripts into
+context.
 
 <img src="/meta/agent-protocol.webp" />
 
@@ -277,7 +279,7 @@ Useful options:
 - `--no-budget` disables read truncation when you intentionally want unbounded
   output.
 
-#### CLI reference
+### CLI reference
 
 ```text
 View Claude conversation history
