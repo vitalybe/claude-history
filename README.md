@@ -249,6 +249,8 @@ messages needed as evidence.
 The companion Claude Code skill at `skills/claude-history-search/SKILL.md` tells
 agents how to use this workflow without pasting whole transcripts into context.
 
+<img src="/meta/agent-protocol.webp" />
+
 The usual flow is:
 
 ```sh
@@ -275,7 +277,9 @@ Useful options:
 - `--no-budget` disables read truncation when you intentionally want unbounded
   output.
 
-```
+#### CLI reference
+
+```text
 View Claude conversation history
 
 Usage: claude-history [OPTIONS] [FILE]
