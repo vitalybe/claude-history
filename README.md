@@ -253,7 +253,7 @@ context.
 
 <img src="/meta/agent-protocol.webp" />
 
-The usual flow is:
+An agent usually runs:
 
 ```sh
 $ claude-history agent search --hybrid "deployment rollback decision" --top 5
@@ -261,14 +261,14 @@ $ claude-history agent within ch_1234abcd5678 --lexical "rollback"
 $ claude-history agent read ch_1234abcd5678:m7..m9 --focus m8..m8
 ```
 
-Use semantic or hybrid search when you remember the topic but not the exact
-wording. Use lexical or exact search for identifiers, filenames, commands, error
-messages, and stack traces.
+Agents should use semantic or hybrid search for remembered topics where the
+exact wording is unknown, and lexical or exact search for identifiers,
+filenames, commands, error messages, and stack traces.
 
-Search is global by default. Add `--local` to search only the current workspace.
-Results are grouped by conversation and include copyable `read ref=... focus=...`
-lines for the next command. Reads are budgeted by default so agents get the
-relevant excerpt instead of an entire transcript.
+Search is global by default. `--local` restricts search to the current
+workspace. Results are grouped by conversation and include copyable
+`read ref=... focus=...` lines for the next command. Reads are budgeted by
+default so agents get the relevant excerpt instead of an entire transcript.
 
 Useful options:
 
