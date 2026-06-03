@@ -1,3 +1,9 @@
+## v0.1.65 (2026-06-03)
+
+- Fixed a crash in agent search and outline commands when a conversation
+  included attached documents or other unsupported content blocks
+  ([#52](https://github.com/raine/claude-history/pull/52))
+
 ## v0.1.64 (2026-05-30)
 
 - Fixed Claude Code auto-generated session titles appearing as missing or
