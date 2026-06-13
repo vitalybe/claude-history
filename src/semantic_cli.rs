@@ -449,9 +449,9 @@ fn no_conversations_message(local: bool) -> &'static str {
 mod tests {
     use super::*;
     use crate::semantic::embed::SemanticEmbedder;
+    use crate::semantic::test_fixtures::SemanticConversationFixture;
     use crate::semantic::types::{ChunkConfig, EmbeddingCache};
     use chrono::Local;
-    use std::path::PathBuf;
 
     struct FakeEmbedder {
         passage_calls: usize,
@@ -497,31 +497,12 @@ mod tests {
     }
 
     fn test_conversation(path: &str, title: &str, semantic_turns: Vec<String>) -> Conversation {
-        Conversation {
-            path: PathBuf::from(path),
-            index: 0,
-            timestamp: Local::now(),
-            preview: title.to_string(),
-            preview_first: title.to_string(),
-            preview_last: title.to_string(),
-            full_text: title.to_string(),
-            agent_search_text: String::new(),
-            semantic_turn_ranges: (1..=semantic_turns.len())
-                .map(crate::agent::refs::MessageRange::single)
-                .collect(),
-            semantic_turns,
-            search_text_lower: title.to_string(),
-            project_name: Some("project-a".to_string()),
-            project_path: Some(PathBuf::from("/projects/project-a")),
-            cwd: None,
-            message_count: 1,
-            parse_errors: vec![],
-            summary: None,
-            custom_title: Some(title.to_string()),
-            model: None,
-            total_tokens: 0,
-            duration_minutes: None,
-        }
+        SemanticConversationFixture::new(path, semantic_turns)
+            .with_title(title)
+            .with_project("project-a", "/projects/project-a")
+            .with_cwd(None)
+            .with_summary(None)
+            .build()
     }
 
     #[test]

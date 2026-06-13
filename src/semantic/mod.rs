@@ -8,3 +8,6 @@ pub mod index;
 pub mod output;
 pub mod rank;
 pub mod types;
+
+#[cfg(test)]
+pub mod test_fixtures;

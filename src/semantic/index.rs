@@ -404,9 +404,8 @@ fn semantic_index_signature(
 mod tests {
     use super::*;
     use crate::semantic::cache::{cache_miss_count, empty_embedding_cache};
+    use crate::semantic::test_fixtures::SemanticConversationFixture;
     use crate::semantic::types::{CachedChunk, SemanticQuality, SemanticRationaleKind};
-    use chrono::Local;
-    use std::path::PathBuf;
 
     struct FakeEmbedder {
         passage_calls: usize,
@@ -451,35 +450,7 @@ mod tests {
     }
 
     fn conversation(path: &str, semantic_turns: Vec<&str>) -> Conversation {
-        Conversation {
-            path: PathBuf::from(path),
-            index: 0,
-            timestamp: Local::now(),
-            preview: "preview sentinel".to_string(),
-            preview_first: "preview sentinel".to_string(),
-            preview_last: "preview sentinel".to_string(),
-            full_text:
-                "title sentinel summary sentinel cwd sentinel project sentinel tool output sentinel"
-                    .to_string(),
-            agent_search_text: String::new(),
-            semantic_turn_ranges: (1..=semantic_turns.len())
-                .map(crate::agent::refs::MessageRange::single)
-                .collect(),
-            semantic_turns: semantic_turns.into_iter().map(str::to_string).collect(),
-            search_text_lower:
-                "title sentinel summary sentinel cwd sentinel project sentinel tool output sentinel"
-                    .to_string(),
-            project_name: Some("project sentinel".to_string()),
-            project_path: Some(PathBuf::from("/projects/project-sentinel")),
-            cwd: Some(PathBuf::from("/cwd/sentinel")),
-            message_count: 1,
-            parse_errors: Vec::new(),
-            summary: Some("summary sentinel".to_string()),
-            custom_title: Some("title sentinel".to_string()),
-            model: None,
-            total_tokens: 0,
-            duration_minutes: None,
-        }
+        SemanticConversationFixture::new(path, semantic_turns).build()
     }
 
     fn request(

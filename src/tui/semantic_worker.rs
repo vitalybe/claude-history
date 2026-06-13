@@ -548,45 +548,18 @@ fn semantic_progress(progress: SemanticIndexProgress) -> SemanticProgress {
 mod tests {
     use super::*;
     use crate::history::Conversation;
-    use crate::search::normalize_for_search;
+    use crate::semantic::test_fixtures::SemanticConversationFixture;
     use crate::semantic::types::{
         SemanticChunkIdentity, SemanticExplanation, SemanticQuality, SemanticRationaleKind,
         SemanticScoreBreakdown,
     };
     use chrono::{Duration as ChronoDuration, Local};
-    use std::path::PathBuf;
     use std::time::Duration;
 
     fn conversation(path: &str, semantic_turns: Vec<&str>) -> Conversation {
-        Conversation {
-            path: PathBuf::from(path),
-            index: 0,
-            timestamp: Local::now(),
-            preview: "preview sentinel".to_string(),
-            preview_first: "preview sentinel".to_string(),
-            preview_last: "preview sentinel".to_string(),
-            full_text:
-                "title sentinel summary sentinel cwd sentinel project sentinel tool output sentinel"
-                    .to_string(),
-            agent_search_text: String::new(),
-            semantic_turn_ranges: (1..=semantic_turns.len())
-                .map(crate::agent::refs::MessageRange::single)
-                .collect(),
-            semantic_turns: semantic_turns.into_iter().map(str::to_string).collect(),
-            search_text_lower: normalize_for_search(
-                "title sentinel summary sentinel cwd sentinel project sentinel tool output sentinel",
-            ),
-            project_name: Some("project sentinel".to_string()),
-            project_path: Some(PathBuf::from("/projects/project-sentinel")),
-            cwd: Some(PathBuf::from("/cwd/sentinel")),
-            message_count: 1,
-            parse_errors: Vec::new(),
-            summary: Some("summary sentinel".to_string()),
-            custom_title: Some("title sentinel".to_string()),
-            model: None,
-            total_tokens: 0,
-            duration_minutes: None,
-        }
+        SemanticConversationFixture::new(path, semantic_turns)
+            .with_normalized_search_text_lower()
+            .build()
     }
 
     fn corpus(conversations: Vec<Conversation>) -> Arc<Vec<Arc<Conversation>>> {
