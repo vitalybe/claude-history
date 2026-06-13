@@ -28,22 +28,8 @@ pub fn embed_chunks_with_progress_and_save(
         if cancellation.is_cancelled() {
             return Err(AppError::SemanticSearchCancelled);
         }
-        let cached = cache
-            .entries
-            .get(&chunk.key)
-            .filter(|entry| cache_entry_matches(entry, &chunk.text));
-
-        if let Some(entry) = cached {
-            embedded.push(EmbeddedChunk {
-                conversation_index: chunk.conversation_index,
-                source: chunk.source,
-                session: chunk.session,
-                chunk_index: chunk.chunk_index,
-                key: chunk.key,
-                text: entry.text.clone(),
-                message_range: chunk.message_range,
-                embedding: entry.embedding.clone(),
-            });
+        if let Some(chunk) = cached_embedded_chunk(&chunk, cache) {
+            embedded.push(chunk);
         } else {
             misses.push(chunk);
         }
@@ -105,22 +91,8 @@ pub fn cached_chunks(
         if cancellation.is_cancelled() {
             return Err(AppError::SemanticSearchCancelled);
         }
-        let cached = cache
-            .entries
-            .get(&chunk.key)
-            .filter(|entry| cache_entry_matches(entry, &chunk.text));
-
-        if let Some(entry) = cached {
-            embedded.push(EmbeddedChunk {
-                conversation_index: chunk.conversation_index,
-                source: chunk.source,
-                session: chunk.session,
-                chunk_index: chunk.chunk_index,
-                key: chunk.key,
-                text: entry.text.clone(),
-                message_range: chunk.message_range,
-                embedding: entry.embedding.clone(),
-            });
+        if let Some(chunk) = cached_embedded_chunk(&chunk, cache) {
+            embedded.push(chunk);
         } else {
             misses += 1;
         }
@@ -143,6 +115,23 @@ pub fn cache_miss_count(chunks: &[SemanticChunk], cache: &EmbeddingCache) -> usi
 
 pub fn cache_entry_matches(entry: &CachedChunk, text: &str) -> bool {
     entry.text == text
+}
+
+fn cached_embedded_chunk(chunk: &SemanticChunk, cache: &EmbeddingCache) -> Option<EmbeddedChunk> {
+    cache
+        .entries
+        .get(&chunk.key)
+        .filter(|entry| cache_entry_matches(entry, &chunk.text))
+        .map(|entry| EmbeddedChunk {
+            conversation_index: chunk.conversation_index,
+            source: chunk.source,
+            session: chunk.session.clone(),
+            chunk_index: chunk.chunk_index,
+            key: chunk.key.clone(),
+            text: entry.text.clone(),
+            message_range: chunk.message_range,
+            embedding: entry.embedding.clone(),
+        })
 }
 
 fn prune_stale_entries(cache: &mut EmbeddingCache, chunks: &[SemanticChunk]) {
