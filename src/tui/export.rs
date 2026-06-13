@@ -320,8 +320,15 @@ fn generate_content(
     }
 }
 
-/// Generate plain text format (simple "Speaker: message" lines)
-fn generate_plain(path: &Path, options: ExportOptions) -> std::io::Result<String> {
+fn generate_plain_or_markdown_content(
+    path: &Path,
+    options: ExportOptions,
+    mut handle_user_text: impl FnMut(&mut String, &str, &str),
+    mut handle_user_tool_result: impl FnMut(&mut String, &str, &str),
+    mut handle_assistant_text: impl FnMut(&mut String, &str, &str),
+    mut handle_assistant_tool_use: impl FnMut(&mut String, &str, &str, &serde_json::Value),
+    mut handle_assistant_thinking: impl FnMut(&mut String, &str, &str),
+) -> std::io::Result<String> {
     let file = File::open(path)?;
     let reader = BufReader::new(file);
     let mut output = String::new();
@@ -343,7 +350,7 @@ fn generate_plain(path: &Path, options: ExportOptions) -> std::io::Result<String
                     }
                     let prefix = subagent_prefix(&parent_tool_use_id);
                     if let Some(text) = extract_user_text(&message) {
-                        output.push_str(&format!("{}You: {}\n\n", prefix, text));
+                        handle_user_text(&mut output, &prefix, &text);
                     }
                     // Tool results
                     if options.show_tools
@@ -352,10 +359,7 @@ fn generate_plain(path: &Path, options: ExportOptions) -> std::io::Result<String
                         for block in blocks {
                             if let ContentBlock::ToolResult { content, .. } = block {
                                 let content_str = format_tool_result_for_export(content.as_ref());
-                                output.push_str(&format!(
-                                    "{}Tool Result: {}\n\n",
-                                    prefix, content_str
-                                ));
+                                handle_user_tool_result(&mut output, &prefix, &content_str);
                             }
                         }
                     }
@@ -372,14 +376,13 @@ fn generate_plain(path: &Path, options: ExportOptions) -> std::io::Result<String
                     for block in &message.content {
                         match block {
                             ContentBlock::Text { text } => {
-                                output.push_str(&format!("{}Claude: {}\n\n", prefix, text));
+                                handle_assistant_text(&mut output, &prefix, text);
                             }
                             ContentBlock::ToolUse { name, input, .. } if options.show_tools => {
-                                let formatted = format_tool_call_for_export(name, input);
-                                output.push_str(&format!("{}Tool: {}\n\n", prefix, formatted));
+                                handle_assistant_tool_use(&mut output, &prefix, name, input);
                             }
                             ContentBlock::Thinking { thinking, .. } if options.show_thinking => {
-                                output.push_str(&format!("{}Thinking: {}\n\n", prefix, thinking));
+                                handle_assistant_thinking(&mut output, &prefix, thinking);
                             }
                             _ => {}
                         }
@@ -393,85 +396,54 @@ fn generate_plain(path: &Path, options: ExportOptions) -> std::io::Result<String
     Ok(output)
 }
 
+/// Generate plain text format (simple "Speaker: message" lines)
+fn generate_plain(path: &Path, options: ExportOptions) -> std::io::Result<String> {
+    generate_plain_or_markdown_content(
+        path,
+        options,
+        |output, prefix, text| {
+            output.push_str(&format!("{}You: {}\n\n", prefix, text));
+        },
+        |output, prefix, content| {
+            output.push_str(&format!("{}Tool Result: {}\n\n", prefix, content));
+        },
+        |output, prefix, text| {
+            output.push_str(&format!("{}Claude: {}\n\n", prefix, text));
+        },
+        |output, prefix, name, input| {
+            let formatted = format_tool_call_for_export(name, input);
+            output.push_str(&format!("{}Tool: {}\n\n", prefix, formatted));
+        },
+        |output, prefix, thinking| {
+            output.push_str(&format!("{}Thinking: {}\n\n", prefix, thinking));
+        },
+    )
+}
+
 /// Generate markdown format (with ## headers for speakers)
 fn generate_markdown(path: &Path, options: ExportOptions) -> std::io::Result<String> {
-    let file = File::open(path)?;
-    let reader = BufReader::new(file);
-    let mut output = String::new();
-
-    for line in reader.lines() {
-        let line = line?;
-        if line.trim().is_empty() {
-            continue;
-        }
-        if let Ok(entry) = serde_json::from_str::<LogEntry>(&line) {
-            match entry {
-                LogEntry::User {
-                    message,
-                    parent_tool_use_id,
-                    ..
-                } => {
-                    if parent_tool_use_id.is_some() && !options.show_thinking {
-                        continue;
-                    }
-                    let prefix = subagent_prefix(&parent_tool_use_id);
-                    if let Some(text) = extract_user_text(&message) {
-                        output.push_str(&format!("## {}You\n\n{}\n\n", prefix, text));
-                    }
-                    // Tool results
-                    if options.show_tools
-                        && let UserContent::Blocks(blocks) = &message.content
-                    {
-                        for block in blocks {
-                            if let ContentBlock::ToolResult { content, .. } = block {
-                                let content_str = format_tool_result_for_export(content.as_ref());
-                                let fenced = markdown_code_fence(&content_str);
-                                output.push_str(&format!(
-                                    "### {}Tool Result\n\n{}\n\n",
-                                    prefix, fenced
-                                ));
-                            }
-                        }
-                    }
-                }
-                LogEntry::Assistant {
-                    message,
-                    parent_tool_use_id,
-                    ..
-                } => {
-                    if parent_tool_use_id.is_some() && !options.show_thinking {
-                        continue;
-                    }
-                    let prefix = subagent_prefix(&parent_tool_use_id);
-                    for block in &message.content {
-                        match block {
-                            ContentBlock::Text { text } => {
-                                output.push_str(&format!("## {}Claude\n\n{}\n\n", prefix, text));
-                            }
-                            ContentBlock::ToolUse { name, input, .. } if options.show_tools => {
-                                let formatted = format_tool_call_for_export(name, input);
-                                let fenced = markdown_code_fence(&formatted);
-                                output.push_str(&format!(
-                                    "### {}Tool: {}\n\n{}\n\n",
-                                    prefix, name, fenced
-                                ));
-                            }
-                            ContentBlock::Thinking { thinking, .. } if options.show_thinking => {
-                                output.push_str(&format!(
-                                    "### {}Thinking\n\n{}\n\n",
-                                    prefix, thinking
-                                ));
-                            }
-                            _ => {}
-                        }
-                    }
-                }
-                _ => {}
-            }
-        }
-    }
-
-    Ok(output)
+    generate_plain_or_markdown_content(
+        path,
+        options,
+        |output, prefix, text| {
+            output.push_str(&format!("## {}You\n\n{}\n\n", prefix, text));
+        },
+        |output, prefix, content| {
+            let fenced = markdown_code_fence(content);
+            output.push_str(&format!("### {}Tool Result\n\n{}\n\n", prefix, fenced));
+        },
+        |output, prefix, text| {
+            output.push_str(&format!("## {}Claude\n\n{}\n\n", prefix, text));
+        },
+        |output, prefix, name, input| {
+            let formatted = format_tool_call_for_export(name, input);
+            let fenced = markdown_code_fence(&formatted);
+            output.push_str(&format!("### {}Tool: {}\n\n{}\n\n", prefix, name, fenced));
+        },
+        |output, prefix, thinking| {
+            output.push_str(&format!("### {}Thinking\n\n{}\n\n", prefix, thinking));
+        },
+    )
 }
 
 /// Total line width for ledger export (including name column and separator)
