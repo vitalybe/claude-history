@@ -565,6 +565,80 @@ mod tests {
         }
     }
 
+    fn prepare_indexed_state(
+        request: &SemanticIndexRequest<'_>,
+        chunk_config: ChunkConfig,
+    ) -> (SemanticIndexState, FakeEmbedder) {
+        let mut cache = empty_embedding_cache(chunk_config);
+        cache_request_passages(&mut cache, request);
+        (
+            SemanticIndexState::with_cache(chunk_config, cache),
+            FakeEmbedder::new(),
+        )
+    }
+
+    fn prepare_empty_state(chunk_config: ChunkConfig) -> (SemanticIndexState, FakeEmbedder) {
+        (
+            SemanticIndexState::with_cache(chunk_config, empty_embedding_cache(chunk_config)),
+            FakeEmbedder::new(),
+        )
+    }
+
+    fn run_refresh(
+        state: &mut SemanticIndexState,
+        request: &SemanticIndexRequest<'_>,
+        embedder: &mut FakeEmbedder,
+    ) -> Result<SemanticIndexResponse> {
+        state.refresh_or_prewarm(
+            request,
+            embedder,
+            &SemanticCancellationToken::new(),
+            |_| {},
+            |_| {},
+        )
+    }
+
+    fn run_refresh_with_observers(
+        state: &mut SemanticIndexState,
+        request: &SemanticIndexRequest<'_>,
+        embedder: &mut FakeEmbedder,
+        progress: impl FnMut(SemanticIndexProgress),
+        save_cache: impl FnMut(&EmbeddingCache),
+    ) -> Result<SemanticIndexResponse> {
+        state.refresh_or_prewarm(
+            request,
+            embedder,
+            &SemanticCancellationToken::new(),
+            progress,
+            save_cache,
+        )
+    }
+
+    fn run_refresh_passages(
+        state: &mut SemanticIndexState,
+        request: &SemanticIndexRequest<'_>,
+        embedder: &mut FakeEmbedder,
+    ) -> Result<SemanticIndexResponse> {
+        state.refresh_passages(
+            request,
+            embedder,
+            &SemanticCancellationToken::new(),
+            |_| {},
+            |_| {},
+        )
+    }
+
+    fn assert_hit_indices(response: &SemanticIndexResponse, expected: &[usize]) {
+        assert_eq!(
+            response
+                .hits
+                .iter()
+                .map(|hit| hit.conversation_index)
+                .collect::<Vec<_>>(),
+            expected
+        );
+    }
+
     #[test]
     fn ranks_original_indices_and_records_hits() {
         let conversations = vec![
@@ -573,27 +647,11 @@ mod tests {
         ];
         let (query, candidates) = request("beta", conversations, vec![1, 0]);
         let request = index_request(&query, &candidates);
-        let mut cache = empty_embedding_cache(ChunkConfig::default());
-        cache_request_passages(&mut cache, &request);
-        let mut state = SemanticIndexState::with_cache(ChunkConfig::default(), cache);
-        let mut embedder = FakeEmbedder::new();
+        let (mut state, mut embedder) = prepare_indexed_state(&request, ChunkConfig::default());
 
-        let response = state
-            .refresh_or_prewarm(
-                &request,
-                &mut embedder,
-                &SemanticCancellationToken::new(),
-                |_| {},
-                |_| {},
-            )
-            .expect("rank succeeds");
+        let response = run_refresh(&mut state, &request, &mut embedder).expect("rank succeeds");
 
-        let filtered = response
-            .hits
-            .iter()
-            .map(|hit| hit.conversation_index)
-            .collect::<Vec<_>>();
-        assert_eq!(filtered, vec![1, 0]);
+        assert_hit_indices(&response, &[1, 0]);
         let metadata = response
             .hits
             .iter()
@@ -631,20 +689,9 @@ mod tests {
             corpus_version: 1,
             prewarm: false,
         };
-        let mut cache = empty_embedding_cache(ChunkConfig::default());
-        cache_request_passages(&mut cache, &request);
-        let mut state = SemanticIndexState::with_cache(ChunkConfig::default(), cache);
-        let mut embedder = FakeEmbedder::new();
+        let (mut state, mut embedder) = prepare_indexed_state(&request, ChunkConfig::default());
 
-        let response = state
-            .refresh_or_prewarm(
-                &request,
-                &mut embedder,
-                &SemanticCancellationToken::new(),
-                |_| {},
-                |_| {},
-            )
-            .expect("rank succeeds");
+        let response = run_refresh(&mut state, &request, &mut embedder).expect("rank succeeds");
 
         assert_eq!(embedder.query_calls, 1);
         assert_eq!(response.progress, SemanticIndexProgress::Complete);
@@ -722,20 +769,9 @@ mod tests {
             corpus_version: 1,
             prewarm: false,
         };
-        let mut cache = empty_embedding_cache(ChunkConfig::default());
-        cache_request_passages(&mut cache, &request);
-        let mut state = SemanticIndexState::with_cache(ChunkConfig::default(), cache);
-        let mut embedder = FakeEmbedder::new();
+        let (mut state, mut embedder) = prepare_indexed_state(&request, ChunkConfig::default());
 
-        let response = state
-            .refresh_or_prewarm(
-                &request,
-                &mut embedder,
-                &SemanticCancellationToken::new(),
-                |_| {},
-                |_| {},
-            )
-            .expect("rank succeeds");
+        let response = run_refresh(&mut state, &request, &mut embedder).expect("rank succeeds");
 
         assert!(response.hits.is_empty());
         assert_eq!(response.progress, SemanticIndexProgress::Complete);
@@ -749,20 +785,10 @@ mod tests {
         )];
         let (query, candidates) = request("alpha", conversations, vec![0]);
         let request = index_request(&query, &candidates);
-        let mut cache = empty_embedding_cache(ChunkConfig::default());
-        cache_request_passages(&mut cache, &request);
-        let mut state = SemanticIndexState::with_cache(ChunkConfig::default(), cache);
-        let mut embedder = FakeEmbedder::new();
+        let (mut state, mut embedder) = prepare_indexed_state(&request, ChunkConfig::default());
 
-        let response = state
-            .refresh_or_prewarm(
-                &request,
-                &mut embedder,
-                &SemanticCancellationToken::new(),
-                |_| {},
-                |_| {},
-            )
-            .expect("cached rank succeeds");
+        let response =
+            run_refresh(&mut state, &request, &mut embedder).expect("cached rank succeeds");
 
         assert_eq!(embedder.passage_calls, 0);
         assert_eq!(
@@ -781,20 +807,10 @@ mod tests {
         candidates[0].source = SemanticChunkSource::AgentSubagentDialogue;
         let query = "alpha".to_string();
         let request = index_request(&query, &candidates);
-        let mut cache = empty_embedding_cache(ChunkConfig::default());
-        cache_request_passages(&mut cache, &request);
-        let mut state = SemanticIndexState::with_cache(ChunkConfig::default(), cache);
-        let mut embedder = FakeEmbedder::new();
+        let (mut state, mut embedder) = prepare_indexed_state(&request, ChunkConfig::default());
 
-        let response = state
-            .refresh_or_prewarm(
-                &request,
-                &mut embedder,
-                &SemanticCancellationToken::new(),
-                |_| {},
-                |_| {},
-            )
-            .expect("cached rank succeeds");
+        let response =
+            run_refresh(&mut state, &request, &mut embedder).expect("cached rank succeeds");
 
         assert_eq!(embedder.passage_calls, 0);
         assert_eq!(
@@ -823,20 +839,10 @@ mod tests {
             corpus_version: 1,
             prewarm: false,
         };
-        let mut cache = empty_embedding_cache(ChunkConfig::default());
-        cache_request_passages(&mut cache, &request);
-        let mut state = SemanticIndexState::with_cache(ChunkConfig::default(), cache);
-        let mut embedder = FakeEmbedder::new();
+        let (mut state, mut embedder) = prepare_indexed_state(&request, ChunkConfig::default());
 
-        let response = state
-            .refresh_or_prewarm(
-                &request,
-                &mut embedder,
-                &SemanticCancellationToken::new(),
-                |_| {},
-                |_| {},
-            )
-            .expect("scoped rank succeeds");
+        let response =
+            run_refresh(&mut state, &request, &mut embedder).expect("scoped rank succeeds");
 
         assert!(!response.hits.is_empty());
         assert!(
@@ -854,30 +860,13 @@ mod tests {
             conversation("/projects/project-a/session-b.jsonl", vec!["visible beta"]),
         ];
         let (mut query, candidates) = request("alpha", conversations, vec![0, 1]);
-        let mut cache = empty_embedding_cache(ChunkConfig::default());
-        cache_request_passages(&mut cache, &index_request(&query, &candidates));
-        let mut state = SemanticIndexState::with_cache(ChunkConfig::default(), cache);
-        let mut embedder = FakeEmbedder::new();
+        let mut request = index_request(&query, &candidates);
+        let (mut state, mut embedder) = prepare_indexed_state(&request, ChunkConfig::default());
 
-        state
-            .refresh_or_prewarm(
-                &index_request(&query, &candidates),
-                &mut embedder,
-                &SemanticCancellationToken::new(),
-                |_| {},
-                |_| {},
-            )
-            .expect("first rank succeeds");
+        run_refresh(&mut state, &request, &mut embedder).expect("first rank succeeds");
         query = "beta".to_string();
-        state
-            .refresh_or_prewarm(
-                &index_request(&query, &candidates),
-                &mut embedder,
-                &SemanticCancellationToken::new(),
-                |_| {},
-                |_| {},
-            )
-            .expect("second rank succeeds");
+        request = index_request(&query, &candidates);
+        run_refresh(&mut state, &request, &mut embedder).expect("second rank succeeds");
 
         assert_eq!(embedder.passage_calls, 0);
         assert_eq!(embedder.query_calls, 2);
@@ -893,30 +882,13 @@ mod tests {
             )],
             vec![0],
         );
-        let mut cache = empty_embedding_cache(ChunkConfig::default());
-        cache_request_passages(&mut cache, &index_request(&query, &candidates));
-        let mut state = SemanticIndexState::with_cache(ChunkConfig::default(), cache);
-        let mut embedder = FakeEmbedder::new();
+        let mut request = index_request(&query, &candidates);
+        let (mut state, mut embedder) = prepare_indexed_state(&request, ChunkConfig::default());
 
-        state
-            .refresh_or_prewarm(
-                &index_request(&query, &candidates),
-                &mut embedder,
-                &SemanticCancellationToken::new(),
-                |_| {},
-                |_| {},
-            )
-            .expect("first rank succeeds");
+        run_refresh(&mut state, &request, &mut embedder).expect("first rank succeeds");
         query = "beta".to_string();
-        state
-            .refresh_or_prewarm(
-                &index_request(&query, &candidates),
-                &mut embedder,
-                &SemanticCancellationToken::new(),
-                |_| {},
-                |_| {},
-            )
-            .expect("same signature rank succeeds");
+        request = index_request(&query, &candidates);
+        run_refresh(&mut state, &request, &mut embedder).expect("same signature rank succeeds");
         candidates = vec![SemanticIndexCandidate {
             index: 0,
             source: SemanticChunkSource::VisibleDialogue,
@@ -925,16 +897,9 @@ mod tests {
                 vec!["visible beta"],
             )),
         }];
-        cache_request_passages(&mut state.cache, &index_request(&query, &candidates));
-        state
-            .refresh_or_prewarm(
-                &index_request(&query, &candidates),
-                &mut embedder,
-                &SemanticCancellationToken::new(),
-                |_| {},
-                |_| {},
-            )
-            .expect("changed signature rank succeeds");
+        request = index_request(&query, &candidates);
+        cache_request_passages(&mut state.cache, &request);
+        run_refresh(&mut state, &request, &mut embedder).expect("changed signature rank succeeds");
 
         assert_eq!(embedder.passage_calls, 0);
         assert_eq!(embedder.query_calls, 3);
@@ -949,20 +914,9 @@ mod tests {
         )];
         let (query, candidates) = request("alpha", conversations, vec![0]);
         let request = index_request(&query, &candidates);
-        let mut cache = empty_embedding_cache(ChunkConfig::default());
-        cache_request_passages(&mut cache, &request);
-        let mut state = SemanticIndexState::with_cache(ChunkConfig::default(), cache);
-        let mut embedder = FakeEmbedder::new();
+        let (mut state, mut embedder) = prepare_indexed_state(&request, ChunkConfig::default());
 
-        let response = state
-            .refresh_or_prewarm(
-                &request,
-                &mut embedder,
-                &SemanticCancellationToken::new(),
-                |_| {},
-                |_| {},
-            )
-            .expect("rank succeeds");
+        let response = run_refresh(&mut state, &request, &mut embedder).expect("rank succeeds");
 
         assert!(embedder.embedded_passages.is_empty());
         assert_eq!(
@@ -985,21 +939,18 @@ mod tests {
         )];
         let (query, candidates) = request("alpha", conversations, vec![0]);
         let request = index_request(&query, &candidates);
-        let cache = empty_embedding_cache(ChunkConfig::default());
-        let mut state = SemanticIndexState::with_cache(ChunkConfig::default(), cache);
-        let mut embedder = FakeEmbedder::new();
+        let (mut state, mut embedder) = prepare_empty_state(ChunkConfig::default());
         let mut save_calls = 0;
         let mut progress = Vec::new();
 
-        let response = state
-            .refresh_or_prewarm(
-                &request,
-                &mut embedder,
-                &SemanticCancellationToken::new(),
-                |status| progress.push(status),
-                |_| save_calls += 1,
-            )
-            .expect("missing cache embeds and ranks");
+        let response = run_refresh_with_observers(
+            &mut state,
+            &request,
+            &mut embedder,
+            |status| progress.push(status),
+            |_| save_calls += 1,
+        )
+        .expect("missing cache embeds and ranks");
 
         assert_eq!(response.hits[0].conversation_index, 0);
         assert_eq!(response.progress, SemanticIndexProgress::Complete);
@@ -1079,19 +1030,10 @@ mod tests {
         )];
         let (query, candidates) = request("alpha", conversations, vec![0]);
         let request = index_request(&query, &candidates);
-        let cache = empty_embedding_cache(ChunkConfig::default());
-        let mut state = SemanticIndexState::with_cache(ChunkConfig::default(), cache);
-        let mut embedder = FakeEmbedder::new();
+        let (mut state, mut embedder) = prepare_empty_state(ChunkConfig::default());
 
-        let response = state
-            .refresh_passages(
-                &request,
-                &mut embedder,
-                &SemanticCancellationToken::new(),
-                |_| {},
-                |_| {},
-            )
-            .expect("refresh succeeds");
+        let response =
+            run_refresh_passages(&mut state, &request, &mut embedder).expect("refresh succeeds");
 
         assert_eq!(response.indexed_chunk_count, 1);
         assert_eq!(response.progress, SemanticIndexProgress::CacheReady);
@@ -1114,18 +1056,8 @@ mod tests {
         )];
         let (query, candidates) = request("alpha", conversations, vec![0]);
         let request = index_request(&query, &candidates);
-        let cache = empty_embedding_cache(ChunkConfig::default());
-        let mut state = SemanticIndexState::with_cache(ChunkConfig::default(), cache);
-        let mut embedder = FakeEmbedder::new();
-        state
-            .refresh_passages(
-                &request,
-                &mut embedder,
-                &SemanticCancellationToken::new(),
-                |_| {},
-                |_| {},
-            )
-            .expect("refresh succeeds");
+        let (mut state, mut embedder) = prepare_empty_state(ChunkConfig::default());
+        run_refresh_passages(&mut state, &request, &mut embedder).expect("refresh succeeds");
         embedder.query_embedding = None;
 
         let response = state
@@ -1159,19 +1091,9 @@ mod tests {
             corpus_version: 1,
             prewarm: true,
         };
-        let cache = empty_embedding_cache(ChunkConfig::default());
-        let mut state = SemanticIndexState::with_cache(ChunkConfig::default(), cache);
-        let mut embedder = FakeEmbedder::new();
+        let (mut state, mut embedder) = prepare_empty_state(ChunkConfig::default());
 
-        let response = state
-            .refresh_or_prewarm(
-                &request,
-                &mut embedder,
-                &SemanticCancellationToken::new(),
-                |_| {},
-                |_| {},
-            )
-            .expect("prewarm succeeds");
+        let response = run_refresh(&mut state, &request, &mut embedder).expect("prewarm succeeds");
 
         assert!(response.hits.is_empty());
         assert_eq!(response.indexed_chunk_count, 1);
@@ -1195,30 +1117,12 @@ mod tests {
         ];
         let (query, candidates) = request("beta", conversations, vec![1, 0]);
         let request = index_request(&query, &candidates);
-        let mut cache = empty_embedding_cache(ChunkConfig::default());
-        cache_request_passages(&mut cache, &request);
-        let mut state = SemanticIndexState::with_cache(ChunkConfig::default(), cache);
-        let mut embedder = FakeEmbedder::new();
+        let (mut state, mut embedder) = prepare_indexed_state(&request, ChunkConfig::default());
 
-        let response = state
-            .refresh_or_prewarm(
-                &request,
-                &mut embedder,
-                &SemanticCancellationToken::new(),
-                |_| {},
-                |_| {},
-            )
-            .expect("rank succeeds");
+        let response = run_refresh(&mut state, &request, &mut embedder).expect("rank succeeds");
 
         assert_eq!(response.indexed_chunk_count, 2);
-        assert_eq!(
-            response
-                .hits
-                .iter()
-                .map(|hit| hit.conversation_index)
-                .collect::<Vec<_>>(),
-            vec![1, 0]
-        );
+        assert_hit_indices(&response, &[1, 0]);
     }
 
     #[test]
@@ -1235,31 +1139,13 @@ mod tests {
         let candidate_indices = (0..conversations.len()).collect::<Vec<_>>();
         let (query, candidates) = request("alpha", conversations, candidate_indices);
         let request = index_request(&query, &candidates);
-        let mut cache = empty_embedding_cache(ChunkConfig::default());
-        cache_request_passages(&mut cache, &request);
-        let mut state = SemanticIndexState::with_cache(ChunkConfig::default(), cache);
-        let mut embedder = FakeEmbedder::new();
+        let (mut state, mut embedder) = prepare_indexed_state(&request, ChunkConfig::default());
 
-        let response = state
-            .refresh_or_prewarm(
-                &request,
-                &mut embedder,
-                &SemanticCancellationToken::new(),
-                |_| {},
-                |_| {},
-            )
-            .expect("rank succeeds");
+        let response = run_refresh(&mut state, &request, &mut embedder).expect("rank succeeds");
 
         assert_eq!(response.indexed_chunk_count, LEGACY_LIMIT + 25);
         assert_eq!(response.hits.len(), LEGACY_LIMIT + 25);
-        assert_eq!(
-            response
-                .hits
-                .iter()
-                .map(|hit| hit.conversation_index)
-                .collect::<Vec<_>>(),
-            (0..LEGACY_LIMIT + 25).collect::<Vec<_>>()
-        );
+        assert_hit_indices(&response, &(0..LEGACY_LIMIT + 25).collect::<Vec<_>>());
     }
 
     #[test]
@@ -1277,7 +1163,6 @@ mod tests {
             .collect::<Vec<_>>();
         let alpha_scope = vec![all[0].clone()];
         let beta_scope = vec![all[1].clone()];
-        let mut cache = empty_embedding_cache(ChunkConfig::default());
         let alpha_query = "alpha".to_string();
         let alpha_request = SemanticIndexRequest {
             query: &alpha_query,
@@ -1287,19 +1172,11 @@ mod tests {
             corpus_version: 1,
             prewarm: false,
         };
-        cache_request_passages(&mut cache, &alpha_request);
-        let mut state = SemanticIndexState::with_cache(ChunkConfig::default(), cache);
-        let mut embedder = FakeEmbedder::new();
+        let (mut state, mut embedder) =
+            prepare_indexed_state(&alpha_request, ChunkConfig::default());
 
-        let alpha = state
-            .refresh_or_prewarm(
-                &alpha_request,
-                &mut embedder,
-                &SemanticCancellationToken::new(),
-                |_| {},
-                |_| {},
-            )
-            .expect("alpha scope ranks");
+        let alpha =
+            run_refresh(&mut state, &alpha_request, &mut embedder).expect("alpha scope ranks");
         let beta_query = "beta".to_string();
         let beta_request = SemanticIndexRequest {
             query: &beta_query,
@@ -1309,15 +1186,7 @@ mod tests {
             corpus_version: 1,
             prewarm: false,
         };
-        let beta = state
-            .refresh_or_prewarm(
-                &beta_request,
-                &mut embedder,
-                &SemanticCancellationToken::new(),
-                |_| {},
-                |_| {},
-            )
-            .expect("beta scope ranks");
+        let beta = run_refresh(&mut state, &beta_request, &mut embedder).expect("beta scope ranks");
 
         assert_eq!(embedder.passage_calls, 0);
         assert_eq!(embedder.query_calls, 2);
@@ -1335,19 +1204,8 @@ mod tests {
         )];
         let (query, candidates) = request("alpha", conversations, vec![0]);
         let populated = index_request(&query, &candidates);
-        let mut cache = empty_embedding_cache(ChunkConfig::default());
-        cache_request_passages(&mut cache, &populated);
-        let mut state = SemanticIndexState::with_cache(ChunkConfig::default(), cache);
-        let mut embedder = FakeEmbedder::new();
-        state
-            .refresh_or_prewarm(
-                &populated,
-                &mut embedder,
-                &SemanticCancellationToken::new(),
-                |_| {},
-                |_| {},
-            )
-            .expect("warm corpus");
+        let (mut state, mut embedder) = prepare_indexed_state(&populated, ChunkConfig::default());
+        run_refresh(&mut state, &populated, &mut embedder).expect("warm corpus");
         let empty_request = SemanticIndexRequest {
             query: &query,
             literal_filters: &[],
@@ -1357,15 +1215,8 @@ mod tests {
             prewarm: false,
         };
 
-        let response = state
-            .refresh_or_prewarm(
-                &empty_request,
-                &mut embedder,
-                &SemanticCancellationToken::new(),
-                |_| {},
-                |_| {},
-            )
-            .expect("empty scope returns");
+        let response =
+            run_refresh(&mut state, &empty_request, &mut embedder).expect("empty scope returns");
 
         assert!(response.hits.is_empty());
         assert_eq!(response.indexed_chunk_count, 1);
@@ -1393,33 +1244,18 @@ mod tests {
             prewarm: false,
         };
         let scoped_request = index_request(&query, &scope);
-        let mut persistent_cache = empty_embedding_cache(ChunkConfig::default());
-        cache_request_passages(&mut persistent_cache, &persistent_request);
-        let mut scoped_cache = empty_embedding_cache(ChunkConfig::default());
-        cache_request_passages(&mut scoped_cache, &scoped_request);
-        let mut persistent_state =
-            SemanticIndexState::with_cache(ChunkConfig::default(), persistent_cache);
-        let mut scoped_state = SemanticIndexState::with_cache(ChunkConfig::default(), scoped_cache);
-        let mut persistent_embedder = FakeEmbedder::new();
-        let mut scoped_embedder = FakeEmbedder::new();
+        let (mut persistent_state, mut persistent_embedder) =
+            prepare_indexed_state(&persistent_request, ChunkConfig::default());
+        let (mut scoped_state, mut scoped_embedder) =
+            prepare_indexed_state(&scoped_request, ChunkConfig::default());
 
-        let persistent = persistent_state
-            .refresh_or_prewarm(
-                &persistent_request,
-                &mut persistent_embedder,
-                &SemanticCancellationToken::new(),
-                |_| {},
-                |_| {},
-            )
-            .expect("persistent rank succeeds");
-        let scoped = scoped_state
-            .refresh_or_prewarm(
-                &scoped_request,
-                &mut scoped_embedder,
-                &SemanticCancellationToken::new(),
-                |_| {},
-                |_| {},
-            )
+        let persistent = run_refresh(
+            &mut persistent_state,
+            &persistent_request,
+            &mut persistent_embedder,
+        )
+        .expect("persistent rank succeeds");
+        let scoped = run_refresh(&mut scoped_state, &scoped_request, &mut scoped_embedder)
             .expect("scoped rank succeeds");
 
         assert_eq!(persistent.hits, scoped.hits);
@@ -1441,19 +1277,9 @@ mod tests {
             corpus_version: 1,
             prewarm: false,
         };
-        let mut cache = empty_embedding_cache(ChunkConfig::default());
-        cache_request_passages(&mut cache, &first_request);
-        let mut state = SemanticIndexState::with_cache(ChunkConfig::default(), cache);
-        let mut embedder = FakeEmbedder::new();
-        state
-            .refresh_or_prewarm(
-                &first_request,
-                &mut embedder,
-                &SemanticCancellationToken::new(),
-                |_| {},
-                |_| {},
-            )
-            .expect("first corpus ranks");
+        let (mut state, mut embedder) =
+            prepare_indexed_state(&first_request, ChunkConfig::default());
+        run_refresh(&mut state, &first_request, &mut embedder).expect("first corpus ranks");
         let reordered = vec![first[1].clone(), first[0].clone()];
         let reordered_all = candidates_from(&reordered);
         let reordered_request = SemanticIndexRequest {
@@ -1465,14 +1291,7 @@ mod tests {
             prewarm: false,
         };
 
-        let response = state
-            .refresh_or_prewarm(
-                &reordered_request,
-                &mut embedder,
-                &SemanticCancellationToken::new(),
-                |_| {},
-                |_| {},
-            )
+        let response = run_refresh(&mut state, &reordered_request, &mut embedder)
             .expect("reordered corpus ranks");
 
         assert_eq!(embedder.passage_calls, 0);
@@ -1496,19 +1315,9 @@ mod tests {
             corpus_version: 1,
             prewarm: false,
         };
-        let mut cache = empty_embedding_cache(ChunkConfig::default());
-        cache_request_passages(&mut cache, &first_request);
-        let mut state = SemanticIndexState::with_cache(ChunkConfig::default(), cache);
-        let mut embedder = FakeEmbedder::new();
-        state
-            .refresh_or_prewarm(
-                &first_request,
-                &mut embedder,
-                &SemanticCancellationToken::new(),
-                |_| {},
-                |_| {},
-            )
-            .expect("first corpus ranks");
+        let (mut state, mut embedder) =
+            prepare_indexed_state(&first_request, ChunkConfig::default());
+        run_refresh(&mut state, &first_request, &mut embedder).expect("first corpus ranks");
         let updated = vec![
             conversation("/projects/project-a/session-a.jsonl", vec!["visible delta"]),
             conversation("/projects/project-a/session-b.jsonl", vec!["visible beta"]),
@@ -1524,15 +1333,7 @@ mod tests {
             prewarm: false,
         };
 
-        state
-            .refresh_or_prewarm(
-                &updated_request,
-                &mut embedder,
-                &SemanticCancellationToken::new(),
-                |_| {},
-                |_| {},
-            )
-            .expect("updated corpus ranks");
+        run_refresh(&mut state, &updated_request, &mut embedder).expect("updated corpus ranks");
 
         assert_eq!(embedder.passage_calls, 1);
         assert_eq!(
@@ -1561,19 +1362,9 @@ mod tests {
             corpus_version: 1,
             prewarm: false,
         };
-        let mut cache = empty_embedding_cache(ChunkConfig::default());
-        cache_request_passages(&mut cache, &first_request);
-        let mut state = SemanticIndexState::with_cache(ChunkConfig::default(), cache);
-        let mut embedder = FakeEmbedder::new();
-        state
-            .refresh_or_prewarm(
-                &first_request,
-                &mut embedder,
-                &SemanticCancellationToken::new(),
-                |_| {},
-                |_| {},
-            )
-            .expect("first corpus ranks");
+        let (mut state, mut embedder) =
+            prepare_indexed_state(&first_request, ChunkConfig::default());
+        run_refresh(&mut state, &first_request, &mut embedder).expect("first corpus ranks");
         let updated = vec![conversation("/projects/project-a/session-a.jsonl", vec![])];
         let updated_all = candidates_from(&updated);
         let updated_request = SemanticIndexRequest {
@@ -1585,14 +1376,7 @@ mod tests {
             prewarm: false,
         };
 
-        let response = state
-            .refresh_or_prewarm(
-                &updated_request,
-                &mut embedder,
-                &SemanticCancellationToken::new(),
-                |_| {},
-                |_| {},
-            )
+        let response = run_refresh(&mut state, &updated_request, &mut embedder)
             .expect("empty corpus update succeeds");
 
         assert!(response.hits.is_empty());
@@ -1608,30 +1392,18 @@ mod tests {
         )];
         let (query, candidates) = request("alpha", conversations, vec![0]);
         let request = index_request(&query, &candidates);
-        let mut cache = empty_embedding_cache(ChunkConfig::default());
-        cache_request_passages(&mut cache, &request);
-        let mut state = SemanticIndexState::with_cache(ChunkConfig::default(), cache);
-        let mut embedder = FakeEmbedder::new();
-        state
-            .refresh_or_prewarm(
-                &request,
-                &mut embedder,
-                &SemanticCancellationToken::new(),
-                |_| {},
-                |_| {},
-            )
-            .expect("first rank succeeds");
+        let (mut state, mut embedder) = prepare_indexed_state(&request, ChunkConfig::default());
+        run_refresh(&mut state, &request, &mut embedder).expect("first rank succeeds");
         let mut progress = Vec::new();
 
-        state
-            .refresh_or_prewarm(
-                &request,
-                &mut embedder,
-                &SemanticCancellationToken::new(),
-                |status| progress.push(status),
-                |_| {},
-            )
-            .expect("second rank succeeds");
+        run_refresh_with_observers(
+            &mut state,
+            &request,
+            &mut embedder,
+            |status| progress.push(status),
+            |_| {},
+        )
+        .expect("second rank succeeds");
 
         assert_eq!(
             progress,
@@ -1651,18 +1423,9 @@ mod tests {
         )];
         let (query, populated_candidates) = request("alpha", populated, vec![0]);
         let populated_request = index_request(&query, &populated_candidates);
-        let mut cache = empty_embedding_cache(ChunkConfig::default());
-        cache_request_passages(&mut cache, &populated_request);
-        let mut state = SemanticIndexState::with_cache(ChunkConfig::default(), cache);
-        let mut embedder = FakeEmbedder::new();
-        state
-            .refresh_or_prewarm(
-                &populated_request,
-                &mut embedder,
-                &SemanticCancellationToken::new(),
-                |_| {},
-                |_| {},
-            )
+        let (mut state, mut embedder) =
+            prepare_indexed_state(&populated_request, ChunkConfig::default());
+        run_refresh(&mut state, &populated_request, &mut embedder)
             .expect("populated index succeeds");
         let empty = vec![conversation("/projects/project-a/session-a.jsonl", vec![])];
         let (empty_query, empty_candidates) = request("alpha", empty, vec![0]);
@@ -1687,19 +1450,10 @@ mod tests {
         let conversations = vec![conversation("/projects/project-a/session-a.jsonl", vec![])];
         let (query, candidates) = request("alpha", conversations, vec![0]);
         let request = index_request(&query, &candidates);
-        let cache = empty_embedding_cache(ChunkConfig::default());
-        let mut state = SemanticIndexState::with_cache(ChunkConfig::default(), cache);
-        let mut embedder = FakeEmbedder::new();
+        let (mut state, mut embedder) = prepare_empty_state(ChunkConfig::default());
 
-        let response = state
-            .refresh_or_prewarm(
-                &request,
-                &mut embedder,
-                &SemanticCancellationToken::new(),
-                |_| {},
-                |_| {},
-            )
-            .expect("empty corpus succeeds");
+        let response =
+            run_refresh(&mut state, &request, &mut embedder).expect("empty corpus succeeds");
 
         assert!(response.hits.is_empty());
         assert_eq!(response.progress, SemanticIndexProgress::EmptyCorpus);
