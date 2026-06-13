@@ -561,8 +561,7 @@ fn freshness_bonus(timestamp: DateTime<Local>, now: DateTime<Local>) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::history::Conversation;
-    use std::path::PathBuf;
+    use crate::search::test_fixtures::one_message_conversation;
 
     /// Create a test conversation with optional metadata.
     /// Rebuilds search_text_lower to match production behavior:
@@ -574,38 +573,7 @@ mod tests {
         summary: Option<&str>,
         timestamp: DateTime<Local>,
     ) -> Conversation {
-        // Match production: prepend summary and title to full_text
-        let mut full_text = text.to_string();
-        if let Some(s) = summary {
-            full_text = format!("{} {}", s, full_text);
-        }
-        if let Some(t) = title {
-            full_text = format!("{} {}", t, full_text);
-        }
-
-        Conversation {
-            path: PathBuf::new(),
-            index: 0,
-            timestamp,
-            preview: text.to_string(),
-            preview_first: text.to_string(),
-            preview_last: text.to_string(),
-            full_text: full_text.clone(),
-            agent_search_text: String::new(),
-            semantic_turns: vec![text.to_string()],
-            semantic_turn_ranges: vec![crate::agent::refs::MessageRange::single(1)],
-            search_text_lower: normalize_for_search(&full_text),
-            project_name: project.map(|s| s.to_string()),
-            project_path: None,
-            cwd: None,
-            message_count: 1,
-            parse_errors: vec![],
-            summary: summary.map(|s| s.to_string()),
-            custom_title: title.map(|s| s.to_string()),
-            model: None,
-            total_tokens: 0,
-            duration_minutes: None,
-        }
+        one_message_conversation(text, timestamp, summary, title, project)
     }
 
     fn make_conv(text: &str, timestamp: DateTime<Local>) -> Conversation {
