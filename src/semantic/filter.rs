@@ -1,7 +1,28 @@
+use crate::search::literal::Literal;
+use crate::semantic::types::EmbeddedChunk;
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum SemanticTurnRole {
     User,
     Assistant,
+}
+
+pub fn filter_embedded_chunks_by_literals(
+    chunks: Vec<EmbeddedChunk>,
+    literal_filters: &[Literal],
+) -> Vec<EmbeddedChunk> {
+    if literal_filters.is_empty() {
+        return chunks;
+    }
+
+    chunks
+        .into_iter()
+        .filter(|chunk| {
+            literal_filters
+                .iter()
+                .all(|literal| literal.matches(&chunk.text))
+        })
+        .collect()
 }
 
 pub fn filter_turn(role: SemanticTurnRole, turn: &str) -> Option<String> {

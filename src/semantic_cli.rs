@@ -1,7 +1,8 @@
 use crate::error::{AppError, Result};
 use crate::history::Conversation;
-use crate::search::literal::{Literal, build_literal_corpus, exact_fallback};
+use crate::search::literal::{build_literal_corpus, exact_fallback};
 use crate::search::query::ParsedQuery;
+use crate::semantic::filter::filter_embedded_chunks_by_literals;
 use crate::semantic::types::SemanticCancellationToken;
 
 pub fn run(query: &str, conversations: &[Conversation], top: usize, local: bool) -> Result<()> {
@@ -303,7 +304,7 @@ pub fn debug_search(query: &str, conversations: &[Conversation], local: bool) ->
         eprintln!("Semantic debug: no query embedding returned.");
         return Ok(());
     };
-    let embedded_chunks = filter_chunks_by_literals(embedded_chunks, parsed.literals());
+    let embedded_chunks = filter_embedded_chunks_by_literals(embedded_chunks, parsed.literals());
     let hits = rank_chunks(
         parsed.semantic_text(),
         &query_embedding,
@@ -357,20 +358,6 @@ fn exact_literal_indices(conversations: &[&Conversation], parsed: &ParsedQuery) 
         .collect::<Vec<_>>();
     let corpus = build_literal_corpus(&plain_conversations);
     exact_fallback(&plain_conversations, &corpus, parsed.literals(), |_| true)
-}
-
-fn filter_chunks_by_literals(
-    chunks: Vec<crate::semantic::types::EmbeddedChunk>,
-    literals: &[Literal],
-) -> Vec<crate::semantic::types::EmbeddedChunk> {
-    if literals.is_empty() {
-        return chunks;
-    }
-
-    chunks
-        .into_iter()
-        .filter(|chunk| literals.iter().all(|literal| literal.matches(&chunk.text)))
-        .collect()
 }
 
 fn format_parsed_query(parsed: &ParsedQuery) -> String {
@@ -784,11 +771,11 @@ mod tests {
             )
             .collect::<Vec<_>>();
 
-        let insensitive = filter_chunks_by_literals(
+        let insensitive = filter_embedded_chunks_by_literals(
             chunks.clone(),
             ParsedQuery::parse("alpha \"restaurant_signals\"").literals(),
         );
-        let sensitive = filter_chunks_by_literals(
+        let sensitive = filter_embedded_chunks_by_literals(
             chunks,
             ParsedQuery::parse("alpha \"RESTAURANT_SIGNALS\"").literals(),
         );

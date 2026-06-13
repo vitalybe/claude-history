@@ -6,6 +6,7 @@ use crate::semantic::cache::{
 };
 use crate::semantic::chunk::build_chunks_with_sources;
 use crate::semantic::embed::SemanticEmbedder;
+use crate::semantic::filter::filter_embedded_chunks_by_literals;
 use crate::semantic::rank::{rank_chunk_hits, rank_chunks};
 use crate::semantic::types::{
     ChunkConfig, EmbeddedChunk, EmbeddingCache, SemanticCancellationToken, SemanticChunk,
@@ -241,7 +242,8 @@ impl SemanticIndexState {
             });
         };
 
-        let scoped_chunks = filter_chunks_by_literals(scoped_chunks, request.literal_filters);
+        let scoped_chunks =
+            filter_embedded_chunks_by_literals(scoped_chunks, request.literal_filters);
         let chunk_hits = rank_chunk_hits(
             request.query,
             &query_embedding,
@@ -373,24 +375,6 @@ fn candidate_chunks(
         }),
         chunk_config,
     )
-}
-
-fn filter_chunks_by_literals(
-    chunks: Vec<EmbeddedChunk>,
-    literal_filters: &[Literal],
-) -> Vec<EmbeddedChunk> {
-    if literal_filters.is_empty() {
-        return chunks;
-    }
-
-    chunks
-        .into_iter()
-        .filter(|chunk| {
-            literal_filters
-                .iter()
-                .all(|literal| literal.matches(&chunk.text))
-        })
-        .collect()
 }
 
 fn semantic_index_signature(
