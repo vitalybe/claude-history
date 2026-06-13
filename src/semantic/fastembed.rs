@@ -4,6 +4,9 @@ use crate::semantic::types::DEFAULT_EMBEDDING_BATCH_SIZE;
 use fastembed::{EmbeddingModel, TextEmbedding, TextInitOptions};
 use std::path::PathBuf;
 
+#[cfg(feature = "release-dynamic-ort")]
+use std::{path::Path, sync::Once};
+
 pub struct FastembedEmbedder {
     model: TextEmbedding,
 }
@@ -25,6 +28,7 @@ impl FastembedEmbedder {
         cache_dir: PathBuf,
         show_download_progress: bool,
     ) -> Result<Self> {
+        init_onnx_runtime();
         let model = TextEmbedding::try_new(
             TextInitOptions::new(EmbeddingModel::BGESmallENV15)
                 .with_cache_dir(cache_dir)
@@ -66,6 +70,41 @@ pub fn prefixed_passages(passages: &[String]) -> Vec<String> {
         .iter()
         .map(|passage| format!("passage: {passage}"))
         .collect()
+}
+
+#[cfg(feature = "release-dynamic-ort")]
+fn init_onnx_runtime() {
+    static INIT: Once = Once::new();
+    INIT.call_once(|| {
+        if let Some(path) = bundled_onnx_runtime_path() {
+            let _ = ort::init_from(path).map(|builder| builder.commit());
+        }
+    });
+}
+
+#[cfg(not(feature = "release-dynamic-ort"))]
+fn init_onnx_runtime() {}
+
+#[cfg(feature = "release-dynamic-ort")]
+fn bundled_onnx_runtime_path() -> Option<PathBuf> {
+    let exe = std::env::current_exe().ok()?;
+    let dir = exe.parent()?;
+    for candidate in onnx_runtime_candidates(dir) {
+        if candidate.exists() {
+            return Some(candidate);
+        }
+    }
+    None
+}
+
+#[cfg(feature = "release-dynamic-ort")]
+fn onnx_runtime_candidates(dir: &Path) -> [PathBuf; 4] {
+    [
+        dir.join("libonnxruntime.so"),
+        dir.join("lib").join("libonnxruntime.so"),
+        dir.join("libonnxruntime.dylib"),
+        dir.join("lib").join("libonnxruntime.dylib"),
+    ]
 }
 
 fn to_config_error(err: impl std::fmt::Display) -> AppError {

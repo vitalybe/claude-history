@@ -146,6 +146,57 @@ fn verify_checksum(file: &Path, expected_line: &str) -> Result<()> {
     Ok(())
 }
 
+fn install_support_files(extract_dir: &Path, current_exe: &Path) -> Result<()> {
+    let exe_dir = current_exe
+        .parent()
+        .ok_or_else(|| AppError::UpdateError("Could not determine binary directory".to_string()))?;
+    let lib_dir = extract_dir.join("lib");
+    if !lib_dir.exists() {
+        return Ok(());
+    }
+
+    let dest_lib_dir = exe_dir.join("lib");
+    std::fs::create_dir_all(&dest_lib_dir)
+        .map_err(|e| AppError::UpdateError(format!("Failed to create library directory: {e}")))?;
+    for entry in std::fs::read_dir(&lib_dir)
+        .map_err(|e| AppError::UpdateError(format!("Failed to read library directory: {e}")))?
+    {
+        let entry = entry
+            .map_err(|e| AppError::UpdateError(format!("Failed to read library entry: {e}")))?;
+        let file_type = entry
+            .file_type()
+            .map_err(|e| AppError::UpdateError(format!("Failed to inspect library entry: {e}")))?;
+        if file_type.is_file() {
+            std::fs::copy(entry.path(), dest_lib_dir.join(entry.file_name()))
+                .map_err(|e| AppError::UpdateError(format!("Failed to install library: {e}")))?;
+        }
+    }
+
+    create_runtime_symlink(exe_dir, "libonnxruntime.so")?;
+    create_runtime_symlink(exe_dir, "libonnxruntime.dylib")?;
+    Ok(())
+}
+
+#[cfg(unix)]
+fn create_runtime_symlink(exe_dir: &Path, name: &str) -> Result<()> {
+    use std::os::unix::fs::symlink;
+
+    let target = Path::new("lib").join(name);
+    let link = exe_dir.join(name);
+    let _ = std::fs::remove_file(&link);
+    if exe_dir.join(&target).exists() {
+        symlink(&target, &link).map_err(|e| {
+            AppError::UpdateError(format!("Failed to install library symlink: {e}"))
+        })?;
+    }
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn create_runtime_symlink(_exe_dir: &Path, _name: &str) -> Result<()> {
+    Ok(())
+}
+
 /// Replace the current binary with the new one, with rollback on failure.
 fn replace_binary(new_binary: &Path, current_exe: &Path) -> Result<()> {
     let exe_dir = current_exe
@@ -224,6 +275,7 @@ fn do_update(
     }
 
     replace_binary(&new_binary, current_exe)?;
+    install_support_files(&extract_dir, current_exe)?;
 
     Ok(format!(
         "Updated {BIN_NAME} v{CURRENT_VERSION} -> v{latest_version}"

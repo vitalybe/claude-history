@@ -10,6 +10,9 @@ homepage = "https://github.com/raine/claude-history"
 keywords = ["claude", "claude-code", "fzf", "cli", "history"]
 categories = ["command-line-utilities"]
 
+[features]
+release-dynamic-ort = ["dep:ort", "fastembed/ort-load-dynamic"]
+
 [dependencies]
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
@@ -32,3 +35,4 @@ terminal-light = "1.0"
 tempfile = "3"
 indicatif = "0.17"
 fastembed = { version = "5.13", default-features = false, features = ["hf-hub-rustls-tls", "ort-download-binaries-rustls-tls"] }
+ort = { version = "=2.0.0-rc.12", default-features = false, features = ["load-dynamic"], optional = true }

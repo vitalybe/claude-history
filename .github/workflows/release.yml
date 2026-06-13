@@ -47,22 +47,39 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           key: ${{ matrix.target }}
+      - name: Download ONNX Runtime
+        env:
+          ORT_VERSION: 1.24.2
+        run: |
+          case "${{ matrix.platform }}" in
+            darwin-arm64) ort_platform="osx-arm64" ;;
+            linux-amd64) ort_platform="linux-x64" ;;
+            *) echo "Unsupported platform: ${{ matrix.platform }}" >&2; exit 1 ;;
+          esac
+          curl -L -o onnxruntime.tgz "https://github.com/microsoft/onnxruntime/releases/download/v${ORT_VERSION}/onnxruntime-${ort_platform}-${ORT_VERSION}.tgz"
+          mkdir onnxruntime
+          tar -xzf onnxruntime.tgz -C onnxruntime --strip-components=1
       - name: Build
         run: |
+          build_args=(--release --locked --target ${{ matrix.target }} --features release-dynamic-ort)
           if [ "${{ matrix.use_cross }}" == "true" ]; then
-            cross build --release --locked --target ${{ matrix.target }}
+            cross build "${build_args[@]}"
           else
-            cargo build --release --locked --target ${{ matrix.target }}
+            cargo build "${build_args[@]}"
           fi
       - name: Package
         run: |
           bin="target/${{ matrix.target }}/release/${BIN_NAME}"
+          package="package"
+          mkdir -p "$package/lib"
+          cp "$bin" "$package/"
+          find onnxruntime/lib -maxdepth 1 -type f -name 'libonnxruntime*' -exec cp {} "$package/lib/" \;
           # Only strip on Linux to avoid corrupting macOS code signatures
           if [[ "${{ runner.os }}" == "Linux" ]]; then
-            strip "$bin" || true
+            strip "$package/${BIN_NAME}" || true
           fi
           archive="${BIN_NAME}-${{ matrix.platform }}.tar.gz"
-          tar -C "$(dirname "$bin")" -czf "$archive" ${BIN_NAME}
+          tar -C "$package" -czf "$archive" .
           shasum -a 256 "$archive" > "${BIN_NAME}-${{ matrix.platform }}.sha256"
       - uses: actions/upload-artifact@v5
         with:
@@ -129,6 +146,9 @@ jobs:
 
             def install
               bin.install "claude-history"
+              lib.install Dir["lib/*"]
+              bin.install_symlink lib/"libonnxruntime.dylib" if OS.mac?
+              bin.install_symlink lib/"libonnxruntime.so" if OS.linux?
             end
 
             test do

@@ -232,6 +232,12 @@ install_from_release() {
 		cp claude-history "$tmp_binary"
 		chmod +x "$tmp_binary"
 		mv -f "$tmp_binary" "$install_dir/claude-history"
+		if [ -d lib ]; then
+			mkdir -p "$install_dir/lib"
+			cp -R lib/. "$install_dir/lib/"
+			ln -sf lib/libonnxruntime.so "$install_dir/libonnxruntime.so" 2>/dev/null || true
+			ln -sf lib/libonnxruntime.dylib "$install_dir/libonnxruntime.dylib" 2>/dev/null || true
+		fi
 	else
 		if ! sudo cp claude-history "$tmp_binary"; then
 			log_error "Failed to install to $install_dir (sudo required)"
@@ -239,6 +245,12 @@ install_from_release() {
 		fi
 		sudo chmod +x "$tmp_binary"
 		sudo mv -f "$tmp_binary" "$install_dir/claude-history"
+		if [ -d lib ]; then
+			sudo mkdir -p "$install_dir/lib"
+			sudo cp -R lib/. "$install_dir/lib/"
+			sudo ln -sf lib/libonnxruntime.so "$install_dir/libonnxruntime.so" 2>/dev/null || true
+			sudo ln -sf lib/libonnxruntime.dylib "$install_dir/libonnxruntime.dylib" 2>/dev/null || true
+		fi
 	fi
 
 	# Remove macOS quarantine attribute if present
