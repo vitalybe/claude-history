@@ -488,21 +488,7 @@ fn run_agent_search(args: &cli::AgentSearchArgs) -> Result<String> {
     let keys = agent::refs::conversation_keys_from_conversations(&conversations)?;
     let output = match mode {
         SearchMode::Lexical | SearchMode::Exact => {
-            let searchable = search::precompute_agent_search_text(&conversations);
-            let ranked_all = search::agent_search(
-                &conversations,
-                &searchable,
-                &args.query,
-                chrono::Local::now(),
-            );
-            let scoped_set = scoped
-                .iter()
-                .copied()
-                .collect::<std::collections::HashSet<_>>();
-            let ranked = ranked_all
-                .into_iter()
-                .filter(|index| scoped_set.contains(index))
-                .collect::<Vec<_>>();
+            let ranked = lexically_rank_scoped(&conversations, &args.query, &scoped);
             agent::search::run_global_lexical_search(
                 &request,
                 &conversations,
@@ -519,21 +505,7 @@ fn run_agent_search(args: &cli::AgentSearchArgs) -> Result<String> {
                 cli_mode: Some(SearchMode::Lexical),
                 ..request.clone()
             };
-            let searchable = search::precompute_agent_search_text(&conversations);
-            let ranked_all = search::agent_search(
-                &conversations,
-                &searchable,
-                &args.query,
-                chrono::Local::now(),
-            );
-            let scoped_set = scoped
-                .iter()
-                .copied()
-                .collect::<std::collections::HashSet<_>>();
-            let ranked = ranked_all
-                .into_iter()
-                .filter(|index| scoped_set.contains(index))
-                .collect::<Vec<_>>();
+            let ranked = lexically_rank_scoped(&conversations, &args.query, &scoped);
             let lexical = agent::search::run_global_lexical_search(
                 &lexical_request,
                 &conversations,
@@ -782,12 +754,12 @@ fn run_agent_read(
 ) -> Result<String> {
     let (resolved_refs, focus) = resolve_agent_read_args(args, keys)?;
     let options = agent_protocol_options(
-        args.no_budget,
-        args.budget,
-        args.tools,
-        args.tool_results,
-        args.thinking,
-        args.subagents,
+        args.output.no_budget,
+        args.output.budget,
+        args.output.tools,
+        args.output.tool_results,
+        args.output.thinking,
+        args.output.subagents,
     );
     let transcripts = resolved_refs
         .iter()
@@ -829,12 +801,12 @@ fn run_agent_outline(
         &resolved,
         &transcript,
         agent_protocol_options(
-            args.no_budget,
-            args.budget,
-            args.tools,
-            args.tool_results,
-            args.thinking,
-            args.subagents,
+            args.output.no_budget,
+            args.output.budget,
+            args.output.tools,
+            args.output.tool_results,
+            args.output.thinking,
+            args.output.subagents,
         ),
     ))
 }
@@ -900,6 +872,23 @@ fn agent_protocol_options(
     }
 }
 
+fn lexically_rank_scoped(
+    conversations: &[history::Conversation],
+    query: &str,
+    scoped: &[usize],
+) -> Vec<usize> {
+    let searchable = search::precompute_agent_search_text(conversations);
+    let ranked_all = search::agent_search(conversations, &searchable, query, chrono::Local::now());
+    let scoped_set = scoped
+        .iter()
+        .copied()
+        .collect::<std::collections::HashSet<_>>();
+    ranked_all
+        .into_iter()
+        .filter(|index| scoped_set.contains(index))
+        .collect()
+}
+
 fn resolve_agent_conversation_arg(
     reference: &str,
     keys: Option<&[agent::refs::AgentConversationKey]>,
@@ -920,6 +909,7 @@ mod agent_command_tests {
     use super::*;
     use crate::agent::refs::AgentConversationKey;
     use crate::agent::test_support::{assistant_jsonl_line as assistant, user_jsonl_line as user};
+    use cli::AgentOutputFlags;
 
     fn key(project: &str, filename: &str) -> AgentConversationKey {
         AgentConversationKey::new(
@@ -929,20 +919,33 @@ mod agent_command_tests {
         )
     }
 
-    #[test]
-    fn read_validation_rejects_focus_outside_range() {
-        let keys = vec![key("project-a", "session.jsonl")];
-        let conversation = keys[0].conversation_ref().canonical();
-        let args = AgentReadArgs {
-            refs: vec![format!("{conversation}:m2..m4")],
-            focus: Some("m5".to_string()),
+    fn default_output() -> AgentOutputFlags {
+        AgentOutputFlags {
             budget: 6000,
             no_budget: false,
             tools: false,
             tool_results: false,
             thinking: false,
             subagents: false,
-        };
+        }
+    }
+
+    fn read_args(refs: Vec<String>, focus: Option<String>) -> AgentReadArgs {
+        AgentReadArgs {
+            refs,
+            focus,
+            output: default_output(),
+        }
+    }
+
+    #[test]
+    fn read_validation_rejects_focus_outside_range() {
+        let keys = vec![key("project-a", "session.jsonl")];
+        let conversation = keys[0].conversation_ref().canonical();
+        let args = read_args(
+            vec![format!("{conversation}:m2..m4")],
+            Some("m5".to_string()),
+        );
         let err = resolve_agent_read_args(&args, Some(&keys)).unwrap_err();
         assert!(err.to_string().contains("outside"));
     }
@@ -967,16 +970,7 @@ mod agent_command_tests {
             path,
         )];
         let conversation = keys[0].conversation_ref().canonical();
-        let args = AgentReadArgs {
-            refs: vec![format!("{conversation}:m1..m2")],
-            focus: None,
-            budget: 6000,
-            no_budget: false,
-            tools: false,
-            tool_results: false,
-            thinking: false,
-            subagents: false,
-        };
+        let args = read_args(vec![format!("{conversation}:m1..m2")], None);
 
         let output = run_agent_read(&args, Some(&keys)).unwrap();
 
@@ -1002,12 +996,7 @@ mod agent_command_tests {
         )];
         let args = AgentOutlineArgs {
             conversation: keys[0].conversation_ref().canonical(),
-            budget: 6000,
-            no_budget: false,
-            tools: false,
-            tool_results: false,
-            thinking: false,
-            subagents: false,
+            output: default_output(),
         };
 
         let output = run_agent_outline(&args, Some(&keys)).unwrap();
@@ -1071,12 +1060,14 @@ mod agent_command_tests {
         AgentReadArgs {
             refs: vec![read_ref.expect("read ref field")],
             focus,
-            budget: 6000,
-            no_budget: false,
-            tools,
-            tool_results,
-            thinking,
-            subagents,
+            output: AgentOutputFlags {
+                budget: 6000,
+                no_budget: false,
+                tools,
+                tool_results,
+                thinking,
+                subagents,
+            },
         }
     }
 
@@ -1688,16 +1679,7 @@ mod agent_command_tests {
             path,
         )];
         let conversation = keys[0].conversation_ref().canonical();
-        let args = AgentReadArgs {
-            refs: vec![format!("{conversation}:m1..m2")],
-            focus: None,
-            budget: 6000,
-            no_budget: false,
-            tools: false,
-            tool_results: false,
-            thinking: false,
-            subagents: false,
-        };
+        let args = read_args(vec![format!("{conversation}:m1..m2")], None);
 
         let err = run_agent_read(&args, Some(&keys)).unwrap_err();
 

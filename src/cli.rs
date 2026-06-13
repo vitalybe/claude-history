@@ -129,13 +129,7 @@ pub struct AgentWithinArgs {
 }
 
 #[derive(Debug, ClapArgs)]
-pub struct AgentReadArgs {
-    /// Conversation or message range refs to read
-    #[arg(required = true, value_parser = non_empty_string)]
-    pub refs: Vec<String>,
-    /// Message or range to prioritize when budgeted output is truncated
-    #[arg(long, value_parser = non_empty_string)]
-    pub focus: Option<String>,
+pub struct AgentOutputFlags {
     /// Output budget in approximate tokens
     #[arg(long, default_value_t = 6000, value_parser = non_zero_usize, conflicts_with = "no_budget")]
     pub budget: usize,
@@ -157,28 +151,24 @@ pub struct AgentReadArgs {
 }
 
 #[derive(Debug, ClapArgs)]
+pub struct AgentReadArgs {
+    /// Conversation or message range refs to read
+    #[arg(required = true, value_parser = non_empty_string)]
+    pub refs: Vec<String>,
+    /// Message or range to prioritize when budgeted output is truncated
+    #[arg(long, value_parser = non_empty_string)]
+    pub focus: Option<String>,
+    #[command(flatten)]
+    pub output: AgentOutputFlags,
+}
+
+#[derive(Debug, ClapArgs)]
 pub struct AgentOutlineArgs {
     /// Conversation reference to outline
     #[arg(value_parser = non_empty_string)]
     pub conversation: String,
-    /// Output budget in approximate tokens
-    #[arg(long, default_value_t = 6000, value_parser = non_zero_usize, conflicts_with = "no_budget")]
-    pub budget: usize,
-    /// Disable output budgeting
-    #[arg(long)]
-    pub no_budget: bool,
-    /// Include tool calls
-    #[arg(long)]
-    pub tools: bool,
-    /// Include tool results
-    #[arg(long)]
-    pub tool_results: bool,
-    /// Include thinking blocks
-    #[arg(long)]
-    pub thinking: bool,
-    /// Include subagent internals
-    #[arg(long)]
-    pub subagents: bool,
+    #[command(flatten)]
+    pub output: AgentOutputFlags,
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -575,12 +565,12 @@ mod tests {
             } => {
                 assert_eq!(read.refs, vec!["ch_abc123:m1..m3", "ch_def456:m4"]);
                 assert_eq!(read.focus.as_deref(), Some("m2"));
-                assert_eq!(read.budget, 1234);
-                assert!(!read.no_budget);
-                assert!(read.tools);
-                assert!(read.tool_results);
-                assert!(read.thinking);
-                assert!(read.subagents);
+                assert_eq!(read.output.budget, 1234);
+                assert!(!read.output.no_budget);
+                assert!(read.output.tools);
+                assert!(read.output.tool_results);
+                assert!(read.output.thinking);
+                assert!(read.output.subagents);
             }
             other => panic!("unexpected command: {other:?}"),
         }
@@ -594,12 +584,12 @@ mod tests {
             Commands::Agent {
                 command: AgentCommand::Read(read),
             } => {
-                assert_eq!(read.budget, 6000);
-                assert!(!read.no_budget);
-                assert!(!read.tools);
-                assert!(!read.tool_results);
-                assert!(!read.thinking);
-                assert!(!read.subagents);
+                assert_eq!(read.output.budget, 6000);
+                assert!(!read.output.no_budget);
+                assert!(!read.output.tools);
+                assert!(!read.output.tool_results);
+                assert!(!read.output.thinking);
+                assert!(!read.output.subagents);
             }
             other => panic!("unexpected command: {other:?}"),
         }
@@ -625,12 +615,12 @@ mod tests {
                 command: AgentCommand::Outline(outline),
             } => {
                 assert_eq!(outline.conversation, "ch_abc123");
-                assert_eq!(outline.budget, 6000);
-                assert!(outline.no_budget);
-                assert!(outline.tools);
-                assert!(outline.tool_results);
-                assert!(outline.thinking);
-                assert!(outline.subagents);
+                assert_eq!(outline.output.budget, 6000);
+                assert!(outline.output.no_budget);
+                assert!(outline.output.tools);
+                assert!(outline.output.tool_results);
+                assert!(outline.output.thinking);
+                assert!(outline.output.subagents);
             }
             other => panic!("unexpected command: {other:?}"),
         }
