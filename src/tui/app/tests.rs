@@ -1,6 +1,6 @@
+use super::semantic_test_helpers::*;
 use super::*;
 use crate::history::Conversation;
-use crate::semantic::types::{SemanticChunkIdentity, SemanticQuality, SemanticRationaleKind};
 use chrono::{Local, TimeZone};
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -71,86 +71,6 @@ fn app_with_semantic_mode(conversations: Vec<Conversation>) -> App {
             default_mode: ListSearchMode::Semantic,
         },
     )
-}
-
-fn connect_semantic_search_channels(
-    app: &mut App,
-) -> (
-    std::sync::mpsc::Sender<crate::tui::semantic_worker::SemanticWorkerCommand>,
-    std::sync::mpsc::Receiver<crate::tui::semantic_worker::SemanticWorkerCommand>,
-    std::sync::mpsc::Sender<SemanticSearchMessage>,
-) {
-    let (request_tx, request_rx) =
-        mpsc::channel::<crate::tui::semantic_worker::SemanticWorkerCommand>();
-    let (response_tx, response_rx) = mpsc::channel::<SemanticSearchMessage>();
-    app.semantic_search.worker_tx = Some(request_tx);
-    app.semantic_search.worker_rx = Some(response_rx);
-    (
-        app.semantic_search.worker_tx.clone().unwrap(),
-        request_rx,
-        response_tx,
-    )
-}
-
-fn send_semantic_complete_response(
-    response_tx: &mpsc::Sender<SemanticSearchMessage>,
-    generation: u64,
-    filtered: Vec<usize>,
-    metadata: HashMap<usize, SemanticResultMetadata>,
-    progress: SemanticProgress,
-) {
-    response_tx
-        .send(SemanticSearchMessage::Complete(
-            crate::tui::semantic_worker::SemanticSearchResponse {
-                generation,
-                filtered,
-                metadata,
-                error: None,
-                progress,
-                prewarm: false,
-            },
-        ))
-        .unwrap();
-}
-
-fn send_semantic_progress_response(
-    response_tx: &mpsc::Sender<SemanticSearchMessage>,
-    generation: u64,
-    progress: SemanticProgress,
-) {
-    response_tx
-        .send(SemanticSearchMessage::Progress {
-            generation,
-            progress,
-        })
-        .unwrap();
-}
-
-fn test_semantic_metadata(
-    conversation_index: usize,
-    evidence_preview: &str,
-) -> SemanticResultMetadata {
-    SemanticResultMetadata {
-        score_breakdown: SemanticScoreBreakdown {
-            hybrid: 1.0,
-            semantic: 1.0,
-            lexical: 0.0,
-        },
-        explanation: SemanticExplanation {
-            quality: SemanticQuality::Strong,
-            quality_label: "strong",
-            matched_terms: Vec::new(),
-            evidence_preview: evidence_preview.to_string(),
-            rationale_kind: SemanticRationaleKind::SemanticOnly,
-            chunk: SemanticChunkIdentity {
-                conversation_index,
-                source: crate::semantic::types::SemanticChunkSource::VisibleDialogue,
-                session: "test-session".to_string(),
-                chunk_index: 0,
-                message_range: crate::agent::refs::MessageRange::single(1),
-            },
-        },
-    }
 }
 
 #[test]
@@ -436,18 +356,13 @@ fn stale_semantic_response_is_ignored_while_lexical_mode_is_active() {
     app.semantic_search.pending_generation = Some(3);
     drop(request_rx);
 
-    response_tx
-        .send(SemanticSearchMessage::Complete(
-            crate::tui::semantic_worker::SemanticSearchResponse {
-                generation: 3,
-                filtered: vec![0],
-                metadata: HashMap::new(),
-                error: None,
-                progress: SemanticProgress::Complete,
-                prewarm: false,
-            },
-        ))
-        .unwrap();
+    send_semantic_complete_response(
+        &response_tx,
+        3,
+        vec![0],
+        HashMap::new(),
+        SemanticProgress::Complete,
+    );
 
     assert!(!app.receive_search_results());
     assert!(app.filtered().is_empty());
@@ -511,18 +426,13 @@ fn current_generation_semantic_response_is_ignored_while_lexical_mode_is_active(
     app.selected = Some(0);
     drop(request_rx);
 
-    response_tx
-        .send(SemanticSearchMessage::Complete(
-            crate::tui::semantic_worker::SemanticSearchResponse {
-                generation: 7,
-                filtered: Vec::new(),
-                metadata: HashMap::from([(0, test_semantic_metadata(0, "stale"))]),
-                error: None,
-                progress: SemanticProgress::Complete,
-                prewarm: false,
-            },
-        ))
-        .unwrap();
+    send_semantic_complete_response(
+        &response_tx,
+        7,
+        Vec::new(),
+        HashMap::from([(0, test_semantic_metadata(0, "stale"))]),
+        SemanticProgress::Complete,
+    );
 
     assert!(!app.receive_search_results());
     assert_eq!(app.filtered(), &[0]);
@@ -555,18 +465,13 @@ fn stale_semantic_response_with_old_generation_is_ignored() {
     app.selected = None;
     drop(request_rx);
 
-    response_tx
-        .send(SemanticSearchMessage::Complete(
-            crate::tui::semantic_worker::SemanticSearchResponse {
-                generation: 2,
-                filtered: vec![0],
-                metadata: HashMap::from([(0, test_semantic_metadata(0, "stale"))]),
-                error: None,
-                progress: SemanticProgress::Complete,
-                prewarm: false,
-            },
-        ))
-        .unwrap();
+    send_semantic_complete_response(
+        &response_tx,
+        2,
+        vec![0],
+        HashMap::from([(0, test_semantic_metadata(0, "stale"))]),
+        SemanticProgress::Complete,
+    );
 
     assert!(!app.receive_search_results());
     assert!(app.filtered().is_empty());
@@ -992,18 +897,13 @@ fn semantic_response_applies_ranked_indices_and_metadata() {
     drop(request_rx);
     let metadata = HashMap::from([(1, test_semantic_metadata(1, "visible preview"))]);
 
-    response_tx
-        .send(SemanticSearchMessage::Complete(
-            crate::tui::semantic_worker::SemanticSearchResponse {
-                generation: 7,
-                filtered: vec![1],
-                metadata,
-                error: None,
-                progress: SemanticProgress::Complete,
-                prewarm: false,
-            },
-        ))
-        .unwrap();
+    send_semantic_complete_response(
+        &response_tx,
+        7,
+        vec![1],
+        metadata,
+        SemanticProgress::Complete,
+    );
 
     assert!(app.receive_search_results());
     assert_eq!(app.filtered(), &[1]);
@@ -1239,18 +1139,13 @@ fn semantic_prewarm_superseded_by_real_query_clears_stale_activity() {
     assert_eq!(app.semantic_search.prewarm_generation, None);
     assert_eq!(app.semantic_search.prewarm_status, None);
 
-    response_tx
-        .send(SemanticSearchMessage::Complete(
-            crate::tui::semantic_worker::SemanticSearchResponse {
-                generation: real_generation,
-                filtered: vec![0],
-                metadata: HashMap::new(),
-                error: None,
-                progress: SemanticProgress::Complete,
-                prewarm: false,
-            },
-        ))
-        .unwrap();
+    send_semantic_complete_response(
+        &response_tx,
+        real_generation,
+        vec![0],
+        HashMap::new(),
+        SemanticProgress::Complete,
+    );
 
     assert!(app.receive_search_results());
     assert!(!app.has_search_work_in_flight());

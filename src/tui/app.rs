@@ -556,6 +556,9 @@ impl App {
 }
 
 #[cfg(test)]
+mod semantic_test_helpers;
+
+#[cfg(test)]
 mod tests;
 
 #[cfg(test)]

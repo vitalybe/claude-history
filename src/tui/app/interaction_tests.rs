@@ -1,6 +1,6 @@
+use super::semantic_test_helpers::*;
 use super::*;
 use crate::config::KeyBinding;
-use crate::semantic::types::{SemanticChunkIdentity, SemanticQuality, SemanticRationaleKind};
 use chrono::TimeZone;
 
 fn test_conversation(path: PathBuf, custom_title: Option<String>) -> Conversation {
@@ -117,73 +117,6 @@ fn view_expanded_tool_id(app: &App) -> ToolOutputId {
     }
 }
 
-fn connect_semantic_search_channels(
-    app: &mut App,
-) -> (
-    mpsc::Sender<crate::tui::semantic_worker::SemanticWorkerCommand>,
-    mpsc::Receiver<crate::tui::semantic_worker::SemanticWorkerCommand>,
-    mpsc::Sender<SemanticSearchMessage>,
-) {
-    let (request_tx, request_rx) =
-        mpsc::channel::<crate::tui::semantic_worker::SemanticWorkerCommand>();
-    let (response_tx, response_rx) = mpsc::channel::<SemanticSearchMessage>();
-    app.semantic_search.worker_tx = Some(request_tx);
-    app.semantic_search.worker_rx = Some(response_rx);
-    (
-        app.semantic_search.worker_tx.clone().unwrap(),
-        request_rx,
-        response_tx,
-    )
-}
-
-fn send_semantic_complete_response(
-    response_tx: &mpsc::Sender<SemanticSearchMessage>,
-    generation: u64,
-    filtered: Vec<usize>,
-    metadata: HashMap<usize, SemanticResultMetadata>,
-    progress: SemanticProgress,
-) {
-    response_tx
-        .send(SemanticSearchMessage::Complete(
-            crate::tui::semantic_worker::SemanticSearchResponse {
-                generation,
-                filtered,
-                metadata,
-                error: None,
-                progress,
-                prewarm: false,
-            },
-        ))
-        .unwrap();
-}
-
-fn test_semantic_metadata(
-    conversation_index: usize,
-    evidence_preview: &str,
-) -> SemanticResultMetadata {
-    SemanticResultMetadata {
-        score_breakdown: SemanticScoreBreakdown {
-            hybrid: 1.0,
-            semantic: 1.0,
-            lexical: 0.0,
-        },
-        explanation: SemanticExplanation {
-            quality: SemanticQuality::Strong,
-            quality_label: "strong",
-            matched_terms: Vec::new(),
-            evidence_preview: evidence_preview.to_string(),
-            rationale_kind: SemanticRationaleKind::SemanticOnly,
-            chunk: SemanticChunkIdentity {
-                conversation_index,
-                source: crate::semantic::types::SemanticChunkSource::VisibleDialogue,
-                session: "test-session".to_string(),
-                chunk_index: 0,
-                message_range: crate::agent::refs::MessageRange::single(1),
-            },
-        },
-    }
-}
-
 #[test]
 fn semantic_ranked_selection_opens_selected_conversation_and_returns() {
     let dir = tempfile::tempdir().unwrap();
@@ -264,21 +197,16 @@ fn semantic_list_click_uses_three_line_rows() {
     app.search_generation = 7;
     app.semantic_search.pending_generation = Some(7);
     drop(request_rx);
-    response_tx
-        .send(SemanticSearchMessage::Complete(
-            crate::tui::semantic_worker::SemanticSearchResponse {
-                generation: 7,
-                filtered: vec![0, 1],
-                metadata: HashMap::from([
-                    (0, test_semantic_metadata(0, "first")),
-                    (1, test_semantic_metadata(1, "second")),
-                ]),
-                error: None,
-                progress: SemanticProgress::Complete,
-                prewarm: false,
-            },
-        ))
-        .unwrap();
+    send_semantic_complete_response(
+        &response_tx,
+        7,
+        vec![0, 1],
+        HashMap::from([
+            (0, test_semantic_metadata(0, "first")),
+            (1, test_semantic_metadata(1, "second")),
+        ]),
+        SemanticProgress::Complete,
+    );
     app.receive_search_results();
     let frame = Rect::new(0, 0, 80, 20);
 
