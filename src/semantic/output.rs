@@ -35,7 +35,7 @@ pub fn format_hit(rank: usize, hit: &SemanticHit, conversations: &[&Conversation
     )
 }
 
-fn truncate(text: &str, max_chars: usize) -> String {
+pub fn truncate(text: &str, max_chars: usize) -> String {
     if text.chars().count() <= max_chars {
         return text.to_owned();
     }

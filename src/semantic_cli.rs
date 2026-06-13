@@ -155,7 +155,7 @@ pub fn debug_search(query: &str, conversations: &[Conversation], local: bool) ->
     use crate::semantic::chunk::build_chunks;
     use crate::semantic::embed::SemanticEmbedder;
     use crate::semantic::fastembed::FastembedEmbedder;
-    use crate::semantic::output::format_hit;
+    use crate::semantic::output::{format_hit, truncate};
     use crate::semantic::rank::rank_chunks;
     use crate::semantic::types::{ChunkConfig, MODEL_NAME, SemanticCancellationToken};
     use std::collections::HashMap;
@@ -244,7 +244,7 @@ pub fn debug_search(query: &str, conversations: &[Conversation], local: bool) ->
                 "Semantic debug: suspicious chunk {}:{}: {}",
                 chunk.session,
                 chunk.chunk_index,
-                truncate_debug(&chunk.text, 220)
+                truncate(&chunk.text, 220)
             );
         }
     }
@@ -289,7 +289,7 @@ pub fn debug_search(query: &str, conversations: &[Conversation], local: bool) ->
             "Semantic debug: missing cache chunk {}:{}: {}",
             chunk.session,
             chunk.chunk_index,
-            truncate_debug(&chunk.text, 180)
+            truncate(&chunk.text, 180)
         );
     }
 
@@ -324,16 +324,6 @@ pub fn debug_search(query: &str, conversations: &[Conversation], local: bool) ->
     }
 
     Ok(())
-}
-
-fn truncate_debug(text: &str, max_chars: usize) -> String {
-    if text.chars().count() <= max_chars {
-        return text.to_owned();
-    }
-
-    let mut out: String = text.chars().take(max_chars.saturating_sub(1)).collect();
-    out.push('…');
-    out
 }
 
 fn format_exact_hit(rank: usize, conversation: &Conversation) -> String {
