@@ -217,6 +217,51 @@ pub fn extract_message_text(
 }
 
 /// Format a single log entry as text for clipboard
+/// Append text with blank-line separation if output is non-empty.
+fn append_separated(output: &mut String, text: &str) {
+    if !output.is_empty() {
+        output.push_str("\n\n");
+    }
+    output.push_str(text);
+}
+
+/// Iterate content blocks and append formatted output for clipboard-style export.
+/// Handles Text, ToolUse, ToolResult, and Thinking blocks guarded by options.
+fn append_clipboard_blocks(output: &mut String, blocks: &[ContentBlock], options: &ExportOptions) {
+    for block in blocks {
+        match block {
+            ContentBlock::Text { text } => {
+                append_separated(output, text);
+            }
+            ContentBlock::ToolUse { name, input, .. } if options.show_tools => {
+                append_separated(output, &format_tool_call_for_export(name, input));
+            }
+            ContentBlock::ToolResult { content, .. } if options.show_tools => {
+                append_separated(output, &format_tool_result_for_export(content.as_ref()));
+            }
+            ContentBlock::Thinking { thinking, .. } if options.show_thinking => {
+                append_separated(output, thinking);
+            }
+            _ => {}
+        }
+    }
+}
+
+/// Invoke `f` with the formatted content string for each ToolResult block
+/// in a user message, when show_tools is enabled.
+fn for_user_tool_results(message: &UserMessage, options: &ExportOptions, mut f: impl FnMut(&str)) {
+    if options.show_tools
+        && let UserContent::Blocks(blocks) = &message.content
+    {
+        for block in blocks {
+            if let ContentBlock::ToolResult { content, .. } = block {
+                let content_str = format_tool_result_for_export(content.as_ref());
+                f(&content_str);
+            }
+        }
+    }
+}
+
 fn format_entry_for_clipboard(entry: &LogEntry, options: ExportOptions) -> String {
     let mut output = String::new();
     match entry {
@@ -228,19 +273,9 @@ fn format_entry_for_clipboard(entry: &LogEntry, options: ExportOptions) -> Strin
             if let Some(text) = extract_user_text(message) {
                 output.push_str(&text);
             }
-            if options.show_tools
-                && let UserContent::Blocks(blocks) = &message.content
-            {
-                for block in blocks {
-                    if let ContentBlock::ToolResult { content, .. } = block {
-                        let content_str = format_tool_result_for_export(content.as_ref());
-                        if !output.is_empty() {
-                            output.push_str("\n\n");
-                        }
-                        output.push_str(&content_str);
-                    }
-                }
-            }
+            for_user_tool_results(message, &options, |content| {
+                append_separated(&mut output, content);
+            });
             let _ = parent_tool_use_id;
         }
         LogEntry::Assistant {
@@ -248,58 +283,13 @@ fn format_entry_for_clipboard(entry: &LogEntry, options: ExportOptions) -> Strin
             parent_tool_use_id,
             ..
         } => {
-            for block in &message.content {
-                match block {
-                    ContentBlock::Text { text } => {
-                        if !output.is_empty() {
-                            output.push_str("\n\n");
-                        }
-                        output.push_str(text);
-                    }
-                    ContentBlock::ToolUse { name, input, .. } if options.show_tools => {
-                        if !output.is_empty() {
-                            output.push_str("\n\n");
-                        }
-                        let formatted = format_tool_call_for_export(name, input);
-                        output.push_str(&formatted);
-                    }
-                    ContentBlock::Thinking { thinking, .. } if options.show_thinking => {
-                        if !output.is_empty() {
-                            output.push_str("\n\n");
-                        }
-                        output.push_str(thinking);
-                    }
-                    _ => {}
-                }
-            }
+            append_clipboard_blocks(&mut output, &message.content, &options);
             let _ = parent_tool_use_id;
         }
         LogEntry::Progress { data, .. } => {
             if let Some(agent_progress) = claude::parse_agent_progress(data) {
                 let AgentContent::Blocks(blocks) = &agent_progress.message.message.content;
-                for block in blocks {
-                    match block {
-                        ContentBlock::Text { text } => {
-                            if !output.is_empty() {
-                                output.push_str("\n\n");
-                            }
-                            output.push_str(text);
-                        }
-                        ContentBlock::ToolUse { name, input, .. } if options.show_tools => {
-                            if !output.is_empty() {
-                                output.push_str("\n\n");
-                            }
-                            output.push_str(&format_tool_call_for_export(name, input));
-                        }
-                        ContentBlock::ToolResult { content, .. } if options.show_tools => {
-                            if !output.is_empty() {
-                                output.push_str("\n\n");
-                            }
-                            output.push_str(&format_tool_result_for_export(content.as_ref()));
-                        }
-                        _ => {}
-                    }
-                }
+                append_clipboard_blocks(&mut output, blocks, &options);
             }
         }
         _ => {}
@@ -354,16 +344,9 @@ fn generate_plain_or_markdown_content(
                         handle_user_text(&mut output, &prefix, &text);
                     }
                     // Tool results
-                    if options.show_tools
-                        && let UserContent::Blocks(blocks) = &message.content
-                    {
-                        for block in blocks {
-                            if let ContentBlock::ToolResult { content, .. } = block {
-                                let content_str = format_tool_result_for_export(content.as_ref());
-                                handle_user_tool_result(&mut output, &prefix, &content_str);
-                            }
-                        }
-                    }
+                    for_user_tool_results(&message, &options, |content| {
+                        handle_user_tool_result(&mut output, &prefix, content);
+                    });
                 }
                 LogEntry::Assistant {
                     message,
@@ -485,21 +468,13 @@ fn generate_ledger(path: &Path, options: ExportOptions) -> std::io::Result<Strin
                         output.push('\n');
                     }
                     // Tool results
-                    if options.show_tools
-                        && let UserContent::Blocks(blocks) = &message.content
-                    {
-                        for block in blocks {
-                            if let ContentBlock::ToolResult { content, .. } = block {
-                                let content_str = format_tool_result_for_export(content.as_ref());
-                                if content_str.trim().is_empty() {
-                                    continue;
-                                }
-                                let wrapped = wrap_plain_text(&content_str, content_width);
-                                append_ledger_block(&mut output, "↳ Result", &wrapped, NAME_WIDTH);
-                                output.push('\n');
-                            }
+                    for_user_tool_results(&message, &options, |content| {
+                        if !content.trim().is_empty() {
+                            let wrapped = wrap_plain_text(content, content_width);
+                            append_ledger_block(&mut output, "↳ Result", &wrapped, NAME_WIDTH);
+                            output.push('\n');
                         }
-                    }
+                    });
                 }
                 LogEntry::Assistant {
                     message,
