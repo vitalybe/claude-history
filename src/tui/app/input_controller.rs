@@ -478,48 +478,12 @@ impl App {
                     self.select_prev();
                     None
                 }
-                KeyCode::Char('a') if modifiers.contains(KeyModifiers::CONTROL) => {
-                    self.cursor_home();
-                    None
-                }
-                KeyCode::Char('e') if modifiers.contains(KeyModifiers::CONTROL) => {
-                    self.cursor_end();
-                    None
-                }
-                KeyCode::Char('b') if modifiers.contains(KeyModifiers::CONTROL) => {
-                    self.cursor_left();
-                    None
-                }
-                KeyCode::Char('f') if modifiers.contains(KeyModifiers::CONTROL) => {
-                    self.cursor_right();
-                    None
-                }
-                KeyCode::Char('b') if modifiers.contains(KeyModifiers::ALT) => {
-                    self.cursor_word_left();
-                    None
-                }
-                KeyCode::Char('f') if modifiers.contains(KeyModifiers::ALT) => {
-                    self.cursor_word_right();
-                    None
-                }
-                KeyCode::Char('k') if modifiers.contains(KeyModifiers::CONTROL) => {
-                    self.kill_to_end();
-                    None
-                }
-                KeyCode::Char('u') if modifiers.contains(KeyModifiers::CONTROL) => {
-                    self.kill_to_start();
-                    None
-                }
                 KeyCode::PageUp => {
                     self.select_page_up();
                     None
                 }
                 KeyCode::PageDown => {
                     self.select_page_down();
-                    None
-                }
-                KeyCode::Char('w') if modifiers.contains(KeyModifiers::CONTROL) => {
-                    self.delete_word_backwards();
                     None
                 }
                 KeyCode::Tab => {
@@ -530,18 +494,7 @@ impl App {
                     self.dialog_mode = DialogMode::Help { scroll: 0 };
                     None
                 }
-                KeyCode::Char(c) => {
-                    self.insert_query_char(c);
-                    None
-                }
-                KeyCode::Backspace => {
-                    self.backspace_query();
-                    None
-                }
-                KeyCode::Delete => {
-                    self.delete_query_char();
-                    None
-                }
+                _ if self.handle_list_query_edit_key(code, modifiers, false) => None,
                 _ => None,
             };
         }
@@ -624,36 +577,6 @@ impl App {
                 }
                 None
             }
-            KeyCode::Char('a') if modifiers.contains(KeyModifiers::CONTROL) => {
-                self.cursor_home();
-                None
-            }
-            KeyCode::Char('e') if modifiers.contains(KeyModifiers::CONTROL) => {
-                self.cursor_end();
-                None
-            }
-            KeyCode::Char('b') if modifiers.contains(KeyModifiers::CONTROL) => {
-                self.cursor_left();
-                None
-            }
-            KeyCode::Char('f') if modifiers.contains(KeyModifiers::CONTROL) => {
-                self.cursor_right();
-                None
-            }
-            KeyCode::Char('b') if modifiers.contains(KeyModifiers::ALT) => {
-                self.cursor_word_left();
-                None
-            }
-            KeyCode::Char('f') if modifiers.contains(KeyModifiers::ALT) => {
-                self.cursor_word_right();
-                None
-            }
-            KeyCode::Char('k') if modifiers.contains(KeyModifiers::CONTROL) => {
-                if self.kill_to_end() {
-                    self.dispatch_search();
-                }
-                None
-            }
             KeyCode::Char('n') if modifiers.contains(KeyModifiers::CONTROL) => {
                 self.select_next();
                 None
@@ -666,20 +589,8 @@ impl App {
                 self.select_half_page_down(viewport_height);
                 None
             }
-            KeyCode::Char('u') if modifiers.contains(KeyModifiers::CONTROL) => {
-                if self.kill_to_start() {
-                    self.dispatch_search();
-                }
-                None
-            }
             KeyCode::Char('o') if modifiers.contains(KeyModifiers::CONTROL) => {
                 self.get_selected_path().map(Action::Select)
-            }
-            KeyCode::Char('w') if modifiers.contains(KeyModifiers::CONTROL) => {
-                if self.delete_word_backwards() {
-                    self.dispatch_search();
-                }
-                None
             }
             KeyCode::Tab => {
                 self.toggle_workspace_filter();
@@ -689,25 +600,62 @@ impl App {
                 self.dialog_mode = DialogMode::Help { scroll: 0 };
                 None
             }
-            KeyCode::Char(c) => {
-                self.insert_query_char(c);
-                self.dispatch_search();
-                None
-            }
-            KeyCode::Backspace => {
-                if self.backspace_query() {
-                    self.dispatch_search();
-                }
-                None
-            }
-            KeyCode::Delete => {
-                if self.delete_query_char() {
-                    self.dispatch_search();
-                }
-                None
-            }
+            _ if self.handle_list_query_edit_key(code, modifiers, true) => None,
             _ => None,
         }
+    }
+
+    fn handle_list_query_edit_key(
+        &mut self,
+        code: KeyCode,
+        modifiers: KeyModifiers,
+        dispatch_search: bool,
+    ) -> bool {
+        let changed = match code {
+            KeyCode::Char('?') => return false,
+            KeyCode::Char('a') if modifiers.contains(KeyModifiers::CONTROL) => {
+                self.cursor_home();
+                false
+            }
+            KeyCode::Char('e') if modifiers.contains(KeyModifiers::CONTROL) => {
+                self.cursor_end();
+                false
+            }
+            KeyCode::Char('b') if modifiers.contains(KeyModifiers::CONTROL) => {
+                self.cursor_left();
+                false
+            }
+            KeyCode::Char('f') if modifiers.contains(KeyModifiers::CONTROL) => {
+                self.cursor_right();
+                false
+            }
+            KeyCode::Char('b') if modifiers.contains(KeyModifiers::ALT) => {
+                self.cursor_word_left();
+                false
+            }
+            KeyCode::Char('f') if modifiers.contains(KeyModifiers::ALT) => {
+                self.cursor_word_right();
+                false
+            }
+            KeyCode::Char('k') if modifiers.contains(KeyModifiers::CONTROL) => self.kill_to_end(),
+            KeyCode::Char('u') if modifiers.contains(KeyModifiers::CONTROL) => self.kill_to_start(),
+            KeyCode::Char('w') if modifiers.contains(KeyModifiers::CONTROL) => {
+                self.delete_word_backwards()
+            }
+            KeyCode::Char(c) => {
+                self.insert_query_char(c);
+                true
+            }
+            KeyCode::Backspace => self.backspace_query(),
+            KeyCode::Delete => self.delete_query_char(),
+            _ => return false,
+        };
+
+        if changed && dispatch_search {
+            self.dispatch_search();
+        }
+
+        true
     }
 
     fn insert_query_char(&mut self, c: char) {
