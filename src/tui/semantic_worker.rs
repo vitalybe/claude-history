@@ -562,6 +562,53 @@ mod tests {
         Arc::new(conversations.into_iter().map(Arc::new).collect())
     }
 
+    fn send_worker_setup(
+        tx: &mpsc::Sender<SemanticWorkerCommand>,
+        semantic_turns: Vec<&str>,
+        query: &str,
+        prewarm: bool,
+    ) {
+        tx.send(SemanticWorkerCommand::UpdateCorpus {
+            corpus_version: 1,
+            conversations: corpus(vec![conversation(
+                "/projects/project-a/session-a.jsonl",
+                semantic_turns,
+            )]),
+        })
+        .expect("send corpus");
+        tx.send(SemanticWorkerCommand::UpdateScope {
+            corpus_version: 1,
+            scope_version: 1,
+            indices: Arc::new(vec![0]),
+        })
+        .expect("send scope");
+        tx.send(SemanticWorkerCommand::Search {
+            generation: 1,
+            query: ParsedQuery::parse(query),
+            corpus_version: 1,
+            scope_version: 1,
+            prewarm,
+        })
+        .expect("send semantic request");
+    }
+
+    fn recv_empty_complete(rx: &mpsc::Receiver<SemanticSearchMessage>) -> SemanticSearchResponse {
+        let message = rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("empty response");
+        match message {
+            SemanticSearchMessage::Complete(response) => {
+                assert!(response.filtered.is_empty());
+                assert!(response.metadata.is_empty());
+                assert_eq!(response.error, None);
+                response
+            }
+            SemanticSearchMessage::Progress { progress, .. } => {
+                panic!("unexpected progress before empty response: {progress:?}");
+            }
+        }
+    }
+
     #[test]
     fn maps_domain_hits_to_original_indices_and_metadata() {
         let (expected_score_breakdown, expected_explanation) = beta_hit_metadata(42, "session-b");
@@ -593,112 +640,23 @@ mod tests {
     #[test]
     fn empty_visible_dialogue_returns_before_embedder_initialization() {
         let (tx, rx) = spawn_semantic_worker();
-        tx.send(SemanticWorkerCommand::UpdateCorpus {
-            corpus_version: 1,
-            conversations: corpus(vec![conversation(
-                "/projects/project-a/session-a.jsonl",
-                vec![],
-            )]),
-        })
-        .expect("send corpus");
-        tx.send(SemanticWorkerCommand::UpdateScope {
-            corpus_version: 1,
-            scope_version: 1,
-            indices: Arc::new(vec![0]),
-        })
-        .expect("send scope");
-        tx.send(SemanticWorkerCommand::Search {
-            generation: 1,
-            query: ParsedQuery::parse("alpha"),
-            corpus_version: 1,
-            scope_version: 1,
-            prewarm: false,
-        })
-        .expect("send semantic request");
-        let message = rx
-            .recv_timeout(Duration::from_secs(2))
-            .expect("empty response");
-
-        match message {
-            SemanticSearchMessage::Complete(response) => {
-                assert!(response.filtered.is_empty());
-                assert!(response.metadata.is_empty());
-                assert_eq!(response.error, None);
-                assert_eq!(response.progress, SemanticProgress::EmptyCorpus);
-            }
-            SemanticSearchMessage::Progress { progress, .. } => {
-                panic!("unexpected progress before empty response: {progress:?}");
-            }
-        }
+        send_worker_setup(&tx, vec![], "alpha", false);
+        let response = recv_empty_complete(&rx);
+        assert_eq!(response.progress, SemanticProgress::EmptyCorpus);
     }
 
     #[test]
     fn empty_quoted_search_returns_idle_without_embedding() {
         let (tx, rx) = spawn_semantic_worker();
-        tx.send(SemanticWorkerCommand::UpdateCorpus {
-            corpus_version: 1,
-            conversations: corpus(vec![conversation(
-                "/projects/project-a/session-a.jsonl",
-                vec!["visible dialogue"],
-            )]),
-        })
-        .expect("send corpus");
-        tx.send(SemanticWorkerCommand::UpdateScope {
-            corpus_version: 1,
-            scope_version: 1,
-            indices: Arc::new(vec![0]),
-        })
-        .expect("send scope");
-        tx.send(SemanticWorkerCommand::Search {
-            generation: 1,
-            query: ParsedQuery::parse("\"\""),
-            corpus_version: 1,
-            scope_version: 1,
-            prewarm: false,
-        })
-        .expect("send semantic request");
-        let message = rx
-            .recv_timeout(Duration::from_secs(2))
-            .expect("empty response");
-
-        match message {
-            SemanticSearchMessage::Complete(response) => {
-                assert!(response.filtered.is_empty());
-                assert!(response.metadata.is_empty());
-                assert_eq!(response.error, None);
-                assert_eq!(response.progress, SemanticProgress::Idle);
-            }
-            SemanticSearchMessage::Progress { progress, .. } => {
-                panic!("unexpected progress before empty response: {progress:?}");
-            }
-        }
+        send_worker_setup(&tx, vec!["visible dialogue"], "\"\"", false);
+        let response = recv_empty_complete(&rx);
+        assert_eq!(response.progress, SemanticProgress::Idle);
     }
 
     #[test]
     fn empty_prewarm_search_builds_cache_without_idle_short_circuit() {
         let (tx, rx) = spawn_semantic_worker();
-        tx.send(SemanticWorkerCommand::UpdateCorpus {
-            corpus_version: 1,
-            conversations: corpus(vec![conversation(
-                "/projects/project-a/session-a.jsonl",
-                vec!["visible dialogue"],
-            )]),
-        })
-        .expect("send corpus");
-        tx.send(SemanticWorkerCommand::UpdateScope {
-            corpus_version: 1,
-            scope_version: 1,
-            indices: Arc::new(vec![0]),
-        })
-        .expect("send scope");
-        tx.send(SemanticWorkerCommand::Search {
-            generation: 1,
-            query: ParsedQuery::parse("\"\""),
-            corpus_version: 1,
-            scope_version: 1,
-            prewarm: true,
-        })
-        .expect("send semantic prewarm request");
+        send_worker_setup(&tx, vec!["visible dialogue"], "\"\"", true);
 
         loop {
             match rx
@@ -721,28 +679,7 @@ mod tests {
     #[test]
     fn quoted_only_search_uses_literal_fallback_without_embedding() {
         let (tx, rx) = spawn_semantic_worker();
-        tx.send(SemanticWorkerCommand::UpdateCorpus {
-            corpus_version: 1,
-            conversations: corpus(vec![conversation(
-                "/projects/project-a/session-a.jsonl",
-                vec![],
-            )]),
-        })
-        .expect("send corpus");
-        tx.send(SemanticWorkerCommand::UpdateScope {
-            corpus_version: 1,
-            scope_version: 1,
-            indices: Arc::new(vec![0]),
-        })
-        .expect("send scope");
-        tx.send(SemanticWorkerCommand::Search {
-            generation: 1,
-            query: ParsedQuery::parse("\"title sentinel\""),
-            corpus_version: 1,
-            scope_version: 1,
-            prewarm: false,
-        })
-        .expect("send semantic request");
+        send_worker_setup(&tx, vec![], "\"title sentinel\"", false);
         let message = rx
             .recv_timeout(Duration::from_secs(2))
             .expect("literal response");
