@@ -426,77 +426,7 @@ impl App {
         viewport_height: usize,
     ) -> Option<Action> {
         if self.is_loading() {
-            return match code {
-                KeyCode::Esc => {
-                    if self.query.is_empty() {
-                        Some(Action::Quit)
-                    } else {
-                        self.query.clear();
-                        self.cursor_pos = 0;
-                        self.dispatch_search();
-                        None
-                    }
-                }
-                KeyCode::Char('c') if modifiers.contains(KeyModifiers::CONTROL) => {
-                    Some(Action::Quit)
-                }
-                KeyCode::Char('t') if modifiers.contains(KeyModifiers::CONTROL) => {
-                    if self.semantic_toggle_available() {
-                        self.toggle_list_search_mode();
-                    }
-                    None
-                }
-                KeyCode::Left if modifiers.contains(KeyModifiers::CONTROL) => {
-                    self.cursor_word_left();
-                    None
-                }
-                KeyCode::Right if modifiers.contains(KeyModifiers::CONTROL) => {
-                    self.cursor_word_right();
-                    None
-                }
-                KeyCode::Left => {
-                    self.cursor_left();
-                    None
-                }
-                KeyCode::Right => {
-                    self.cursor_right();
-                    None
-                }
-                KeyCode::Up => {
-                    self.select_prev();
-                    None
-                }
-                KeyCode::Down => {
-                    self.select_next();
-                    None
-                }
-                KeyCode::Char('n') if modifiers.contains(KeyModifiers::CONTROL) => {
-                    self.select_next();
-                    None
-                }
-                KeyCode::Char('p') if modifiers.contains(KeyModifiers::CONTROL) => {
-                    self.select_prev();
-                    None
-                }
-                KeyCode::PageUp => {
-                    self.select_page_up();
-                    None
-                }
-                KeyCode::PageDown => {
-                    self.select_page_down();
-                    None
-                }
-                KeyCode::Tab => {
-                    self.toggle_workspace_filter();
-                    None
-                }
-                KeyCode::Char('?') => {
-                    self.dialog_mode = DialogMode::Help { scroll: 0 };
-                    None
-                }
-                _ if self.handle_list_query_edit_key(code, modifiers, false) => None,
-                _ => None,
-            };
+            return self.handle_common_list_key(code, modifiers, false);
         }
 
         if self.keys.delete.matches(code, modifiers) {
@@ -519,6 +449,33 @@ impl App {
                 }
                 None
             }
+            KeyCode::Enter => None,
+            KeyCode::Home => {
+                self.select_first();
+                None
+            }
+            KeyCode::End => {
+                self.select_last();
+                None
+            }
+            KeyCode::Char('d') if modifiers.contains(KeyModifiers::CONTROL) => {
+                self.select_half_page_down(viewport_height);
+                None
+            }
+            KeyCode::Char('o') if modifiers.contains(KeyModifiers::CONTROL) => {
+                self.get_selected_path().map(Action::Select)
+            }
+            _ => self.handle_common_list_key(code, modifiers, true),
+        }
+    }
+
+    fn handle_common_list_key(
+        &mut self,
+        code: KeyCode,
+        modifiers: KeyModifiers,
+        dispatch_search: bool,
+    ) -> Option<Action> {
+        match code {
             KeyCode::Esc => {
                 if self.query.is_empty() {
                     Some(Action::Quit)
@@ -529,7 +486,13 @@ impl App {
                     None
                 }
             }
-            KeyCode::Enter => None,
+            KeyCode::Char('c') if modifiers.contains(KeyModifiers::CONTROL) => Some(Action::Quit),
+            KeyCode::Char('t') if modifiers.contains(KeyModifiers::CONTROL) => {
+                if self.semantic_toggle_available() {
+                    self.toggle_list_search_mode();
+                }
+                None
+            }
             KeyCode::Left if modifiers.contains(KeyModifiers::CONTROL) => {
                 self.cursor_word_left();
                 None
@@ -554,12 +517,12 @@ impl App {
                 self.select_next();
                 None
             }
-            KeyCode::Home => {
-                self.select_first();
+            KeyCode::Char('n') if modifiers.contains(KeyModifiers::CONTROL) => {
+                self.select_next();
                 None
             }
-            KeyCode::End => {
-                self.select_last();
+            KeyCode::Char('p') if modifiers.contains(KeyModifiers::CONTROL) => {
+                self.select_prev();
                 None
             }
             KeyCode::PageUp => {
@@ -570,28 +533,6 @@ impl App {
                 self.select_page_down();
                 None
             }
-            KeyCode::Char('c') if modifiers.contains(KeyModifiers::CONTROL) => Some(Action::Quit),
-            KeyCode::Char('t') if modifiers.contains(KeyModifiers::CONTROL) => {
-                if self.semantic_toggle_available() {
-                    self.toggle_list_search_mode();
-                }
-                None
-            }
-            KeyCode::Char('n') if modifiers.contains(KeyModifiers::CONTROL) => {
-                self.select_next();
-                None
-            }
-            KeyCode::Char('p') if modifiers.contains(KeyModifiers::CONTROL) => {
-                self.select_prev();
-                None
-            }
-            KeyCode::Char('d') if modifiers.contains(KeyModifiers::CONTROL) => {
-                self.select_half_page_down(viewport_height);
-                None
-            }
-            KeyCode::Char('o') if modifiers.contains(KeyModifiers::CONTROL) => {
-                self.get_selected_path().map(Action::Select)
-            }
             KeyCode::Tab => {
                 self.toggle_workspace_filter();
                 None
@@ -600,7 +541,7 @@ impl App {
                 self.dialog_mode = DialogMode::Help { scroll: 0 };
                 None
             }
-            _ if self.handle_list_query_edit_key(code, modifiers, true) => None,
+            _ if self.handle_list_query_edit_key(code, modifiers, dispatch_search) => None,
             _ => None,
         }
     }
