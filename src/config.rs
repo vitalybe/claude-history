@@ -169,26 +169,19 @@ impl KeyBinding {
 
     /// Format for status bar display (e.g. "^F", "M-F", "F2")
     pub fn short_label(&self) -> String {
-        let prefix = if self.modifiers.contains(KeyModifiers::CONTROL) {
-            "^"
-        } else if self.modifiers.contains(KeyModifiers::ALT) {
-            "M-"
-        } else {
-            ""
-        };
-        match self.code {
-            KeyCode::Char(c) => format!("{}{}", prefix, c.to_ascii_uppercase()),
-            KeyCode::F(n) if self.modifiers.is_empty() => format!("F{}", n),
-            _ => String::new(),
-        }
+        self.format_label("^", "M-")
     }
 
     /// Format for help overlay (e.g. "Ctrl+F", "Alt+F", "F2")
     pub fn help_label(&self) -> String {
+        self.format_label("Ctrl+", "Alt+")
+    }
+
+    fn format_label(&self, ctrl_prefix: &str, alt_prefix: &str) -> String {
         let prefix = if self.modifiers.contains(KeyModifiers::CONTROL) {
-            "Ctrl+"
+            ctrl_prefix
         } else if self.modifiers.contains(KeyModifiers::ALT) {
-            "Alt+"
+            alt_prefix
         } else {
             ""
         };
