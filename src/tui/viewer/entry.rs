@@ -512,48 +512,25 @@ fn step_user_tool_results(
     blocks: &[ContentBlock],
 ) -> bool {
     let mut printed = false;
-    for (block_idx, block) in blocks.iter().enumerate() {
-        let ContentBlock::ToolResult {
-            content,
-            tool_use_id,
-            ..
-        } = block
-        else {
-            continue;
-        };
-        let output_id = make_tool_output_id(
-            ctx.entry_index,
-            ctx.parent_id,
-            block_idx,
-            ToolOutputKind::ToolResult,
-            Some(tool_use_id),
-        );
-        let expanded = ctx.options.expanded_tool_outputs.contains(&output_id);
+    let tool_results = collect_tool_result_rows(
+        ctx,
+        blocks,
         if ctx.style.is_subagent {
-            let content_str = format_tool_result_content(content.as_ref());
-            let header_timing = timing.pad();
-            render_subagent_tool_result_header(lines, header_timing);
-            render_dimmed_tool_result_body(
-                lines,
-                ctx.options,
-                &output_id,
-                expanded,
-                &content_str,
-                header_timing,
-            );
+            format_tool_result_content
         } else {
-            let content_str = tool_result_display_text(content.as_ref());
-            render_tool_result(
-                lines,
-                &ToolResultRenderSpec {
-                    text: &content_str,
-                    content_width: ctx.options.content_width,
-                    timing: timing.consume(),
-                    tool_display: ctx.options.tool_display,
-                    tool_output_id: &output_id,
-                    expanded,
-                },
-            );
+            tool_result_display_text
+        },
+    );
+    for row in tool_results {
+        let row_timing = if ctx.style.is_subagent {
+            timing.pad()
+        } else {
+            timing.consume()
+        };
+        if ctx.style.is_subagent {
+            render_dimmed_tool_result_row(lines, ctx, &row, row_timing);
+        } else {
+            render_normal_tool_result_row(lines, ctx, &row, row_timing);
         }
         printed = true;
     }
@@ -570,6 +547,27 @@ fn step_agent_tool_results(
     blocks: &[ContentBlock],
 ) -> bool {
     let mut printed = false;
+    let tool_results = collect_tool_result_rows(ctx, blocks, format_tool_result_content);
+    for row in tool_results {
+        let row_timing = TimingSlot::from_show_timing(ctx.options.show_timing);
+        render_dimmed_tool_result_row(lines, ctx, &row, row_timing);
+        printed = true;
+    }
+    printed
+}
+
+struct ToolResultRenderRow {
+    output_id: ToolOutputId,
+    expanded: bool,
+    content: String,
+}
+
+fn collect_tool_result_rows(
+    ctx: &EntryCtx<'_>,
+    blocks: &[ContentBlock],
+    mut content_text: impl FnMut(Option<&serde_json::Value>) -> String,
+) -> Vec<ToolResultRenderRow> {
+    let mut rows = Vec::new();
     for (block_idx, block) in blocks.iter().enumerate() {
         let ContentBlock::ToolResult {
             content,
@@ -586,21 +584,49 @@ fn step_agent_tool_results(
             ToolOutputKind::ToolResult,
             Some(tool_use_id),
         );
-        let expanded = ctx.options.expanded_tool_outputs.contains(&output_id);
-        let header_timing = TimingSlot::from_show_timing(ctx.options.show_timing);
-        render_subagent_tool_result_header(lines, header_timing);
-        let content_str = format_tool_result_content(content.as_ref());
-        render_dimmed_tool_result_body(
-            lines,
-            ctx.options,
-            &output_id,
-            expanded,
-            &content_str,
-            header_timing,
-        );
-        printed = true;
+        rows.push(ToolResultRenderRow {
+            expanded: ctx.options.expanded_tool_outputs.contains(&output_id),
+            output_id,
+            content: content_text(content.as_ref()),
+        });
     }
-    printed
+    rows
+}
+
+fn render_normal_tool_result_row(
+    lines: &mut Vec<RenderedLine>,
+    ctx: &EntryCtx<'_>,
+    row: &ToolResultRenderRow,
+    timing: TimingSlot<'_>,
+) {
+    render_tool_result(
+        lines,
+        &ToolResultRenderSpec {
+            text: &row.content,
+            content_width: ctx.options.content_width,
+            timing,
+            tool_display: ctx.options.tool_display,
+            tool_output_id: &row.output_id,
+            expanded: row.expanded,
+        },
+    );
+}
+
+fn render_dimmed_tool_result_row(
+    lines: &mut Vec<RenderedLine>,
+    ctx: &EntryCtx<'_>,
+    row: &ToolResultRenderRow,
+    timing: TimingSlot<'_>,
+) {
+    render_subagent_tool_result_header(lines, timing);
+    render_dimmed_tool_result_body(
+        lines,
+        ctx.options,
+        &row.output_id,
+        row.expanded,
+        &row.content,
+        timing,
+    );
 }
 
 /// Get a truncated agent ID for display (max 7 characters)
