@@ -30,6 +30,24 @@ pub fn text_message(ordinal: usize, role: AgentMessageRole, text: &str) -> Agent
     }
 }
 
+pub fn user_jsonl_line(text: &str) -> String {
+    serde_json::json!({
+        "type": "user",
+        "timestamp": "2024-01-01T00:00:00Z",
+        "message": {"role": "user", "content": text}
+    })
+    .to_string()
+}
+
+pub fn assistant_jsonl_line(text: &str) -> String {
+    serde_json::json!({
+        "type": "assistant",
+        "timestamp": "2024-01-01T00:00:01Z",
+        "message": {"role": "assistant", "content": [{"type": "text", "text": text}]}
+    })
+    .to_string()
+}
+
 pub fn transcript(messages: Vec<AgentMessage>, path: &str) -> AgentTranscript {
     AgentTranscript {
         path: PathBuf::from(path),

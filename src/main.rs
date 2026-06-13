@@ -919,6 +919,7 @@ fn resolve_agent_conversation_arg(
 mod agent_command_tests {
     use super::*;
     use crate::agent::refs::AgentConversationKey;
+    use crate::agent::test_support::{assistant_jsonl_line as assistant, user_jsonl_line as user};
 
     fn key(project: &str, filename: &str) -> AgentConversationKey {
         AgentConversationKey::new(
@@ -950,24 +951,6 @@ mod agent_command_tests {
         let path = dir.path().join(filename);
         std::fs::write(&path, lines.join("\n")).unwrap();
         path
-    }
-
-    fn user(text: &str) -> String {
-        serde_json::json!({
-            "type": "user",
-            "timestamp": "2024-01-01T00:00:00Z",
-            "message": {"role": "user", "content": text}
-        })
-        .to_string()
-    }
-
-    fn assistant(text: &str) -> String {
-        serde_json::json!({
-            "type": "assistant",
-            "timestamp": "2024-01-01T00:00:01Z",
-            "message": {"role": "assistant", "content": [{"type": "text", "text": text}]}
-        })
-        .to_string()
     }
 
     #[test]

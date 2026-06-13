@@ -645,29 +645,12 @@ fn first_user_text(message: &AgentMessage) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::agent::test_support::{assistant_jsonl_line as assistant, user_jsonl_line as user};
     use std::io::Cursor;
 
     fn parse(content: &str) -> AgentTranscript {
         AgentTranscript::from_reader(PathBuf::from("test.jsonl"), Cursor::new(content))
             .expect("transcript should parse")
-    }
-
-    fn user(text: &str) -> String {
-        serde_json::json!({
-            "type": "user",
-            "timestamp": "2024-01-01T00:00:00Z",
-            "message": {"role": "user", "content": text}
-        })
-        .to_string()
-    }
-
-    fn assistant(text: &str) -> String {
-        serde_json::json!({
-            "type": "assistant",
-            "timestamp": "2024-01-01T00:00:01Z",
-            "message": {"role": "assistant", "content": [{"type": "text", "text": text}]}
-        })
-        .to_string()
     }
 
     #[test]
