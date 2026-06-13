@@ -193,13 +193,6 @@ pub fn run_with_loader(
     exclude_projects: Vec<String>,
     search_options: TuiSearchOptions,
 ) -> Result<(Action, Vec<Conversation>)> {
-    let original_hook = std::panic::take_hook();
-    std::panic::set_hook(Box::new(move |panic_info| {
-        let _ = terminal::disable_raw_mode();
-        let _ = crossterm::execute!(io::stdout(), DisableMouseCapture, LeaveAlternateScreen);
-        original_hook(panic_info);
-    }));
-
     let mut guard = TerminalGuard::new()?;
     let mut app = App::new_loading_with_options(
         tool_display,
@@ -299,13 +292,6 @@ pub fn run_single_file(
     show_thinking: bool,
     keys: KeyBindings,
 ) -> Result<()> {
-    let original_hook = std::panic::take_hook();
-    std::panic::set_hook(Box::new(move |panic_info| {
-        let _ = terminal::disable_raw_mode();
-        let _ = crossterm::execute!(io::stdout(), DisableMouseCapture, LeaveAlternateScreen);
-        original_hook(panic_info);
-    }));
-
     let mut guard = TerminalGuard::new()?;
     let mut app = App::new_single_file(path, tool_display, show_thinking, keys);
 
