@@ -112,14 +112,14 @@ impl<'a, W: Write + ?Sized> LedgerFormatter<'a, W> {
         }
     }
 
-    /// Print lines in ledger format with a name on the first line
-    fn print_lines<F>(&mut self, name: &str, style: F, text: &str)
-    where
-        F: Fn(&str) -> ColoredString,
-    {
-        let wrapped_lines = wrap_text(text, self.content_width);
-
-        for (i, line) in wrapped_lines.iter().enumerate() {
+    /// Write lines in ledger format with a name on the first line
+    fn write_labeled_lines<'b>(
+        &mut self,
+        name: &str,
+        style: impl Fn(&str) -> ColoredString,
+        lines: impl IntoIterator<Item = &'b str>,
+    ) {
+        for (i, line) in lines.into_iter().enumerate() {
             if i == 0 {
                 let padded = format!("{:>width$}", name, width = NAME_WIDTH);
                 let _ = write!(self.writer, "{}", style(&padded));
@@ -129,6 +129,12 @@ impl<'a, W: Write + ?Sized> LedgerFormatter<'a, W> {
             let _ = write!(self.writer, "{}", SEPARATOR.custom_color(separator_color()));
             let _ = writeln!(self.writer, "{}", line);
         }
+    }
+
+    /// Print lines in ledger format with a name on the first line
+    fn print_lines(&mut self, name: &str, style: impl Fn(&str) -> ColoredString, text: &str) {
+        let wrapped_lines = wrap_text(text, self.content_width);
+        self.write_labeled_lines(name, style, wrapped_lines.iter().map(|s| s.as_str()));
     }
 
     /// Print continuation lines with dimmed content
@@ -156,10 +162,7 @@ impl<'a, W: Write + ?Sized> LedgerFormatter<'a, W> {
     }
 
     /// Print pre-formatted markdown text with ledger layout
-    fn print_markdown<F>(&mut self, name: &str, style: F, text: &str)
-    where
-        F: Fn(&str) -> ColoredString,
-    {
+    fn print_markdown(&mut self, name: &str, style: impl Fn(&str) -> ColoredString, text: &str) {
         let lines: Vec<&str> = text.lines().collect();
 
         if lines.is_empty() {
@@ -170,16 +173,7 @@ impl<'a, W: Write + ?Sized> LedgerFormatter<'a, W> {
             return;
         }
 
-        for (i, line) in lines.iter().enumerate() {
-            if i == 0 {
-                let padded = format!("{:>width$}", name, width = NAME_WIDTH);
-                let _ = write!(self.writer, "{}", style(&padded));
-            } else {
-                let _ = write!(self.writer, "{:>width$}", "", width = NAME_WIDTH);
-            }
-            let _ = write!(self.writer, "{}", SEPARATOR.custom_color(separator_color()));
-            let _ = writeln!(self.writer, "{}", line);
-        }
+        self.write_labeled_lines(name, style, lines.iter().copied());
     }
 }
 
