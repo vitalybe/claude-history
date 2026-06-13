@@ -520,8 +520,11 @@ fn last_semantic_scope(commands: &[SemanticWorkerCommand]) -> Option<(u64, u64, 
     })
 }
 
-#[test]
-fn semantic_nonempty_query_dispatches_worker_request() {
+fn app_with_single_visible_conversation_and_semantic_worker() -> (
+    App,
+    mpsc::Receiver<SemanticWorkerCommand>,
+    mpsc::Sender<crate::tui::semantic_worker::SemanticSearchMessage>,
+) {
     let mut app = app_with_options(
         vec![conversation(
             Some("Visible"),
@@ -534,10 +537,15 @@ fn semantic_nonempty_query_dispatches_worker_request() {
             default_mode: ListSearchMode::Semantic,
         },
     );
-    let (request_tx, request_rx) = mpsc::channel();
-    let (_response_tx, response_rx) = mpsc::channel();
-    app.semantic_search.worker_tx = Some(request_tx);
-    app.semantic_search.worker_rx = Some(response_rx);
+    let (request_tx, request_rx, response_tx) = connect_semantic_search_channels(&mut app);
+    drop(request_tx);
+    (app, request_rx, response_tx)
+}
+
+#[test]
+fn semantic_nonempty_query_dispatches_worker_request() {
+    let (mut app, request_rx, _response_tx) =
+        app_with_single_visible_conversation_and_semantic_worker();
 
     app.query = "needle".to_string();
     app.dispatch_search();
@@ -667,22 +675,8 @@ fn semantic_dispatch_after_loading_keeps_snapshot_aligned() {
 
 #[test]
 fn semantic_keypress_preserves_browse_rows_while_pending() {
-    let mut app = app_with_options(
-        vec![conversation(
-            Some("Visible"),
-            "-tmp-visible",
-            "22222222-2222-4222-8222-222222222222",
-            "needle",
-        )],
-        vec![],
-        TuiSearchOptions {
-            default_mode: ListSearchMode::Semantic,
-        },
-    );
-    let (request_tx, request_rx) = mpsc::channel();
-    let (_response_tx, response_rx) = mpsc::channel();
-    app.semantic_search.worker_tx = Some(request_tx);
-    app.semantic_search.worker_rx = Some(response_rx);
+    let (mut app, request_rx, _response_tx) =
+        app_with_single_visible_conversation_and_semantic_worker();
 
     app.handle_key(KeyCode::Char('n'), KeyModifiers::NONE, 10);
 
@@ -736,22 +730,8 @@ fn semantic_keypress_does_not_clone_full_corpus_on_ui_thread() {
 
 #[test]
 fn semantic_mode_prewarms_cache_without_query() {
-    let mut app = app_with_options(
-        vec![conversation(
-            Some("Visible"),
-            "-tmp-visible",
-            "22222222-2222-4222-8222-222222222222",
-            "needle",
-        )],
-        vec![],
-        TuiSearchOptions {
-            default_mode: ListSearchMode::Semantic,
-        },
-    );
-    let (request_tx, request_rx) = mpsc::channel();
-    let (_response_tx, response_rx) = mpsc::channel();
-    app.semantic_search.worker_tx = Some(request_tx);
-    app.semantic_search.worker_rx = Some(response_rx);
+    let (mut app, request_rx, _response_tx) =
+        app_with_single_visible_conversation_and_semantic_worker();
     app.invalidate_search_generation();
 
     app.prewarm_semantic_cache();
@@ -1257,22 +1237,8 @@ fn configured_ctrl_t_binding_takes_precedence_over_semantic_toggle() {
 
 #[test]
 fn workspace_toggle_dispatches_new_semantic_request() {
-    let mut app = app_with_options(
-        vec![conversation(
-            Some("Visible"),
-            "-tmp-visible",
-            "22222222-2222-4222-8222-222222222222",
-            "needle",
-        )],
-        vec![],
-        TuiSearchOptions {
-            default_mode: ListSearchMode::Semantic,
-        },
-    );
-    let (request_tx, request_rx) = mpsc::channel();
-    let (_response_tx, response_rx) = mpsc::channel();
-    app.semantic_search.worker_tx = Some(request_tx);
-    app.semantic_search.worker_rx = Some(response_rx);
+    let (mut app, request_rx, _response_tx) =
+        app_with_single_visible_conversation_and_semantic_worker();
     app.current_project_dir_name = Some("-tmp-visible".to_string());
     app.query = "needle".to_string();
 
