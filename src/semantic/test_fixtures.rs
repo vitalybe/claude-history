@@ -6,6 +6,12 @@ use crate::history::Conversation;
 use crate::search::normalize_for_search;
 use chrono::Local;
 
+#[cfg(test)]
+use crate::semantic::types::{
+    SemanticChunkIdentity, SemanticChunkSource, SemanticExplanation, SemanticQuality,
+    SemanticRationaleKind, SemanticScoreBreakdown,
+};
+
 pub struct SemanticConversationFixture {
     path: PathBuf,
     semantic_turns: Vec<String>,
@@ -111,4 +117,32 @@ impl SemanticConversationFixture {
             duration_minutes: None,
         }
     }
+}
+
+#[cfg(test)]
+pub fn beta_hit_metadata(
+    chunk_conversation_index: usize,
+    session: &str,
+) -> (SemanticScoreBreakdown, SemanticExplanation) {
+    (
+        SemanticScoreBreakdown {
+            hybrid: 1.2,
+            semantic: 1.0,
+            lexical: 0.2,
+        },
+        SemanticExplanation {
+            quality: SemanticQuality::Strong,
+            quality_label: "strong",
+            matched_terms: vec!["beta".to_string()],
+            evidence_preview: "visible beta".to_string(),
+            rationale_kind: SemanticRationaleKind::LexicalBoosted,
+            chunk: SemanticChunkIdentity {
+                conversation_index: chunk_conversation_index,
+                source: SemanticChunkSource::VisibleDialogue,
+                session: session.to_string(),
+                chunk_index: 0,
+                message_range: MessageRange::single(1),
+            },
+        },
+    )
 }

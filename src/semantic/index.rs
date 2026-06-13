@@ -404,8 +404,8 @@ fn semantic_index_signature(
 mod tests {
     use super::*;
     use crate::semantic::cache::{cache_miss_count, empty_embedding_cache};
-    use crate::semantic::test_fixtures::SemanticConversationFixture;
-    use crate::semantic::types::{CachedChunk, SemanticQuality, SemanticRationaleKind};
+    use crate::semantic::test_fixtures::{SemanticConversationFixture, beta_hit_metadata};
+    use crate::semantic::types::CachedChunk;
 
     struct FakeEmbedder {
         passage_calls: usize,
@@ -612,20 +612,9 @@ mod tests {
             .iter()
             .find(|hit| hit.conversation_index == 1)
             .expect("beta hit");
-        assert_eq!(metadata.score_breakdown.hybrid, 1.2);
-        assert_eq!(metadata.score_breakdown.semantic, 1.0);
-        assert_eq!(metadata.score_breakdown.lexical, 0.2);
-        assert_eq!(metadata.explanation.quality, SemanticQuality::Strong);
-        assert_eq!(metadata.explanation.quality_label, "strong");
-        assert_eq!(
-            metadata.explanation.rationale_kind,
-            SemanticRationaleKind::LexicalBoosted
-        );
-        assert_eq!(metadata.explanation.evidence_preview, "visible beta");
-        assert_eq!(metadata.explanation.matched_terms, vec!["beta"]);
-        assert_eq!(metadata.explanation.chunk.conversation_index, 1);
-        assert_eq!(metadata.explanation.chunk.session, "session-b");
-        assert_eq!(metadata.explanation.chunk.chunk_index, 0);
+        let (expected_score_breakdown, expected_explanation) = beta_hit_metadata(1, "session-b");
+        assert_eq!(metadata.score_breakdown, expected_score_breakdown);
+        assert_eq!(metadata.explanation, expected_explanation);
     }
 
     #[test]

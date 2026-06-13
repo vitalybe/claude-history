@@ -548,11 +548,7 @@ fn semantic_progress(progress: SemanticIndexProgress) -> SemanticProgress {
 mod tests {
     use super::*;
     use crate::history::Conversation;
-    use crate::semantic::test_fixtures::SemanticConversationFixture;
-    use crate::semantic::types::{
-        SemanticChunkIdentity, SemanticExplanation, SemanticQuality, SemanticRationaleKind,
-        SemanticScoreBreakdown,
-    };
+    use crate::semantic::test_fixtures::{SemanticConversationFixture, beta_hit_metadata};
     use chrono::{Duration as ChronoDuration, Local};
     use std::time::Duration;
 
@@ -568,29 +564,13 @@ mod tests {
 
     #[test]
     fn maps_domain_hits_to_original_indices_and_metadata() {
+        let (expected_score_breakdown, expected_explanation) = beta_hit_metadata(42, "session-b");
         let response = semantic_search_response(
             7,
             SemanticIndexResponse {
                 hits: vec![crate::semantic::types::SemanticHit::new(
-                    SemanticScoreBreakdown {
-                        hybrid: 1.2,
-                        semantic: 1.0,
-                        lexical: 0.2,
-                    },
-                    SemanticExplanation {
-                        quality: SemanticQuality::Strong,
-                        quality_label: "strong",
-                        matched_terms: vec!["beta".to_string()],
-                        evidence_preview: "visible beta".to_string(),
-                        rationale_kind: SemanticRationaleKind::LexicalBoosted,
-                        chunk: SemanticChunkIdentity {
-                            conversation_index: 42,
-                            source: crate::semantic::types::SemanticChunkSource::VisibleDialogue,
-                            session: "session-b".to_string(),
-                            chunk_index: 0,
-                            message_range: crate::agent::refs::MessageRange::single(1),
-                        },
-                    },
+                    expected_score_breakdown.clone(),
+                    expected_explanation.clone(),
                 )],
                 chunk_hits: Vec::new(),
                 indexed_chunk_count: 1,
@@ -606,9 +586,8 @@ mod tests {
         assert_eq!(response.filtered, vec![42]);
         assert_eq!(response.progress, SemanticProgress::Complete);
         let metadata = &response.metadata[&42];
-        assert_eq!(metadata.score_breakdown.hybrid, 1.2);
-        assert_eq!(metadata.explanation.evidence_preview, "visible beta");
-        assert_eq!(metadata.explanation.chunk.conversation_index, 42);
+        assert_eq!(metadata.score_breakdown, expected_score_breakdown);
+        assert_eq!(metadata.explanation, expected_explanation);
     }
 
     #[test]
