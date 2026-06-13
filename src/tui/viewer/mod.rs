@@ -14,6 +14,8 @@ use crate::tui::theme::{self, Theme};
 
 mod commands;
 mod entry;
+
+pub(crate) use commands::process_command_message;
 mod ledger;
 mod markdown;
 mod output;

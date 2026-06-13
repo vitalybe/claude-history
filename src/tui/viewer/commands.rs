@@ -1,6 +1,6 @@
 /// Process user message text to handle command-related XML tags.
 /// Returns None if the message should be skipped entirely (e.g., empty local-command-stdout).
-pub(super) fn process_command_message(text: &str) -> Option<String> {
+pub(crate) fn process_command_message(text: &str) -> Option<String> {
     let trimmed = text.trim();
 
     // Check for local-command-caveat - skip these system messages entirely
