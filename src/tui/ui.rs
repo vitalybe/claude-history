@@ -2895,6 +2895,17 @@ mod tests {
         app.receive_search_results();
     }
 
+    fn render_semantic_list_contents(app: &mut App, width: u16, height: u16) -> String {
+        let backend = TestBackend::new(width, height);
+        let mut terminal = Terminal::new(backend).unwrap();
+
+        terminal
+            .draw(|frame| render_list(frame, &app, frame.area()))
+            .unwrap();
+
+        terminal_contents(&terminal)
+    }
+
     #[test]
     fn list_truncates_long_project_names_on_narrow_rows() {
         let app = app_with_project_name("claude-history/drop-semantic-feature-gate");
@@ -3334,28 +3345,9 @@ mod tests {
     #[test]
     fn semantic_list_uses_semantic_evidence_preview_without_full_text_context() {
         let mut app = semantic_app();
-        let (response_tx, response_rx) = mpsc::channel();
         app.set_query_for_test("sentinel");
-        app.set_semantic_receiver_for_test(7, response_rx);
-        response_tx
-            .send(SemanticSearchMessage::Complete(SemanticSearchResponse {
-                generation: 7,
-                filtered: vec![0],
-                metadata: HashMap::from([(0, test_semantic_metadata("semantic evidence only"))]),
-                error: None,
-                progress: SemanticProgress::Complete,
-                prewarm: false,
-            }))
-            .unwrap();
-        app.receive_search_results();
-        let backend = TestBackend::new(80, 8);
-        let mut terminal = Terminal::new(backend).unwrap();
-
-        terminal
-            .draw(|frame| render_list(frame, &app, frame.area()))
-            .unwrap();
-
-        let contents = terminal_contents(&terminal);
+        complete_semantic_search(&mut app, test_semantic_metadata("semantic evidence only"));
+        let contents = render_semantic_list_contents(&mut app, 80, 8);
         assert!(contents.contains("semantic evidence only"), "{contents:?}");
         assert!(
             !contents.contains("lexical preview sentinel"),
@@ -3393,14 +3385,7 @@ mod tests {
             }))
             .unwrap();
         app.receive_search_results();
-        let backend = TestBackend::new(80, 8);
-        let mut terminal = Terminal::new(backend).unwrap();
-
-        terminal
-            .draw(|frame| render_list(frame, &app, frame.area()))
-            .unwrap();
-
-        let contents = terminal_contents(&terminal);
+        let contents = render_semantic_list_contents(&mut app, 80, 8);
         assert!(
             contents.contains("lexical preview sentinel"),
             "{contents:?}"
