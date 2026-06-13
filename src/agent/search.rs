@@ -962,6 +962,69 @@ mod tests {
         )
     }
 
+    fn lexical_dialogue_hit(
+        conv: &str,
+        title: &str,
+        score: f64,
+        preview: &str,
+        focus_range: MessageRange,
+        read_range: MessageRange,
+    ) -> AgentOutputHit {
+        AgentOutputHit {
+            conversation_ref: conv.to_string(),
+            title: title.to_string(),
+            score,
+            source: AgentHitKind::Lexical,
+            evidence_source: AgentHitSource::Dialogue,
+            render_options: AgentHitRenderOptions::default(),
+            preview: preview.to_string(),
+            focus_range,
+            read_range,
+        }
+    }
+
+    fn lexical_tool_hit(
+        conv: &str,
+        title: &str,
+        score: f64,
+        preview: &str,
+        focus_range: MessageRange,
+        read_range: MessageRange,
+    ) -> AgentOutputHit {
+        AgentOutputHit {
+            conversation_ref: conv.to_string(),
+            title: title.to_string(),
+            score,
+            source: AgentHitKind::Lexical,
+            evidence_source: AgentHitSource::Tool,
+            render_options: AgentHitRenderOptions::default(),
+            preview: preview.to_string(),
+            focus_range,
+            read_range,
+        }
+    }
+
+    fn semantic_dialogue_hit(
+        conv: &str,
+        title: &str,
+        score: f64,
+        preview: &str,
+        focus_range: MessageRange,
+        read_range: MessageRange,
+    ) -> AgentOutputHit {
+        AgentOutputHit {
+            conversation_ref: conv.to_string(),
+            title: title.to_string(),
+            score,
+            source: AgentHitKind::Semantic,
+            evidence_source: AgentHitSource::Dialogue,
+            render_options: AgentHitRenderOptions::default(),
+            preview: preview.to_string(),
+            focus_range,
+            read_range,
+        }
+    }
+
     #[test]
     fn quoted_query_forces_exact_mode() {
         assert_eq!(
@@ -1088,28 +1151,22 @@ mod tests {
 
     #[test]
     fn hybrid_dedupes_same_focus_and_prefers_lexical_preview() {
-        let lexical = vec![AgentOutputHit {
-            conversation_ref: "ch_123456789abc".to_string(),
-            title: "title".to_string(),
-            score: 10.0,
-            source: AgentHitKind::Lexical,
-            evidence_source: AgentHitSource::Dialogue,
-            render_options: AgentHitRenderOptions::default(),
-            preview: "lexical preview".to_string(),
-            focus_range: MessageRange::single(2),
-            read_range: MessageRange { start: 1, end: 3 },
-        }];
-        let semantic = vec![AgentOutputHit {
-            conversation_ref: "ch_123456789abc".to_string(),
-            title: "title".to_string(),
-            score: 0.9,
-            source: AgentHitKind::Semantic,
-            evidence_source: AgentHitSource::Dialogue,
-            render_options: AgentHitRenderOptions::default(),
-            preview: "semantic preview".to_string(),
-            focus_range: MessageRange::single(2),
-            read_range: MessageRange::single(2),
-        }];
+        let lexical = vec![lexical_dialogue_hit(
+            "ch_123456789abc",
+            "title",
+            10.0,
+            "lexical preview",
+            MessageRange::single(2),
+            MessageRange { start: 1, end: 3 },
+        )];
+        let semantic = vec![semantic_dialogue_hit(
+            "ch_123456789abc",
+            "title",
+            0.9,
+            "semantic preview",
+            MessageRange::single(2),
+            MessageRange::single(2),
+        )];
 
         let hits = hybrid_hits(lexical, semantic, 10);
 
@@ -1122,30 +1179,27 @@ mod tests {
     #[test]
     fn hybrid_preserves_tool_render_options() {
         let lexical = vec![AgentOutputHit {
-            conversation_ref: "ch_123456789abc".to_string(),
-            title: "title".to_string(),
-            score: 10.0,
-            source: AgentHitKind::Lexical,
-            evidence_source: AgentHitSource::Tool,
             render_options: AgentHitRenderOptions {
                 tool_results: true,
                 ..AgentHitRenderOptions::default()
             },
-            preview: "tool preview".to_string(),
-            focus_range: MessageRange::single(2),
-            read_range: MessageRange { start: 1, end: 3 },
+            ..lexical_tool_hit(
+                "ch_123456789abc",
+                "title",
+                10.0,
+                "tool preview",
+                MessageRange::single(2),
+                MessageRange { start: 1, end: 3 },
+            )
         }];
-        let semantic = vec![AgentOutputHit {
-            conversation_ref: "ch_123456789abc".to_string(),
-            title: "title".to_string(),
-            score: 0.9,
-            source: AgentHitKind::Semantic,
-            evidence_source: AgentHitSource::Dialogue,
-            render_options: AgentHitRenderOptions::default(),
-            preview: "semantic preview".to_string(),
-            focus_range: MessageRange::single(2),
-            read_range: MessageRange::single(2),
-        }];
+        let semantic = vec![semantic_dialogue_hit(
+            "ch_123456789abc",
+            "title",
+            0.9,
+            "semantic preview",
+            MessageRange::single(2),
+            MessageRange::single(2),
+        )];
 
         let rendered = format_agent_output(&AgentSearchOutput {
             protocol: AgentProtocolKind::Within,
@@ -1167,39 +1221,30 @@ mod tests {
     fn grouped_search_caps_hits_per_conversation_and_prefers_dialogue_bucket() {
         let group = build_conversation_groups(
             vec![
-                AgentOutputHit {
-                    conversation_ref: "ch_a".to_string(),
-                    title: "title a".to_string(),
-                    score: 10.02,
-                    source: AgentHitKind::Lexical,
-                    evidence_source: AgentHitSource::Tool,
-                    render_options: AgentHitRenderOptions::default(),
-                    preview: "tool evidence".to_string(),
-                    focus_range: MessageRange::single(2),
-                    read_range: MessageRange::single(2),
-                },
-                AgentOutputHit {
-                    conversation_ref: "ch_a".to_string(),
-                    title: "title a".to_string(),
-                    score: 10.01,
-                    source: AgentHitKind::Lexical,
-                    evidence_source: AgentHitSource::Dialogue,
-                    render_options: AgentHitRenderOptions::default(),
-                    preview: "dialogue evidence".to_string(),
-                    focus_range: MessageRange::single(1),
-                    read_range: MessageRange::single(1),
-                },
-                AgentOutputHit {
-                    conversation_ref: "ch_a".to_string(),
-                    title: "title a".to_string(),
-                    score: 9.0,
-                    source: AgentHitKind::Lexical,
-                    evidence_source: AgentHitSource::Dialogue,
-                    render_options: AgentHitRenderOptions::default(),
-                    preview: "lower evidence".to_string(),
-                    focus_range: MessageRange::single(3),
-                    read_range: MessageRange::single(3),
-                },
+                lexical_tool_hit(
+                    "ch_a",
+                    "title a",
+                    10.02,
+                    "tool evidence",
+                    MessageRange::single(2),
+                    MessageRange::single(2),
+                ),
+                lexical_dialogue_hit(
+                    "ch_a",
+                    "title a",
+                    10.01,
+                    "dialogue evidence",
+                    MessageRange::single(1),
+                    MessageRange::single(1),
+                ),
+                lexical_dialogue_hit(
+                    "ch_a",
+                    "title a",
+                    9.0,
+                    "lower evidence",
+                    MessageRange::single(3),
+                    MessageRange::single(3),
+                ),
             ],
             10,
             2,
@@ -1218,28 +1263,22 @@ mod tests {
     fn grouped_search_keeps_higher_bucket_tool_before_dialogue() {
         let group = build_conversation_groups(
             vec![
-                AgentOutputHit {
-                    conversation_ref: "ch_a".to_string(),
-                    title: "title a".to_string(),
-                    score: 10.9,
-                    source: AgentHitKind::Lexical,
-                    evidence_source: AgentHitSource::Tool,
-                    render_options: AgentHitRenderOptions::default(),
-                    preview: "tool evidence".to_string(),
-                    focus_range: MessageRange::single(2),
-                    read_range: MessageRange::single(2),
-                },
-                AgentOutputHit {
-                    conversation_ref: "ch_a".to_string(),
-                    title: "title a".to_string(),
-                    score: 10.1,
-                    source: AgentHitKind::Lexical,
-                    evidence_source: AgentHitSource::Dialogue,
-                    render_options: AgentHitRenderOptions::default(),
-                    preview: "dialogue evidence".to_string(),
-                    focus_range: MessageRange::single(1),
-                    read_range: MessageRange::single(1),
-                },
+                lexical_tool_hit(
+                    "ch_a",
+                    "title a",
+                    10.9,
+                    "tool evidence",
+                    MessageRange::single(2),
+                    MessageRange::single(2),
+                ),
+                lexical_dialogue_hit(
+                    "ch_a",
+                    "title a",
+                    10.1,
+                    "dialogue evidence",
+                    MessageRange::single(1),
+                    MessageRange::single(1),
+                ),
             ],
             10,
             2,
@@ -1292,17 +1331,14 @@ mod tests {
                 title: "cache session".to_string(),
                 score: 12.5,
                 total_hits: 3,
-                hits: vec![AgentOutputHit {
-                    conversation_ref: "ch_123456789abc".to_string(),
-                    title: "cache session".to_string(),
-                    score: 12.5,
-                    source: AgentHitKind::Lexical,
-                    evidence_source: AgentHitSource::Dialogue,
-                    render_options: AgentHitRenderOptions::default(),
-                    preview: "cache warming answer".to_string(),
-                    focus_range: MessageRange::single(2),
-                    read_range: MessageRange { start: 1, end: 3 },
-                }],
+                hits: vec![lexical_dialogue_hit(
+                    "ch_123456789abc",
+                    "cache session",
+                    12.5,
+                    "cache warming answer",
+                    MessageRange::single(2),
+                    MessageRange { start: 1, end: 3 },
+                )],
             }],
             flat: false,
             stats: AgentSearchStats::default(),
@@ -1322,39 +1358,30 @@ mod tests {
     fn grouped_search_ranks_groups_by_best_retained_score() {
         let groups = build_conversation_groups(
             vec![
-                AgentOutputHit {
-                    conversation_ref: "ch_a".to_string(),
-                    title: "title a".to_string(),
-                    score: 10.09,
-                    source: AgentHitKind::Lexical,
-                    evidence_source: AgentHitSource::Tool,
-                    render_options: AgentHitRenderOptions::default(),
-                    preview: "best tool evidence".to_string(),
-                    focus_range: MessageRange::single(2),
-                    read_range: MessageRange::single(2),
-                },
-                AgentOutputHit {
-                    conversation_ref: "ch_a".to_string(),
-                    title: "title a".to_string(),
-                    score: 10.01,
-                    source: AgentHitKind::Lexical,
-                    evidence_source: AgentHitSource::Dialogue,
-                    render_options: AgentHitRenderOptions::default(),
-                    preview: "display dialogue evidence".to_string(),
-                    focus_range: MessageRange::single(1),
-                    read_range: MessageRange::single(1),
-                },
-                AgentOutputHit {
-                    conversation_ref: "ch_b".to_string(),
-                    title: "title b".to_string(),
-                    score: 10.05,
-                    source: AgentHitKind::Lexical,
-                    evidence_source: AgentHitSource::Dialogue,
-                    render_options: AgentHitRenderOptions::default(),
-                    preview: "other dialogue evidence".to_string(),
-                    focus_range: MessageRange::single(1),
-                    read_range: MessageRange::single(1),
-                },
+                lexical_tool_hit(
+                    "ch_a",
+                    "title a",
+                    10.09,
+                    "best tool evidence",
+                    MessageRange::single(2),
+                    MessageRange::single(2),
+                ),
+                lexical_dialogue_hit(
+                    "ch_a",
+                    "title a",
+                    10.01,
+                    "display dialogue evidence",
+                    MessageRange::single(1),
+                    MessageRange::single(1),
+                ),
+                lexical_dialogue_hit(
+                    "ch_b",
+                    "title b",
+                    10.05,
+                    "other dialogue evidence",
+                    MessageRange::single(1),
+                    MessageRange::single(1),
+                ),
             ],
             2,
             2,
@@ -1368,28 +1395,22 @@ mod tests {
 
     #[test]
     fn global_flat_output_uses_output_hits_not_group_order() {
-        let first = AgentOutputHit {
-            conversation_ref: "ch_a".to_string(),
-            title: "title a".to_string(),
-            score: 12.0,
-            source: AgentHitKind::Lexical,
-            evidence_source: AgentHitSource::Dialogue,
-            render_options: AgentHitRenderOptions::default(),
-            preview: "first flat hit".to_string(),
-            focus_range: MessageRange::single(1),
-            read_range: MessageRange::single(1),
-        };
-        let second = AgentOutputHit {
-            conversation_ref: "ch_b".to_string(),
-            title: "title b".to_string(),
-            score: 11.0,
-            source: AgentHitKind::Lexical,
-            evidence_source: AgentHitSource::Dialogue,
-            render_options: AgentHitRenderOptions::default(),
-            preview: "second flat hit".to_string(),
-            focus_range: MessageRange::single(1),
-            read_range: MessageRange::single(1),
-        };
+        let first = lexical_dialogue_hit(
+            "ch_a",
+            "title a",
+            12.0,
+            "first flat hit",
+            MessageRange::single(1),
+            MessageRange::single(1),
+        );
+        let second = lexical_dialogue_hit(
+            "ch_b",
+            "title b",
+            11.0,
+            "second flat hit",
+            MessageRange::single(1),
+            MessageRange::single(1),
+        );
         let output = AgentSearchOutput {
             protocol: AgentProtocolKind::Search,
             query: "cache warming".to_string(),
