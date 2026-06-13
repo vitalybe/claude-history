@@ -588,37 +588,10 @@ fn source_rank(source: AgentHitSource) -> u8 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::agent::transcript::{AgentMessageRole, AgentPartSource, AgentTranscript};
+    use crate::agent::test_support::{source, text_message};
+    use crate::agent::transcript::{AgentMessageRole, AgentTranscript};
     use chrono::{Duration, TimeZone};
     use serde_json::{Value, json};
-    use std::path::PathBuf;
-
-    fn source(role: AgentMessageRole) -> AgentPartSource {
-        AgentPartSource {
-            role,
-            timestamp: None,
-            jsonl_line: 1,
-            part_index: 0,
-            assistant_message_id: None,
-            parent_tool_use_id: None,
-            tool_name: None,
-        }
-    }
-
-    fn text_message(ordinal: usize, role: AgentMessageRole, text: &str) -> AgentMessage {
-        AgentMessage {
-            ordinal,
-            role,
-            timestamp: None,
-            jsonl_line: ordinal,
-            assistant_message_id: None,
-            parent_tool_use_id: None,
-            parts: vec![AgentMessagePart::Text {
-                text: text.to_string(),
-                source: source(role),
-            }],
-        }
-    }
 
     fn tool_result_message(ordinal: usize, content: Value) -> AgentMessage {
         AgentMessage {
@@ -637,10 +610,7 @@ mod tests {
     }
 
     fn transcript(messages: Vec<AgentMessage>) -> AgentTranscript {
-        AgentTranscript {
-            path: PathBuf::from("session.jsonl"),
-            messages,
-        }
+        crate::agent::test_support::transcript(messages, "session.jsonl")
     }
 
     fn options() -> AgentRetrievalOptions {

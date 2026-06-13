@@ -862,47 +862,20 @@ fn _keep_timestamp_type(_: Option<DateTime<Local>>) {}
 mod tests {
     use super::*;
     use crate::agent::refs::AgentConversationKey;
-    use crate::agent::transcript::{
-        AgentMessage, AgentMessagePart, AgentMessageRole, AgentPartSource,
-    };
+    use crate::agent::test_support::text_message;
+    use crate::agent::transcript::{AgentMessage, AgentMessageRole, AgentTranscript};
     use crate::semantic::types::{
         SemanticChunkIdentity, SemanticExplanation, SemanticQuality, SemanticRationaleKind,
     };
     use chrono::Local;
     use std::path::PathBuf;
 
-    fn source(role: AgentMessageRole) -> AgentPartSource {
-        AgentPartSource {
-            role,
-            timestamp: None,
-            jsonl_line: 1,
-            part_index: 0,
-            assistant_message_id: None,
-            parent_tool_use_id: None,
-            tool_name: None,
-        }
-    }
-
     fn message(ordinal: usize, role: AgentMessageRole, text: &str) -> AgentMessage {
-        AgentMessage {
-            ordinal,
-            role,
-            timestamp: None,
-            jsonl_line: ordinal,
-            assistant_message_id: None,
-            parent_tool_use_id: None,
-            parts: vec![AgentMessagePart::Text {
-                text: text.to_string(),
-                source: source(role),
-            }],
-        }
+        text_message(ordinal, role, text)
     }
 
     fn transcript(messages: Vec<AgentMessage>) -> AgentTranscript {
-        AgentTranscript {
-            path: PathBuf::from("session.jsonl"),
-            messages,
-        }
+        crate::agent::test_support::transcript(messages, "session.jsonl")
     }
 
     fn conversation(path: &str, title: &str) -> Conversation {

@@ -437,7 +437,7 @@ fn snippet(body: &str) -> String {
 mod tests {
     use super::*;
     use crate::agent::refs::{AgentConversationKey, AgentConversationRef};
-    use crate::agent::transcript::{AgentPartSource, AgentTranscript};
+    use crate::agent::test_support::{source, text_message};
     use serde_json::json;
     use std::path::PathBuf;
 
@@ -450,38 +450,8 @@ mod tests {
         }
     }
 
-    fn source(role: AgentMessageRole) -> AgentPartSource {
-        AgentPartSource {
-            role,
-            timestamp: None,
-            jsonl_line: 1,
-            part_index: 0,
-            assistant_message_id: None,
-            parent_tool_use_id: None,
-            tool_name: None,
-        }
-    }
-
-    fn text_message(ordinal: usize, role: AgentMessageRole, text: &str) -> AgentMessage {
-        AgentMessage {
-            ordinal,
-            role,
-            timestamp: None,
-            jsonl_line: ordinal,
-            assistant_message_id: None,
-            parent_tool_use_id: None,
-            parts: vec![AgentMessagePart::Text {
-                text: text.to_string(),
-                source: source(role),
-            }],
-        }
-    }
-
     fn transcript(messages: Vec<AgentMessage>) -> AgentTranscript {
-        AgentTranscript {
-            path: PathBuf::from("test.jsonl"),
-            messages,
-        }
+        crate::agent::test_support::transcript(messages, "test.jsonl")
     }
 
     fn options() -> ProtocolOptions {
