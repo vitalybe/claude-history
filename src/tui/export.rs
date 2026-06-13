@@ -11,6 +11,7 @@
 
 use crate::claude::{self, AgentContent, ContentBlock, LogEntry, UserContent, UserMessage};
 use crate::tool_format;
+use crate::tui::parse_command_name_and_args;
 use chrono::Local;
 use std::fs::{self, File};
 #[cfg(target_os = "linux")]
@@ -615,29 +616,8 @@ fn process_command_text(text: &str) -> Option<String> {
         return Some(inner.trim().to_string());
     }
 
-    // Handle <command-name> tags
-    if let Some(start) = trimmed.find("<command-name>")
-        && let Some(end) = trimmed.find("</command-name>")
-    {
-        let content_start = start + "<command-name>".len();
-        if content_start < end {
-            let command_name = &trimmed[content_start..end];
-
-            // Also extract command args if present
-            if let Some(args_start) = trimmed.find("<command-args>")
-                && let Some(args_end) = trimmed.find("</command-args>")
-            {
-                let args_content_start = args_start + "<command-args>".len();
-                if args_content_start < args_end {
-                    let args = trimmed[args_content_start..args_end].trim();
-                    if !args.is_empty() {
-                        return Some(format!("{} {}", command_name, args));
-                    }
-                }
-            }
-
-            return Some(command_name.to_string());
-        }
+    if let Some(processed) = parse_command_name_and_args(trimmed) {
+        return Some(processed);
     }
 
     Some(text.to_string())
