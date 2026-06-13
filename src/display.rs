@@ -402,12 +402,31 @@ fn wrap_text(text: &str, max_width: usize) -> Vec<String> {
         .collect()
 }
 
+enum DisplayFormat {
+    Ledger { content_width: usize },
+    Plain,
+}
+
 /// Display a conversation from a file
 pub fn display_conversation(file_path: &Path, options: &DisplayOptions) -> Result<()> {
-    let file = File::open(file_path)?;
-    let reader = BufReader::new(file);
     let terminal_width = get_terminal_width();
     let content_width = terminal_width.saturating_sub(NAME_WIDTH + SEPARATOR_WIDTH);
+
+    stream_log_entries(file_path, options, DisplayFormat::Ledger { content_width })
+}
+
+/// Display a conversation in plain text format (no ledger formatting)
+pub fn display_conversation_plain(file_path: &Path, options: &DisplayOptions) -> Result<()> {
+    stream_log_entries(file_path, options, DisplayFormat::Plain)
+}
+
+fn stream_log_entries(
+    file_path: &Path,
+    options: &DisplayOptions,
+    format: DisplayFormat,
+) -> Result<()> {
+    let file = File::open(file_path)?;
+    let reader = BufReader::new(file);
 
     // Spawn pager if requested
     let mut pager_child = if options.use_pager {
@@ -416,7 +435,6 @@ pub fn display_conversation(file_path: &Path, options: &DisplayOptions) -> Resul
         None
     };
 
-    // Get writer - either pager stdin or stdout
     let mut stdout_handle = io::stdout().lock();
     let writer: &mut dyn Write = if let Some(ref mut child) = pager_child {
         child.stdin.as_mut().unwrap()
@@ -424,37 +442,14 @@ pub fn display_conversation(file_path: &Path, options: &DisplayOptions) -> Resul
         &mut stdout_handle
     };
 
-    let mut formatter = LedgerFormatter::new(writer, content_width);
-
-    for (line_number, line_result) in reader.lines().enumerate() {
-        let line = line_result?;
-        if line.trim().is_empty() {
-            continue;
+    match format {
+        DisplayFormat::Ledger { content_width } => {
+            let mut formatter = LedgerFormatter::new(writer, content_width);
+            process_log_entries(reader, file_path, options, &mut formatter)?;
         }
-
-        match serde_json::from_str::<LogEntry>(&line) {
-            Ok(entry) => {
-                process_entry(
-                    &mut formatter,
-                    &entry,
-                    options.no_tools,
-                    options.show_thinking,
-                );
-            }
-            Err(e) => {
-                debug::error(
-                    options.debug_level,
-                    &format!("Failed to parse line {}: {}", line_number + 1, e),
-                );
-                if options.debug_level.is_some() {
-                    let _ = debug_log::log_display_error(
-                        file_path,
-                        line_number + 1,
-                        &e.to_string(),
-                        &line,
-                    );
-                }
-            }
+        DisplayFormat::Plain => {
+            let mut formatter = PlainFormatter { writer };
+            process_log_entries(reader, file_path, options, &mut formatter)?;
         }
     }
 
@@ -467,27 +462,12 @@ pub fn display_conversation(file_path: &Path, options: &DisplayOptions) -> Resul
     Ok(())
 }
 
-/// Display a conversation in plain text format (no ledger formatting)
-pub fn display_conversation_plain(file_path: &Path, options: &DisplayOptions) -> Result<()> {
-    let file = File::open(file_path)?;
-    let reader = BufReader::new(file);
-
-    // Spawn pager if requested
-    let mut pager_child = if options.use_pager {
-        pager::spawn_pager().ok()
-    } else {
-        None
-    };
-
-    let mut stdout_handle = io::stdout().lock();
-    let writer: &mut dyn Write = if let Some(ref mut child) = pager_child {
-        child.stdin.as_mut().unwrap()
-    } else {
-        &mut stdout_handle
-    };
-
-    let mut formatter = PlainFormatter { writer };
-
+fn process_log_entries<F: OutputFormatter>(
+    reader: BufReader<File>,
+    file_path: &Path,
+    options: &DisplayOptions,
+    formatter: &mut F,
+) -> Result<()> {
     for (line_number, line_result) in reader.lines().enumerate() {
         let line = line_result?;
         if line.trim().is_empty() {
@@ -496,12 +476,7 @@ pub fn display_conversation_plain(file_path: &Path, options: &DisplayOptions) ->
 
         match serde_json::from_str::<LogEntry>(&line) {
             Ok(entry) => {
-                process_entry(
-                    &mut formatter,
-                    &entry,
-                    options.no_tools,
-                    options.show_thinking,
-                );
+                process_entry(formatter, &entry, options.no_tools, options.show_thinking);
             }
             Err(e) => {
                 debug::error(
@@ -518,12 +493,6 @@ pub fn display_conversation_plain(file_path: &Path, options: &DisplayOptions) ->
                 }
             }
         }
-    }
-
-    // Close stdin and wait for pager to finish
-    drop(stdout_handle);
-    if let Some(mut child) = pager_child {
-        let _ = child.wait();
     }
 
     Ok(())
