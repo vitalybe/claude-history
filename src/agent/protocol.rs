@@ -220,6 +220,32 @@ fn render_message<'a>(
     })
 }
 
+/// Try to add `candidate` to `selected`. If the rendered output would exceed
+/// the budget, revert the insertion and return `false`. Otherwise return `true`.
+fn try_expand(
+    selected: &mut BTreeSet<usize>,
+    candidate: usize,
+    messages: &[RenderedMessage<'_>],
+    budget: usize,
+) -> bool {
+    selected.insert(candidate);
+    if rendered_len(
+        messages,
+        &selected.iter().copied().collect::<Vec<_>>(),
+        "head+focus+tail",
+        budget,
+    )
+    .chars()
+    .count()
+        > budget
+    {
+        selected.remove(&candidate);
+        false
+    } else {
+        true
+    }
+}
+
 fn select_for_budget(
     messages: &[RenderedMessage<'_>],
     focus: Option<ProtocolFocus>,
@@ -271,19 +297,7 @@ fn select_for_budget(
             && first > 0
         {
             let candidate = first - 1;
-            selected.insert(candidate);
-            if rendered_len(
-                messages,
-                &selected.iter().copied().collect::<Vec<_>>(),
-                "head+focus+tail",
-                budget,
-            )
-            .chars()
-            .count()
-                > budget
-            {
-                selected.remove(&candidate);
-            } else {
+            if try_expand(&mut selected, candidate, messages, budget) {
                 changed = true;
             }
         }
@@ -292,19 +306,7 @@ fn select_for_budget(
             && last + 1 < messages.len()
         {
             let candidate = last + 1;
-            selected.insert(candidate);
-            if rendered_len(
-                messages,
-                &selected.iter().copied().collect::<Vec<_>>(),
-                "head+focus+tail",
-                budget,
-            )
-            .chars()
-            .count()
-                > budget
-            {
-                selected.remove(&candidate);
-            } else {
+            if try_expand(&mut selected, candidate, messages, budget) {
                 changed = true;
             }
         }
