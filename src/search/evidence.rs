@@ -155,22 +155,40 @@ fn select_context_ranges(
         }
     }
 
+    let hit_spans: Vec<(usize, usize, usize)> = all_hits
+        .iter()
+        .map(|hit| (hit.start, hit.end, hit.term_idx))
+        .collect();
+    select_hidden_context_ranges(full_text, &hit_spans, missing_mask, missing_count)
+}
+
+pub(crate) fn select_hidden_context_ranges(
+    full_text: &str,
+    hits: &[(usize, usize, usize)],
+    missing_mask: u64,
+    missing_count: u32,
+) -> Option<Vec<(usize, usize)>> {
     let merge_gap_bytes: usize = 50;
     let max_cluster_span_bytes: usize = 200;
-    let mut clusters: Vec<HitCluster> = Vec::new();
+    let max_clusters: usize = 3;
 
-    for hit in &all_hits {
-        let term_bit: u64 = 1u64 << hit.term_idx;
+    if hits.is_empty() {
+        return None;
+    }
+
+    let mut clusters: Vec<HitCluster> = Vec::new();
+    for &(start, end, term_idx) in hits {
+        let term_bit: u64 = 1u64 << term_idx;
         let is_missing = (missing_mask & term_bit) != 0;
         let mut extended = false;
 
         if let Some(last) = clusters.last_mut() {
-            let close_enough = hit.start <= last.end.saturating_add(merge_gap_bytes);
-            let new_end = last.end.max(hit.end);
+            let close_enough = start <= last.end.saturating_add(merge_gap_bytes);
+            let new_end = last.end.max(end);
             let new_span = new_end.saturating_sub(last.start);
             if close_enough && new_span <= max_cluster_span_bytes {
-                if hit.term_idx != last.last_term_idx && hit.start >= last.last_hit_end {
-                    let gap = &full_text[last.last_hit_end..hit.start];
+                if term_idx != last.last_term_idx && start >= last.last_hit_end {
+                    let gap = &full_text[last.last_hit_end..start];
                     if !gap.is_empty() && gap.chars().all(|c| !c.is_alphanumeric()) {
                         last.adjacent_pairs += 1;
                     }
@@ -181,21 +199,21 @@ fn select_context_ranges(
                 if is_missing {
                     last.missing_terms |= term_bit;
                 }
-                last.last_hit_end = hit.end;
-                last.last_term_idx = hit.term_idx;
+                last.last_hit_end = end;
+                last.last_term_idx = term_idx;
                 extended = true;
             }
         }
 
         if !extended {
             clusters.push(HitCluster {
-                start: hit.start,
-                end: hit.end,
+                start,
+                end,
                 unique_terms: term_bit,
                 missing_terms: if is_missing { term_bit } else { 0 },
                 adjacent_pairs: 0,
-                last_hit_end: hit.end,
-                last_term_idx: hit.term_idx,
+                last_hit_end: end,
+                last_term_idx: term_idx,
             });
         }
     }
@@ -216,7 +234,6 @@ fn select_context_ranges(
             .then_with(|| a.start.cmp(&b.start))
     });
 
-    let max_clusters = 3usize;
     let mut selected: Vec<HitCluster> = Vec::new();
     let mut covered_missing: u64 = 0;
 

@@ -1,4 +1,5 @@
 use crate::config::KeyBindings;
+use crate::search::evidence::select_hidden_context_ranges;
 use crate::search::literal::{Literal, match_literal_ranges};
 use crate::search::normalize_for_search;
 use crate::search::query::ParsedQuery;
@@ -2013,39 +2014,6 @@ fn truncate_around_match(text: &str, query: &str, max_width: usize) -> String {
     )
 }
 
-/// One cluster of nearby term hits in `full_text`.
-#[derive(Clone, Debug)]
-struct HitCluster {
-    start: usize,
-    end: usize,
-    /// Bitmask of term indices appearing in this cluster.
-    unique_terms: u64,
-    /// Bitmask of *missing* term indices (terms not in preview) in this cluster.
-    missing_terms: u64,
-    /// Number of *real* adjacent pairs of distinct query terms — incremented
-    /// only when two distinct terms are separated by nothing but
-    /// non-alphanumeric characters (whitespace/punctuation). A literal phrase
-    /// like `audio generation` produces 1; `audio ... 40 chars ... generation`
-    /// produces 0.
-    adjacent_pairs: u32,
-    /// End byte of the most recently merged hit (for adjacency-gap checks).
-    last_hit_end: usize,
-    /// Term index of the most recently merged hit.
-    last_term_idx: usize,
-}
-
-impl HitCluster {
-    fn span(&self) -> usize {
-        self.end.saturating_sub(self.start)
-    }
-    fn unique_count(&self) -> u32 {
-        self.unique_terms.count_ones()
-    }
-    fn missing_count(&self) -> u32 {
-        self.missing_terms.count_ones()
-    }
-}
-
 /// Build a context string showing snippets around hidden matches in full_text.
 ///
 /// Selection is cluster-based: collect every term hit in `full_text`, group
@@ -2164,114 +2132,12 @@ fn build_context_segments_with_specs(
         }
     }
 
-    // Group nearby hits into clusters. Run the adjacency scan on the *full*
-    // hit set so phrases like `audio generation` are detected even when one
-    // of the words is already in the preview.
-    let merge_gap_bytes: usize = 50;
-    let max_cluster_span_bytes: usize = 200;
-
-    let mut clusters: Vec<HitCluster> = Vec::new();
-    for hit in &all_hits {
-        let term_bit: u64 = 1u64 << hit.term_idx;
-        let is_missing = (missing_mask & term_bit) != 0;
-
-        // Try to extend the previous cluster if we're close enough AND the
-        // resulting span stays within the max-cluster limit.
-        let mut extended = false;
-        if let Some(last) = clusters.last_mut() {
-            let close_enough = hit.start <= last.end.saturating_add(merge_gap_bytes);
-            let new_end = last.end.max(hit.end);
-            let new_span = new_end.saturating_sub(last.start);
-            if close_enough && new_span <= max_cluster_span_bytes {
-                // Real adjacency check: this hit counts as a phrase pair only
-                // if it's a *different* term than the previous hit and the
-                // gap text between them is purely non-alphanumeric (so
-                // `audio generation` and `**audio** generation` count, but
-                // `audio … 40 chars … generation` does not).
-                if hit.term_idx != last.last_term_idx && hit.start >= last.last_hit_end {
-                    let gap = &full_text[last.last_hit_end..hit.start];
-                    if !gap.is_empty() && gap.chars().all(|c| !c.is_alphanumeric()) {
-                        last.adjacent_pairs += 1;
-                    }
-                }
-
-                last.end = new_end;
-                last.unique_terms |= term_bit;
-                if is_missing {
-                    last.missing_terms |= term_bit;
-                }
-                last.last_hit_end = hit.end;
-                last.last_term_idx = hit.term_idx;
-                extended = true;
-            }
-        }
-
-        if !extended {
-            clusters.push(HitCluster {
-                start: hit.start,
-                end: hit.end,
-                unique_terms: term_bit,
-                missing_terms: if is_missing { term_bit } else { 0 },
-                adjacent_pairs: 0,
-                last_hit_end: hit.end,
-                last_term_idx: hit.term_idx,
-            });
-        }
-    }
-
-    // If any term was missing from the preview, drop clusters that contain
-    // only already-visible terms — they'd just duplicate the preview.
-    if missing_count > 0 {
-        clusters.retain(|c| c.missing_count() > 0);
-    }
-    if clusters.is_empty() {
-        return None;
-    }
-
-    // Score clusters: missing coverage > adjacency density > total coverage
-    // > tighter span > earlier position.
-    clusters.sort_unstable_by(|a, b| {
-        b.missing_count()
-            .cmp(&a.missing_count())
-            .then_with(|| b.adjacent_pairs.cmp(&a.adjacent_pairs))
-            .then_with(|| b.unique_count().cmp(&a.unique_count()))
-            .then_with(|| a.span().cmp(&b.span()))
-            .then_with(|| a.start.cmp(&b.start))
-    });
-
-    // Greedy selection: pass 1 picks clusters that cover *new* missing terms;
-    // pass 2 fills any remaining budget with the next-highest-quality clusters.
-    let max_clusters = 3usize;
-    let mut selected: Vec<HitCluster> = Vec::new();
-    let mut covered_missing: u64 = 0;
-
-    for c in &clusters {
-        if selected.len() >= max_clusters {
-            break;
-        }
-        let new_missing = c.missing_terms & !covered_missing;
-        if new_missing != 0 {
-            covered_missing |= c.missing_terms;
-            selected.push(c.clone());
-        }
-    }
-
-    for c in &clusters {
-        if selected.len() >= max_clusters {
-            break;
-        }
-        if !selected
-            .iter()
-            .any(|s| s.start == c.start && s.end == c.end)
-        {
-            selected.push(c.clone());
-        }
-    }
-
-    // Render in document order.
-    selected.sort_unstable_by_key(|c| c.start);
-    let hidden_matches: Vec<(usize, usize)> =
-        selected.into_iter().map(|c| (c.start, c.end)).collect();
+    let hit_spans: Vec<(usize, usize, usize)> = all_hits
+        .iter()
+        .map(|hit| (hit.start, hit.end, hit.term_idx))
+        .collect();
+    let hidden_matches =
+        select_hidden_context_ranges(full_text, &hit_spans, missing_mask, missing_count)?;
 
     build_context_segments_from_ranges_unchecked(full_text, &hidden_matches, max_width)
 }
