@@ -117,6 +117,31 @@ fn view_expanded_tool_id(app: &App) -> ToolOutputId {
     }
 }
 
+fn assert_cached_tool_output_survives_file_removal(
+    app: &mut App,
+    expect_hovered_tool_output_retained: bool,
+) {
+    let frame = Rect::new(0, 0, 120, 20);
+    let row = tool_click_row(app, frame);
+
+    assert!(app.handle_view_click(row, frame, 17));
+    let expanded_id = if expect_hovered_tool_output_retained {
+        Some(view_expanded_tool_id(app))
+    } else {
+        None
+    };
+    assert!(view_text(app).contains("five"));
+
+    assert!(app.handle_view_click(row, frame, 17));
+    if let AppMode::View(state) = app.app_mode() {
+        assert!(state.expanded_tool_outputs.is_empty());
+        if expect_hovered_tool_output_retained {
+            assert_eq!(state.hovered_tool_output, expanded_id);
+        }
+    }
+    assert!(!view_text(app).contains("five"));
+}
+
 #[test]
 fn semantic_ranked_selection_opens_selected_conversation_and_returns() {
     let dir = tempfile::tempdir().unwrap();
@@ -242,19 +267,7 @@ fn view_click_uses_cached_entries_after_file_removed() {
     write_tool_conversation(&path);
     let mut app = app_with_tool_conversation(path.clone());
     std::fs::remove_file(&path).unwrap();
-    let frame = Rect::new(0, 0, 120, 20);
-    let row = tool_click_row(&app, frame);
-
-    assert!(app.handle_view_click(row, frame, 17));
-    let expanded_id = view_expanded_tool_id(&app);
-    assert!(view_text(&app).contains("five"));
-
-    assert!(app.handle_view_click(row, frame, 17));
-    if let AppMode::View(state) = app.app_mode() {
-        assert!(state.expanded_tool_outputs.is_empty());
-        assert_eq!(state.hovered_tool_output, Some(expanded_id));
-    }
-    assert!(!view_text(&app).contains("five"));
+    assert_cached_tool_output_survives_file_removal(&mut app, true);
 }
 
 #[test]
@@ -270,17 +283,7 @@ fn single_file_view_click_uses_cached_entries_after_file_removed() {
     );
     app.check_view_resize(80, 17);
     std::fs::remove_file(&path).unwrap();
-    let frame = Rect::new(0, 0, 120, 20);
-    let row = tool_click_row(&app, frame);
-
-    assert!(app.handle_view_click(row, frame, 17));
-    assert!(view_text(&app).contains("five"));
-
-    assert!(app.handle_view_click(row, frame, 17));
-    if let AppMode::View(state) = app.app_mode() {
-        assert!(state.expanded_tool_outputs.is_empty());
-    }
-    assert!(!view_text(&app).contains("five"));
+    assert_cached_tool_output_survives_file_removal(&mut app, false);
 }
 
 #[test]
