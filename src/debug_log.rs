@@ -15,6 +15,23 @@ fn get_debug_log_path() -> Option<PathBuf> {
     )
 }
 
+fn open_debug_log_file() -> std::io::Result<Option<fs::File>> {
+    let log_path = match get_debug_log_path() {
+        Some(p) => p,
+        None => return Ok(None),
+    };
+
+    if let Some(parent) = log_path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+
+    OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&log_path)
+        .map(Some)
+}
+
 /// Log parse errors for a conversation to the debug log file.
 ///
 /// Only writes to the log if there are parse errors. The log is appended to,
@@ -24,20 +41,10 @@ pub fn log_parse_errors(conversation: &Conversation) -> std::io::Result<()> {
         return Ok(());
     }
 
-    let log_path = match get_debug_log_path() {
-        Some(p) => p,
+    let mut file = match open_debug_log_file()? {
+        Some(file) => file,
         None => return Ok(()),
     };
-
-    // Create directory if needed
-    if let Some(parent) = log_path.parent() {
-        fs::create_dir_all(parent)?;
-    }
-
-    let mut file = OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&log_path)?;
 
     let timestamp = Local::now().format("%Y-%m-%d %H:%M:%S");
 
@@ -101,20 +108,10 @@ fn truncate_line(s: &str, max_chars: usize) -> String {
 
 /// Log a debug message to the debug log file.
 pub fn log_debug(message: &str) -> std::io::Result<()> {
-    let log_path = match get_debug_log_path() {
-        Some(p) => p,
+    let mut file = match open_debug_log_file()? {
+        Some(file) => file,
         None => return Ok(()),
     };
-
-    // Create directory if needed
-    if let Some(parent) = log_path.parent() {
-        fs::create_dir_all(parent)?;
-    }
-
-    let mut file = OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&log_path)?;
 
     let timestamp = Local::now().format("%Y-%m-%d %H:%M:%S");
     writeln!(file, "[{}] {}", timestamp, message)?;
@@ -125,20 +122,10 @@ pub fn log_debug(message: &str) -> std::io::Result<()> {
 /// Log the selected conversation path to the debug log file.
 #[allow(dead_code)]
 pub fn log_selected_path(path: &std::path::Path) -> std::io::Result<()> {
-    let log_path = match get_debug_log_path() {
-        Some(p) => p,
+    let mut file = match open_debug_log_file()? {
+        Some(file) => file,
         None => return Ok(()),
     };
-
-    // Create directory if needed
-    if let Some(parent) = log_path.parent() {
-        fs::create_dir_all(parent)?;
-    }
-
-    let mut file = OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&log_path)?;
 
     let timestamp = Local::now().format("%Y-%m-%d %H:%M:%S");
 
@@ -154,20 +141,10 @@ pub fn log_display_error(
     error: &str,
     line_content: &str,
 ) -> std::io::Result<()> {
-    let log_path = match get_debug_log_path() {
-        Some(p) => p,
+    let mut file = match open_debug_log_file()? {
+        Some(file) => file,
         None => return Ok(()),
     };
-
-    // Create directory if needed
-    if let Some(parent) = log_path.parent() {
-        fs::create_dir_all(parent)?;
-    }
-
-    let mut file = OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&log_path)?;
 
     let timestamp = Local::now().format("%Y-%m-%d %H:%M:%S");
 
