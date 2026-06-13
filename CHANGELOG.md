@@ -1,3 +1,9 @@
+## v0.1.66 (2026-06-13)
+
+- Linux prebuilt binaries now run on more older Linux distributions instead of
+  requiring GLIBC 2.38 or newer
+  ([#57](https://github.com/raine/claude-history/issues/57)
+
 ## v0.1.65 (2026-06-03)
 
 - Fixed a crash in agent search and outline commands when a conversation
