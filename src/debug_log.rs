@@ -106,32 +106,34 @@ fn truncate_line(s: &str, max_chars: usize) -> String {
     }
 }
 
-/// Log a debug message to the debug log file.
-pub fn log_debug(message: &str) -> std::io::Result<()> {
+/// Open the debug log file and call `f` with the opened file.
+/// Returns `Ok(())` if no home directory is configured (silent no-op).
+fn with_debug_log(f: impl FnOnce(&mut fs::File) -> std::io::Result<()>) -> std::io::Result<()> {
     let mut file = match open_debug_log_file()? {
         Some(file) => file,
         None => return Ok(()),
     };
+    f(&mut file)
+}
 
+/// Write a timestamped message `[timestamp] message` to the debug log file.
+fn write_timestamped(file: &mut fs::File, message: &str) -> std::io::Result<()> {
     let timestamp = Local::now().format("%Y-%m-%d %H:%M:%S");
-    writeln!(file, "[{}] {}", timestamp, message)?;
+    writeln!(file, "[{}] {}", timestamp, message)
+}
 
-    Ok(())
+/// Log a debug message to the debug log file.
+pub fn log_debug(message: &str) -> std::io::Result<()> {
+    with_debug_log(|file| write_timestamped(file, message))
 }
 
 /// Log the selected conversation path to the debug log file.
 #[allow(dead_code)]
 pub fn log_selected_path(path: &std::path::Path) -> std::io::Result<()> {
-    let mut file = match open_debug_log_file()? {
-        Some(file) => file,
-        None => return Ok(()),
-    };
-
-    let timestamp = Local::now().format("%Y-%m-%d %H:%M:%S");
-
-    writeln!(file, "[{}] Selected: {}", timestamp, path.display())?;
-
-    Ok(())
+    with_debug_log(|file| {
+        let timestamp = Local::now().format("%Y-%m-%d %H:%M:%S");
+        writeln!(file, "[{}] Selected: {}", timestamp, path.display())
+    })
 }
 
 /// Log a display-time parse error to the debug log file.
@@ -141,19 +143,13 @@ pub fn log_display_error(
     error: &str,
     line_content: &str,
 ) -> std::io::Result<()> {
-    let mut file = match open_debug_log_file()? {
-        Some(file) => file,
-        None => return Ok(()),
-    };
-
-    let timestamp = Local::now().format("%Y-%m-%d %H:%M:%S");
-
-    writeln!(file, "=== Display Parse Error: {} ===", timestamp)?;
-    writeln!(file, "File: {}", file_path.display())?;
-    writeln!(file, "Line {}: {}", line_number, error)?;
-    writeln!(file, "Content: {}", truncate_line(line_content, 200))?;
-    writeln!(file, "---")?;
-    writeln!(file)?;
-
-    Ok(())
+    with_debug_log(|file| {
+        let timestamp = Local::now().format("%Y-%m-%d %H:%M:%S");
+        writeln!(file, "=== Display Parse Error: {} ===", timestamp)?;
+        writeln!(file, "File: {}", file_path.display())?;
+        writeln!(file, "Line {}: {}", line_number, error)?;
+        writeln!(file, "Content: {}", truncate_line(line_content, 200))?;
+        writeln!(file, "---")?;
+        writeln!(file)
+    })
 }
