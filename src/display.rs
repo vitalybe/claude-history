@@ -697,6 +697,28 @@ fn short_agent_id(agent_id: &str) -> &str {
     &agent_id[..agent_id.len().min(7)]
 }
 
+/// Aggregate text content blocks and render them with the caller-specific formatter.
+fn render_agent_text_blocks(
+    blocks: &[crate::claude::ContentBlock],
+    mut format_text: impl FnMut(&str),
+) -> bool {
+    let texts: Vec<&str> = blocks
+        .iter()
+        .filter_map(|block| match block {
+            crate::claude::ContentBlock::Text { text } => Some(text.as_str()),
+            _ => None,
+        })
+        .collect();
+
+    if texts.is_empty() {
+        return false;
+    }
+
+    let combined = texts.join("\n\n");
+    format_text(&combined);
+    true
+}
+
 /// Process an agent progress message using the provided formatter
 fn process_agent_message<F: OutputFormatter>(
     formatter: &mut F,
@@ -714,23 +736,9 @@ fn process_agent_message<F: OutputFormatter>(
             let AgentContent::Blocks(blocks) = &msg.message.content;
             let mut printed = false;
 
-            // Aggregate text blocks and render together
-            let texts: Vec<&str> = blocks
-                .iter()
-                .filter_map(|b| {
-                    if let ContentBlock::Text { text } = b {
-                        Some(text.as_str())
-                    } else {
-                        None
-                    }
-                })
-                .collect();
-
-            if !texts.is_empty() {
-                let combined = texts.join("\n\n");
-                formatter.format_agent_user_text(agent_id, &combined);
-                printed = true;
-            }
+            printed |= render_agent_text_blocks(blocks, |text| {
+                formatter.format_agent_user_text(agent_id, text);
+            });
 
             // Tool results
             for block in blocks {
@@ -750,23 +758,9 @@ fn process_agent_message<F: OutputFormatter>(
             let AgentContent::Blocks(blocks) = &msg.message.content;
             let mut printed = false;
 
-            // Aggregate text blocks and render together
-            let texts: Vec<&str> = blocks
-                .iter()
-                .filter_map(|b| {
-                    if let ContentBlock::Text { text } = b {
-                        Some(text.as_str())
-                    } else {
-                        None
-                    }
-                })
-                .collect();
-
-            if !texts.is_empty() {
-                let combined = texts.join("\n\n");
-                formatter.format_agent_assistant_text(agent_id, &combined);
-                printed = true;
-            }
+            printed |= render_agent_text_blocks(blocks, |text| {
+                formatter.format_agent_assistant_text(agent_id, text);
+            });
 
             // Tool calls
             for block in blocks {
