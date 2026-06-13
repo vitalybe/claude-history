@@ -65,25 +65,7 @@ pub fn format_read(
     ));
 
     let mut last_ref: Option<String> = None;
-    for index in selected {
-        let rendered = &messages[index];
-        let canonical = rendered.conversation.reference.canonical();
-        if last_ref.as_deref() != Some(canonical.as_str()) {
-            output.push_str(&format!(
-                "conversation ref={} path={}\n",
-                escape_atom(&canonical),
-                escape_atom(&rendered.conversation.key.session_filename)
-            ));
-            last_ref = Some(canonical);
-        }
-        output.push_str(&format!(
-            "message m{} role={} line={}\n",
-            rendered.message.ordinal,
-            role_atom(rendered.message.role),
-            rendered.message.jsonl_line
-        ));
-        push_body(&mut output, &rendered.body);
-    }
+    render_selected_messages(&mut output, &messages, &selected, &mut last_ref);
     Ok(output)
 }
 
@@ -342,6 +324,16 @@ fn rendered_len(
 ) -> String {
     let mut output = format!("protocol agent-read v=1 cut={cut} budget={budget}\n");
     let mut last_ref: Option<String> = None;
+    render_selected_messages(&mut output, messages, selected, &mut last_ref);
+    output
+}
+
+fn render_selected_messages(
+    output: &mut String,
+    messages: &[RenderedMessage<'_>],
+    selected: &[usize],
+    last_ref: &mut Option<String>,
+) {
     for index in selected {
         let rendered = &messages[*index];
         let canonical = rendered.conversation.reference.canonical();
@@ -351,7 +343,7 @@ fn rendered_len(
                 escape_atom(&canonical),
                 escape_atom(&rendered.conversation.key.session_filename)
             ));
-            last_ref = Some(canonical);
+            *last_ref = Some(canonical);
         }
         output.push_str(&format!(
             "message m{} role={} line={}\n",
@@ -359,9 +351,8 @@ fn rendered_len(
             role_atom(rendered.message.role),
             rendered.message.jsonl_line
         ));
-        push_body(&mut output, &rendered.body);
+        push_body(output, &rendered.body);
     }
-    output
 }
 
 fn cut_marker(total: usize, selected: &[usize]) -> String {
