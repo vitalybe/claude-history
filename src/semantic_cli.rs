@@ -505,8 +505,17 @@ mod tests {
             .build()
     }
 
-    #[test]
-    fn interactive_refresh_writes_cache_once_before_query_ranking() {
+    fn interactive_refresh_context(
+        query: &str,
+        query_embedding: Option<Vec<f32>>,
+        query_error: bool,
+    ) -> (
+        String,
+        Vec<crate::semantic::index::SemanticIndexCandidate>,
+        crate::semantic::index::SemanticIndexState,
+        FakeEmbedder,
+        Vec<usize>,
+    ) {
         let conversations = vec![test_conversation(
             "/projects/project-a/session-1.jsonl",
             "one",
@@ -514,20 +523,34 @@ mod tests {
         )];
         let selected = vec![&conversations[0]];
         let candidates = semantic_index_candidates(&selected);
-        let query = "alpha".to_string();
-        let request = crate::semantic::index::SemanticIndexRequest {
-            query: &query,
+        let cache = crate::semantic::cache::empty_embedding_cache(ChunkConfig::default());
+        let state =
+            crate::semantic::index::SemanticIndexState::with_cache(ChunkConfig::default(), cache);
+        let mut embedder = FakeEmbedder::new(query_embedding);
+        embedder.query_error = query_error;
+
+        (query.to_string(), candidates, state, embedder, Vec::new())
+    }
+
+    fn interactive_refresh_request<'a>(
+        query: &'a String,
+        candidates: &'a [crate::semantic::index::SemanticIndexCandidate],
+    ) -> crate::semantic::index::SemanticIndexRequest<'a> {
+        crate::semantic::index::SemanticIndexRequest {
+            query,
             literal_filters: &[],
-            full_corpus: &candidates,
-            scope: &candidates,
+            full_corpus: candidates,
+            scope: candidates,
             corpus_version: 1,
             prewarm: false,
-        };
-        let cache = crate::semantic::cache::empty_embedding_cache(ChunkConfig::default());
-        let mut state =
-            crate::semantic::index::SemanticIndexState::with_cache(ChunkConfig::default(), cache);
-        let mut embedder = FakeEmbedder::new(None);
-        let mut saved_entry_counts = Vec::new();
+        }
+    }
+
+    #[test]
+    fn interactive_refresh_writes_cache_once_before_query_ranking() {
+        let (query, candidates, mut state, mut embedder, mut saved_entry_counts) =
+            interactive_refresh_context("alpha", None, false);
+        let request = interactive_refresh_request(&query, &candidates);
 
         let (refresh, response) = refresh_and_rank_interactive(
             &request,
@@ -546,28 +569,9 @@ mod tests {
 
     #[test]
     fn interactive_refresh_writes_cache_before_query_error() {
-        let conversations = vec![test_conversation(
-            "/projects/project-a/session-1.jsonl",
-            "one",
-            vec!["visible alpha".to_string()],
-        )];
-        let selected = vec![&conversations[0]];
-        let candidates = semantic_index_candidates(&selected);
-        let query = "alpha".to_string();
-        let request = crate::semantic::index::SemanticIndexRequest {
-            query: &query,
-            literal_filters: &[],
-            full_corpus: &candidates,
-            scope: &candidates,
-            corpus_version: 1,
-            prewarm: false,
-        };
-        let cache = crate::semantic::cache::empty_embedding_cache(ChunkConfig::default());
-        let mut state =
-            crate::semantic::index::SemanticIndexState::with_cache(ChunkConfig::default(), cache);
-        let mut embedder = FakeEmbedder::new(Some(vec![1.0, 0.0]));
-        embedder.query_error = true;
-        let mut saved_entry_counts = Vec::new();
+        let (query, candidates, mut state, mut embedder, mut saved_entry_counts) =
+            interactive_refresh_context("alpha", Some(vec![1.0, 0.0]), true);
+        let request = interactive_refresh_request(&query, &candidates);
 
         let error = match refresh_and_rank_interactive(
             &request,
