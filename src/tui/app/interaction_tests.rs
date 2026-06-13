@@ -117,6 +117,46 @@ fn view_expanded_tool_id(app: &App) -> ToolOutputId {
     }
 }
 
+fn connect_semantic_search_channels(
+    app: &mut App,
+) -> (
+    mpsc::Sender<crate::tui::semantic_worker::SemanticWorkerCommand>,
+    mpsc::Receiver<crate::tui::semantic_worker::SemanticWorkerCommand>,
+    mpsc::Sender<SemanticSearchMessage>,
+) {
+    let (request_tx, request_rx) =
+        mpsc::channel::<crate::tui::semantic_worker::SemanticWorkerCommand>();
+    let (response_tx, response_rx) = mpsc::channel::<SemanticSearchMessage>();
+    app.semantic_search.worker_tx = Some(request_tx);
+    app.semantic_search.worker_rx = Some(response_rx);
+    (
+        app.semantic_search.worker_tx.clone().unwrap(),
+        request_rx,
+        response_tx,
+    )
+}
+
+fn send_semantic_complete_response(
+    response_tx: &mpsc::Sender<SemanticSearchMessage>,
+    generation: u64,
+    filtered: Vec<usize>,
+    metadata: HashMap<usize, SemanticResultMetadata>,
+    progress: SemanticProgress,
+) {
+    response_tx
+        .send(SemanticSearchMessage::Complete(
+            crate::tui::semantic_worker::SemanticSearchResponse {
+                generation,
+                filtered,
+                metadata,
+                error: None,
+                progress,
+                prewarm: false,
+            },
+        ))
+        .unwrap();
+}
+
 fn test_semantic_metadata(
     conversation_index: usize,
     evidence_preview: &str,
@@ -164,30 +204,18 @@ fn semantic_ranked_selection_opens_selected_conversation_and_returns() {
             default_mode: ListSearchMode::Semantic,
         },
     );
-    let (_request_tx, request_rx) = mpsc::channel();
-    let (response_tx, response_rx) = mpsc::channel();
-    app.semantic_search.worker_tx = Some(_request_tx);
-    app.semantic_search.worker_rx = Some(response_rx);
+    let (_request_tx, _request_rx, response_tx) = connect_semantic_search_channels(&mut app);
     app.list_search_mode = ListSearchMode::Semantic;
     app.search_generation = 7;
     app.semantic_search.pending_generation = Some(7);
-    drop(request_rx);
 
-    response_tx
-        .send(SemanticSearchMessage::Complete(
-            crate::tui::semantic_worker::SemanticSearchResponse {
-                generation: 7,
-                filtered: vec![1, 0],
-                metadata: HashMap::from([(
-                    1,
-                    test_semantic_metadata(1, "second semantic preview"),
-                )]),
-                error: None,
-                progress: SemanticProgress::Complete,
-                prewarm: false,
-            },
-        ))
-        .unwrap();
+    send_semantic_complete_response(
+        &response_tx,
+        7,
+        vec![1, 0],
+        HashMap::from([(1, test_semantic_metadata(1, "second semantic preview"))]),
+        SemanticProgress::Complete,
+    );
 
     assert!(app.receive_search_results());
     assert_eq!(app.filtered(), &[1, 0]);

@@ -63,6 +63,69 @@ fn filtered_projects(app: &App) -> Vec<Option<&str>> {
         .collect()
 }
 
+fn app_with_semantic_mode(conversations: Vec<Conversation>) -> App {
+    app_with_options(
+        conversations,
+        vec![],
+        TuiSearchOptions {
+            default_mode: ListSearchMode::Semantic,
+        },
+    )
+}
+
+fn connect_semantic_search_channels(
+    app: &mut App,
+) -> (
+    std::sync::mpsc::Sender<crate::tui::semantic_worker::SemanticWorkerCommand>,
+    std::sync::mpsc::Receiver<crate::tui::semantic_worker::SemanticWorkerCommand>,
+    std::sync::mpsc::Sender<SemanticSearchMessage>,
+) {
+    let (request_tx, request_rx) =
+        mpsc::channel::<crate::tui::semantic_worker::SemanticWorkerCommand>();
+    let (response_tx, response_rx) = mpsc::channel::<SemanticSearchMessage>();
+    app.semantic_search.worker_tx = Some(request_tx);
+    app.semantic_search.worker_rx = Some(response_rx);
+    (
+        app.semantic_search.worker_tx.clone().unwrap(),
+        request_rx,
+        response_tx,
+    )
+}
+
+fn send_semantic_complete_response(
+    response_tx: &mpsc::Sender<SemanticSearchMessage>,
+    generation: u64,
+    filtered: Vec<usize>,
+    metadata: HashMap<usize, SemanticResultMetadata>,
+    progress: SemanticProgress,
+) {
+    response_tx
+        .send(SemanticSearchMessage::Complete(
+            crate::tui::semantic_worker::SemanticSearchResponse {
+                generation,
+                filtered,
+                metadata,
+                error: None,
+                progress,
+                prewarm: false,
+            },
+        ))
+        .unwrap();
+}
+
+fn send_semantic_progress_response(
+    response_tx: &mpsc::Sender<SemanticSearchMessage>,
+    generation: u64,
+    progress: SemanticProgress,
+) {
+    response_tx
+        .send(SemanticSearchMessage::Progress {
+            generation,
+            progress,
+        })
+        .unwrap();
+}
+
 fn test_semantic_metadata(
     conversation_index: usize,
     evidence_preview: &str,
@@ -394,22 +457,13 @@ fn stale_semantic_response_is_ignored_while_lexical_mode_is_active() {
 
 #[test]
 fn semantic_response_after_mode_toggle_is_ignored() {
-    let mut app = app_with_options(
-        vec![conversation(
-            Some("Visible"),
-            "-tmp-visible",
-            "22222222-2222-4222-8222-222222222222",
-            "needle",
-        )],
-        vec![],
-        TuiSearchOptions {
-            default_mode: ListSearchMode::Semantic,
-        },
-    );
-    let (_request_tx, request_rx) = mpsc::channel();
-    let (response_tx, response_rx) = mpsc::channel();
-    app.semantic_search.worker_tx = Some(_request_tx);
-    app.semantic_search.worker_rx = Some(response_rx);
+    let mut app = app_with_semantic_mode(vec![conversation(
+        Some("Visible"),
+        "-tmp-visible",
+        "22222222-2222-4222-8222-222222222222",
+        "needle",
+    )]);
+    let (_request_tx, request_rx, response_tx) = connect_semantic_search_channels(&mut app);
     app.query = "needle".to_string();
     app.dispatch_search();
     drop(request_rx);
@@ -419,18 +473,13 @@ fn semantic_response_after_mode_toggle_is_ignored() {
     assert_eq!(app.list_search_mode(), ListSearchMode::Lexical);
     assert_eq!(filtered_projects(&app), vec![Some("Visible")]);
 
-    response_tx
-        .send(SemanticSearchMessage::Complete(
-            crate::tui::semantic_worker::SemanticSearchResponse {
-                generation: semantic_generation,
-                filtered: vec![0],
-                metadata: HashMap::from([(0, test_semantic_metadata(0, "stale"))]),
-                error: None,
-                progress: SemanticProgress::Complete,
-                prewarm: false,
-            },
-        ))
-        .unwrap();
+    send_semantic_complete_response(
+        &response_tx,
+        semantic_generation,
+        vec![0],
+        HashMap::from([(0, test_semantic_metadata(0, "stale"))]),
+        SemanticProgress::Complete,
+    );
 
     assert!(!app.receive_search_results());
     assert_eq!(filtered_projects(&app), vec![Some("Visible")]);
@@ -1016,36 +1065,26 @@ fn semantic_uuid_query_uses_uuid_lookup_and_clears_unsupported_error() {
 
 #[test]
 fn semantic_progress_messages_update_activity_status_text() {
-    let mut app = app_with_options(
-        vec![conversation(
-            Some("Visible"),
-            "-tmp-visible",
-            "22222222-2222-4222-8222-222222222222",
-            "needle",
-        )],
-        vec![],
-        TuiSearchOptions {
-            default_mode: ListSearchMode::Semantic,
-        },
-    );
-    let (_request_tx, request_rx) = mpsc::channel();
-    let (response_tx, response_rx) = mpsc::channel();
-    app.semantic_search.worker_tx = Some(_request_tx);
-    app.semantic_search.worker_rx = Some(response_rx);
+    let mut app = app_with_semantic_mode(vec![conversation(
+        Some("Visible"),
+        "-tmp-visible",
+        "22222222-2222-4222-8222-222222222222",
+        "needle",
+    )]);
+    let (_request_tx, request_rx, response_tx) = connect_semantic_search_channels(&mut app);
     app.list_search_mode = ListSearchMode::Semantic;
     app.search_generation = 7;
     app.semantic_search.pending_generation = Some(7);
     drop(request_rx);
 
-    response_tx
-        .send(SemanticSearchMessage::Progress {
-            generation: 7,
-            progress: SemanticProgress::Embedding {
-                completed: 1,
-                total: 2,
-            },
-        })
-        .unwrap();
+    send_semantic_progress_response(
+        &response_tx,
+        7,
+        SemanticProgress::Embedding {
+            completed: 1,
+            total: 2,
+        },
+    );
 
     assert!(app.receive_search_results());
     assert_eq!(app.semantic_status_text(), None);
@@ -1220,39 +1259,25 @@ fn semantic_prewarm_superseded_by_real_query_clears_stale_activity() {
 
 #[test]
 fn semantic_empty_corpus_status_is_visible_after_completion() {
-    let mut app = app_with_options(
-        vec![conversation(
-            Some("Visible"),
-            "-tmp-visible",
-            "22222222-2222-4222-8222-222222222222",
-            "needle",
-        )],
-        vec![],
-        TuiSearchOptions {
-            default_mode: ListSearchMode::Semantic,
-        },
-    );
-    let (_request_tx, request_rx) = mpsc::channel();
-    let (response_tx, response_rx) = mpsc::channel();
-    app.semantic_search.worker_tx = Some(_request_tx);
-    app.semantic_search.worker_rx = Some(response_rx);
+    let mut app = app_with_semantic_mode(vec![conversation(
+        Some("Visible"),
+        "-tmp-visible",
+        "22222222-2222-4222-8222-222222222222",
+        "needle",
+    )]);
+    let (_request_tx, request_rx, response_tx) = connect_semantic_search_channels(&mut app);
     app.list_search_mode = ListSearchMode::Semantic;
     app.search_generation = 7;
     app.semantic_search.pending_generation = Some(7);
     drop(request_rx);
 
-    response_tx
-        .send(SemanticSearchMessage::Complete(
-            crate::tui::semantic_worker::SemanticSearchResponse {
-                generation: 7,
-                filtered: Vec::new(),
-                metadata: HashMap::new(),
-                error: None,
-                progress: SemanticProgress::EmptyCorpus,
-                prewarm: false,
-            },
-        ))
-        .unwrap();
+    send_semantic_complete_response(
+        &response_tx,
+        7,
+        Vec::new(),
+        HashMap::new(),
+        SemanticProgress::EmptyCorpus,
+    );
 
     assert!(app.receive_search_results());
     assert_eq!(app.semantic_status_text().as_deref(), Some("sem no text"));
