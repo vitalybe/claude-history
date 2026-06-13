@@ -1,3 +1,9 @@
+## v0.1.67 (2026-06-13)
+
+- Prebuilt macOS and Linux releases now include ONNX Runtime, so semantic
+  search works after install or self-update without a separate library setup
+  ([#57](https://github.com/raine/claude-history/issues/57))
+
 ## v0.1.66 (2026-06-13)
 
 - Linux prebuilt binaries now run on more older Linux distributions instead of
