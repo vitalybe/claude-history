@@ -1,3 +1,4 @@
+use std::io::IsTerminal;
 use std::sync::OnceLock;
 
 /// Global theme instance, initialized once at startup
@@ -183,6 +184,14 @@ impl Theme {
 /// Detect terminal background luminance and return appropriate theme
 pub fn detect_theme() -> &'static Theme {
     THEME.get_or_init(|| {
+        // terminal_light::luma() probes the background by writing an OSC 11
+        // query to stdout and reading the reply from stdin. When stdout is not
+        // a terminal (e.g. a caller capturing the -s/-p/-i payload through a
+        // pipe), that query both pollutes the captured output and never reaches
+        // a terminal that could answer it. Skip detection and default to dark.
+        if !std::io::stdout().is_terminal() {
+            return Theme::dark();
+        }
         match terminal_light::luma() {
             Ok(luma) if luma > 0.6 => Theme::light(),
             _ => Theme::dark(), // Default to dark on detection failure
