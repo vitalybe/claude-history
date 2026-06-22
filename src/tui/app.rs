@@ -77,6 +77,9 @@ pub struct App {
     show_timing: bool,
     /// Whether the app is running in single file mode (direct input, no list)
     single_file_mode: bool,
+    /// Whether selection mode is active: pressing Enter inside a conversation
+    /// returns Action::Select so the caller can emit the chosen session and exit
+    select_mode: bool,
     /// Configurable keybindings
     keys: KeyBindings,
     /// Whether workspace filter is active (only show current project's conversations)
@@ -113,6 +116,7 @@ struct AppParts {
     tool_display: ToolDisplayMode,
     show_thinking: bool,
     single_file_mode: bool,
+    select_mode: bool,
     keys: KeyBindings,
     workspace_filter: bool,
     current_project_dir_name: Option<String>,
@@ -146,6 +150,7 @@ impl App {
             show_thinking: parts.show_thinking,
             show_timing: false,
             single_file_mode: parts.single_file_mode,
+            select_mode: parts.select_mode,
             keys: parts.keys,
             workspace_filter: parts.workspace_filter,
             current_project_dir_name: parts.current_project_dir_name,
@@ -245,6 +250,7 @@ impl App {
             tool_display,
             show_thinking,
             single_file_mode: false,
+            select_mode: false,
             keys,
             workspace_filter: false,
             current_project_dir_name: None,
@@ -257,6 +263,7 @@ impl App {
     }
 
     /// Create a new app in loading state
+    #[allow(clippy::too_many_arguments)]
     pub fn new_loading_with_options(
         tool_display: ToolDisplayMode,
         show_thinking: bool,
@@ -265,6 +272,7 @@ impl App {
         current_project_dir_name: Option<String>,
         exclude_projects: Vec<String>,
         search_options: TuiSearchOptions,
+        select_mode: bool,
     ) -> Self {
         let conversations = Vec::new();
         let (search_tx, search_rx) = spawn_search_worker();
@@ -281,6 +289,7 @@ impl App {
             tool_display,
             show_thinking,
             single_file_mode: false,
+            select_mode,
             keys,
             workspace_filter,
             current_project_dir_name,
@@ -336,6 +345,7 @@ impl App {
             tool_display,
             show_thinking,
             single_file_mode: true,
+            select_mode: false,
             keys,
             workspace_filter: false,
             current_project_dir_name: None,

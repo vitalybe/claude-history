@@ -428,3 +428,33 @@ fn submit_empty_rename_clears_searchable_title() {
     assert_eq!(app.conversations[0].custom_title, None);
     assert!(search::search(&app.conversations, &app.searchable, "old", Local::now()).is_empty());
 }
+
+#[test]
+fn select_mode_enter_in_view_returns_select_action() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("abc123.jsonl");
+    write_conversation(&path, None);
+    let mut app = app_with_conversation(path.clone(), None);
+    app.select_mode = true;
+    app.selected = Some(0);
+    app.enter_view_mode(80);
+
+    let action = app.handle_key(KeyCode::Enter, KeyModifiers::empty(), 10);
+
+    assert!(matches!(action, Some(Action::Select(p)) if p == path));
+}
+
+#[test]
+fn enter_in_view_without_select_mode_does_nothing() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("abc123.jsonl");
+    write_conversation(&path, None);
+    let mut app = app_with_conversation(path, None);
+    app.selected = Some(0);
+    app.enter_view_mode(80);
+
+    let action = app.handle_key(KeyCode::Enter, KeyModifiers::empty(), 10);
+
+    assert!(action.is_none());
+    assert!(matches!(app.app_mode(), AppMode::View(_)));
+}
