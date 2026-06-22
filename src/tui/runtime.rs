@@ -192,6 +192,7 @@ pub fn run_with_loader(
     current_project_dir_name: Option<String>,
     exclude_projects: Vec<String>,
     search_options: TuiSearchOptions,
+    select_mode: bool,
 ) -> Result<(Action, Vec<Conversation>)> {
     let mut guard = TerminalGuard::new()?;
     let mut app = App::new_loading_with_options(
@@ -202,6 +203,7 @@ pub fn run_with_loader(
         current_project_dir_name,
         exclude_projects,
         search_options,
+        select_mode,
     );
 
     loop {

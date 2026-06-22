@@ -217,6 +217,7 @@ impl App {
                 self.app_mode = AppMode::List;
                 None
             }
+            KeyCode::Enter if self.select_mode => self.get_selected_path().map(Action::Select),
             KeyCode::Down | KeyCode::Char('j') => {
                 state.scroll_offset = (state.scroll_offset + 1).min(max_scroll);
                 self.sync_focus_after_scroll(viewport_height);

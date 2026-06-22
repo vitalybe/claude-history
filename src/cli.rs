@@ -278,6 +278,15 @@ pub struct Args {
     #[arg(long, short = 'i', help = "Print the selected conversation session ID")]
     pub show_id: bool,
 
+    /// Selection mode: Enter opens a conversation, then Enter again exits and
+    /// prints the selected session as JSON ({"sessionId", "sessionPath"})
+    #[arg(
+        long,
+        short = 's',
+        help = "Enter a conversation, then press Enter again to print its session as JSON and exit"
+    )]
+    pub select: bool,
+
     /// Output in plain text format without ledger formatting (for piping to other tools)
     #[arg(long, help = "Output plain text without ledger formatting")]
     pub plain: bool,

@@ -328,6 +328,7 @@ fn run() -> Result<()> {
         tui::TuiSearchOptions {
             default_mode: tui_search_mode(search_mode),
         },
+        args.select,
     )? {
         (tui::Action::Select(path), convs) => (convs, path),
         (tui::Action::Resume(path), convs) => {
@@ -345,6 +346,23 @@ fn run() -> Result<()> {
         (tui::Action::Quit, _) => return Err(AppError::SelectionCancelled),
         (tui::Action::Delete(_), _) => unreachable!("Delete is handled internally"),
     };
+
+    if args.select {
+        let session_id = selected_path
+            .file_stem()
+            .and_then(|stem| stem.to_str())
+            .ok_or_else(|| {
+                AppError::ClaudeExecutionError(
+                    "Conversation filename is not valid Unicode".to_string(),
+                )
+            })?;
+        let output = serde_json::json!({
+            "sessionId": session_id,
+            "sessionPath": selected_path.display().to_string(),
+        });
+        println!("{}", output);
+        return Ok(());
+    }
 
     if args.show_path {
         println!("{}", selected_path.display());
