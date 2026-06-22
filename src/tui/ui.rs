@@ -1229,12 +1229,15 @@ fn render_export_menu(frame: &mut Frame, selected: usize, is_yank: bool) {
     } else {
         "Export to file"
     };
-    let options = [
+    let mut options = vec![
         "[1] Ledger (formatted)",
         "[2] Plain text",
         "[3] Markdown",
         "[4] JSONL (raw)",
     ];
+    if is_yank {
+        options.push("[5] Session ID");
+    }
 
     let area = frame.area();
     let menu_width = 35;
