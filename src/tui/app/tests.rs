@@ -674,6 +674,7 @@ fn finish_loading_dispatches_buffered_semantic_query() {
         TuiSearchOptions {
             default_mode: ListSearchMode::Semantic,
         },
+        false,
     );
     app.append_conversations(vec![conversation(
         Some("Visible"),
@@ -709,6 +710,7 @@ fn semantic_dispatch_after_loading_keeps_snapshot_aligned() {
         TuiSearchOptions {
             default_mode: ListSearchMode::Semantic,
         },
+        false,
     );
     app.append_conversations(vec![conversation(
         Some("Visible"),
@@ -1578,6 +1580,7 @@ fn finish_loading_invalidates_stale_loading_search_response() {
         None,
         vec![],
         TuiSearchOptions::default(),
+        false,
     );
 
     let (tx, rx) = mpsc::channel();
@@ -1616,6 +1619,7 @@ fn workspace_filter_without_project_context_keeps_rows() {
         None,
         vec![],
         TuiSearchOptions::default(),
+        false,
     );
 
     app.append_conversations(vec![conversation(
@@ -1638,6 +1642,7 @@ fn exclude_projects_filters_incremental_loading() {
         None,
         vec!["Hidden".to_string()],
         TuiSearchOptions::default(),
+        false,
     );
 
     app.append_conversations(vec![
