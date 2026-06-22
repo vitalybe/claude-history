@@ -30,38 +30,33 @@ impl App {
             _ => return None,
         };
 
+        // The yank menu offers an extra "Session ID" option past the export formats.
+        let option_count = if is_yank {
+            EXPORT_OPTIONS.len() + 1
+        } else {
+            EXPORT_OPTIONS.len()
+        };
+
         match code {
             KeyCode::Up | KeyCode::Char('k') => {
                 *selected = selected.saturating_sub(1);
                 None
             }
             KeyCode::Down | KeyCode::Char('j') => {
-                *selected = (*selected + 1).min(EXPORT_OPTIONS.len() - 1);
+                *selected = (*selected + 1).min(option_count - 1);
                 None
             }
-            KeyCode::Char('1') => {
-                self.perform_export(0, is_yank);
-                self.dialog_mode = DialogMode::None;
-                None
-            }
-            KeyCode::Char('2') => {
-                self.perform_export(1, is_yank);
-                self.dialog_mode = DialogMode::None;
-                None
-            }
-            KeyCode::Char('3') => {
-                self.perform_export(2, is_yank);
-                self.dialog_mode = DialogMode::None;
-                None
-            }
-            KeyCode::Char('4') => {
-                self.perform_export(3, is_yank);
-                self.dialog_mode = DialogMode::None;
+            KeyCode::Char(c @ '1'..='5') => {
+                let idx = c as usize - '1' as usize;
+                if idx < option_count {
+                    self.perform_menu_action(idx, is_yank);
+                    self.dialog_mode = DialogMode::None;
+                }
                 None
             }
             KeyCode::Enter => {
                 let sel = *selected;
-                self.perform_export(sel, is_yank);
+                self.perform_menu_action(sel, is_yank);
                 self.dialog_mode = DialogMode::None;
                 None
             }
@@ -240,6 +235,34 @@ impl App {
                 ));
             }
         }
+    }
+
+    /// Dispatch a menu selection. For the yank menu, the index just past the
+    /// export formats is the "Session ID" option; everything else is a format.
+    pub(super) fn perform_menu_action(&mut self, option: usize, to_clipboard: bool) {
+        if to_clipboard && option == EXPORT_OPTIONS.len() {
+            self.yank_session_id();
+        } else {
+            self.perform_export(option, to_clipboard);
+        }
+    }
+
+    pub(super) fn yank_session_id(&mut self) {
+        let id = match &self.app_mode {
+            AppMode::View(state) => state
+                .conversation_path
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .map(|s| s.to_string()),
+            _ => None,
+        };
+        let Some(id) = id else { return };
+
+        let message = match crate::tui::export::copy_to_system_clipboard(&id) {
+            Ok(()) => "Session ID copied to clipboard".to_string(),
+            Err(e) => e,
+        };
+        self.status_message = Some((message, std::time::Instant::now()));
     }
 
     pub(super) fn perform_export(&mut self, option: usize, to_clipboard: bool) {

@@ -326,21 +326,7 @@ impl App {
                 None
             }
             KeyCode::Char('I') => {
-                if let AppMode::View(ref state) = self.app_mode
-                    && let Some(id) = state.conversation_path.file_stem().and_then(|s| s.to_str())
-                {
-                    match crate::tui::export::copy_to_system_clipboard(id) {
-                        Ok(()) => {
-                            self.status_message = Some((
-                                "Session ID copied to clipboard".to_string(),
-                                std::time::Instant::now(),
-                            ));
-                        }
-                        Err(e) => {
-                            self.status_message = Some((e, std::time::Instant::now()));
-                        }
-                    }
-                }
+                self.yank_session_id();
                 None
             }
             KeyCode::Char('e') => {
