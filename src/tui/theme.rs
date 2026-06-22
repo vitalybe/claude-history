@@ -1,3 +1,4 @@
+use std::io::IsTerminal;
 use std::sync::OnceLock;
 
 /// Global theme instance, initialized once at startup

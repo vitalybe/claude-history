@@ -25,6 +25,9 @@ impl TerminalGuard {
     fn new() -> Result<Self> {
         terminal::enable_raw_mode().map_err(|e| AppError::Io(io::Error::other(e)))?;
 
+        // Render the picker UI to stderr, not stdout. stdout is reserved for the
+        // machine-readable result (the -s/-p/-i payload) so callers can capture
+        // it while the interactive UI still draws on the terminal.
         let mut stderr = io::stderr();
         if let Err(e) = crossterm::execute!(stderr, EnterAlternateScreen, EnableMouseCapture) {
             let _ = terminal::disable_raw_mode();
