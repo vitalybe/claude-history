@@ -792,49 +792,6 @@ fn semantic_search_worker_returns_lexical_fallback() {
 }
 
 #[test]
-fn semantic_search_applies_lexical_fallback_while_pending() {
-    let mut app = app_with_options(
-        vec![
-            conversation(
-                Some("Emoji"),
-                "-tmp-emoji",
-                "11111111-1111-4111-8111-111111111111",
-                "emoji picker",
-            ),
-            conversation(
-                Some("Other"),
-                "-tmp-other",
-                "22222222-2222-4222-8222-222222222222",
-                "unrelated",
-            ),
-        ],
-        vec![],
-        TuiSearchOptions {
-            default_mode: ListSearchMode::Semantic,
-        },
-    );
-    let (tx, rx) = mpsc::channel();
-    app.search_rx = rx;
-    app.search_generation = 7;
-    app.semantic_search.pending_generation = Some(7);
-    app.semantic_search.results = HashMap::from([(1, test_semantic_metadata(1, "old"))]);
-    app.filtered = vec![1];
-    app.selected = Some(0);
-    tx.send(SearchResponse {
-        filtered: vec![0],
-        generation: 7,
-        mode: ListSearchMode::Semantic,
-        evidence: HashMap::new(),
-    })
-    .unwrap();
-
-    assert!(app.receive_search_results());
-    assert_eq!(app.filtered(), &[0]);
-    assert_eq!(app.selected(), Some(0));
-    assert!(app.semantic_search.results.is_empty());
-}
-
-#[test]
 fn empty_lexical_fallback_keeps_results_visible_while_semantic_search_is_pending() {
     let mut app = app_with_semantic_mode(vec![conversation(
         Some("Visible"),

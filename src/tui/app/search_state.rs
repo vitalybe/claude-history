@@ -364,15 +364,13 @@ impl App {
                 && response.mode == self.list_search_mode
                 && (response.mode == ListSearchMode::Lexical || semantic_fallback_pending)
             {
-                let filtered = self.filter_indices(response.filtered);
-                if response.mode == ListSearchMode::Semantic && filtered.is_empty() {
-                    self.search_in_flight = false;
-                    continue;
-                }
                 self.lexical_evidence = response.evidence;
                 if response.mode == ListSearchMode::Semantic {
-                    self.semantic_search.results.clear();
+                    // Only the final semantic results are shown; the lexical pass
+                    // just supplies match evidence.
+                    continue;
                 }
+                let filtered = self.filter_indices(response.filtered);
                 self.apply_filtered(filtered);
                 self.search_in_flight = false;
                 applied = true;
@@ -583,6 +581,14 @@ impl App {
         } else {
             self.dispatch_search();
         }
+    }
+
+    pub(super) fn toggle_sort_mode(&mut self) {
+        self.sort_mode = match self.sort_mode {
+            super::SortMode::Recent => super::SortMode::Relevance,
+            super::SortMode::Relevance => super::SortMode::Recent,
+        };
+        self.dispatch_search();
     }
 
     pub(super) fn apply_uuid_filter(&mut self, query: &str) -> bool {

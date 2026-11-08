@@ -196,6 +196,7 @@ JSONL files and their matching session artifact directories.
 | `Ctrl+L`                | Refresh sessions                 |
 | `Tab`                   | Toggle all / workspace scope     |
 | `Ctrl+T`                | Toggle lexical / semantic search |
+| `Ctrl+G`                | Toggle sort: recent / relevance  |
 | `?`                     | Show keyboard shortcuts          |
 | `Esc`                   | Clear search input, or quit      |
 | `Ctrl+C`                | Quit                             |

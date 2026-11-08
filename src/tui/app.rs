@@ -30,7 +30,7 @@ mod view_state;
 use search_state::{SearchCommand, SearchResponse, SemanticSearchState, spawn_search_worker};
 #[allow(unused_imports)]
 pub use types::{
-    Action, AppMode, DialogMode, LIST_LINES_PER_ITEM, ListSearchMode, LoadingState,
+    Action, AppMode, DialogMode, LIST_LINES_PER_ITEM, ListSearchMode, LoadingState, SortMode,
     SemanticProgress, SemanticResultMetadata, TuiSearchOptions, ViewSearchMode, ViewState,
     list_lines_per_item,
 };
@@ -100,6 +100,8 @@ pub struct App {
     search_in_flight: bool,
     /// Current list search mode
     list_search_mode: ListSearchMode,
+    /// Result ordering for the list
+    sort_mode: SortMode,
     /// Semantic TUI state
     semantic_search: SemanticSearchState,
     /// Cached lexical evidence produced outside the render path
@@ -163,6 +165,7 @@ impl App {
             search_generation: 0,
             search_in_flight: false,
             list_search_mode: parts.list_search_mode,
+            sort_mode: SortMode::default(),
             semantic_search: parts.semantic_search,
             lexical_evidence: HashMap::new(),
         }
@@ -287,7 +290,7 @@ impl App {
             searchable: Vec::new(),
             filtered: Vec::new(),
             selected: None,
-            loading_state: LoadingState::Loading { loaded: 0 },
+            loading_state: LoadingState::Loading,
             app_mode: AppMode::List,
             tool_display,
             show_thinking,
@@ -378,11 +381,6 @@ impl App {
         if self.selected.is_none() && !self.filtered.is_empty() {
             self.selected = Some(0);
         }
-
-        // Update loading count
-        self.loading_state = LoadingState::Loading {
-            loaded: self.conversations.len(),
-        };
     }
 
     /// Mark loading as complete: sort, precompute search, and transition to Ready
@@ -413,11 +411,11 @@ impl App {
         self.invalidate_search_generation();
 
         // Apply filter (handles query, exclusions, and workspace filter)
-        self.update_filter();
-        if self.list_search_mode == ListSearchMode::Semantic && !self.query.trim().is_empty() {
-            self.dispatch_search();
-        } else {
+        if self.query.trim().is_empty() {
+            self.update_filter();
             self.prewarm_semantic_cache();
+        } else {
+            self.dispatch_search();
         }
     }
 
@@ -463,8 +461,17 @@ impl App {
         &self.loading_state
     }
 
+    /// True while the list should be hidden behind a spinner.
+    pub fn is_busy(&self) -> bool {
+        self.is_loading() || self.search_in_flight
+    }
+
+    pub fn sort_mode(&self) -> SortMode {
+        self.sort_mode
+    }
+
     pub fn is_loading(&self) -> bool {
-        matches!(self.loading_state, LoadingState::Loading { .. })
+        matches!(self.loading_state, LoadingState::Loading)
     }
 
     // Getters for UI access

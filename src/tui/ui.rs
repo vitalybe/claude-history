@@ -257,6 +257,13 @@ fn render_list_status_bar(frame: &mut Frame, app: &App, area: Rect) {
     }
 
     spans.extend([
+        Span::styled("Ctrl+G", key_style),
+        Span::styled(" sort·", label_style),
+        Span::styled(app.sort_mode().label(), label_style),
+        Span::raw("  "),
+    ]);
+
+    spans.extend([
         Span::styled("?", key_style),
         Span::styled("help  ", label_style),
         Span::styled("Esc", key_style),
@@ -1057,7 +1064,7 @@ fn styled_span(text: &str, style: &LineStyle) -> Span<'static> {
 
 fn render_search_bar(frame: &mut Frame, app: &App, area: Rect) {
     let count_text = match app.loading_state() {
-        LoadingState::Loading { loaded } => format!("Loading... {}", loaded),
+        LoadingState::Loading => "Loading...".to_string(),
         LoadingState::Ready => match app.selected() {
             Some(selected) => format!("{}/{}", selected + 1, app.filtered().len()),
             None => format!("0/{}", app.filtered().len()),
@@ -1337,6 +1344,7 @@ fn render_help_overlay(
             ("PgUp / PgDn".into(), "Jump by page"),
             ("Home / End".into(), "Jump to first/last"),
             ("Tab".into(), "Toggle scope (All/Project)"),
+            ("Ctrl+G".into(), "Toggle sort (recent/relevance)"),
             ("Enter".into(), "Open viewer"),
             ("Ctrl+O".into(), "Select and exit"),
             ("Ctrl+W".into(), "Delete word"),
@@ -1447,7 +1455,27 @@ fn render_help_overlay(
     frame.render_widget(content, inner);
 }
 
+fn render_spinner(frame: &mut Frame, area: Rect) {
+    const FRAMES: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+    let ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis())
+        .unwrap_or(0);
+    let glyph = FRAMES[(ms / 80) as usize % FRAMES.len()];
+    let line = Line::from(Span::styled(
+        format!("{glyph} Loading..."),
+        Style::default().fg(rgb(th().accent)),
+    ))
+    .centered();
+    let target = Rect::new(area.x, area.y + area.height / 2, area.width, 1.min(area.height));
+    frame.render_widget(Paragraph::new(line), target);
+}
+
 fn render_list(frame: &mut Frame, app: &App, area: Rect) {
+    if app.is_busy() {
+        render_spinner(frame, area);
+        return;
+    }
     let width = area.width as usize;
     let highlight_query = HighlightQuery::parse(app.query());
     let query_normalized = highlight_query.context_text();

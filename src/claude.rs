@@ -1,4 +1,3 @@
-use crate::agent::transcript::bounded_tool_result_text;
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -191,22 +190,15 @@ pub fn extract_text_from_blocks(blocks: &[ContentBlock]) -> String {
         .join(" ")
 }
 
-/// Extract Text blocks plus ToolResult content (for search indexing)
+/// Extract Text blocks only (for search indexing). Tool output is excluded so
+/// matches always correspond to dialogue visible in the viewer.
 pub fn extract_search_text_from_blocks(blocks: &[ContentBlock]) -> String {
     let mut parts = Vec::new();
 
     for block in blocks {
         match block {
-            ContentBlock::Text { text } => {
+            ContentBlock::Text { text } if !is_skill_body(text) => {
                 parts.push(text.clone());
-            }
-            ContentBlock::ToolResult {
-                content: Some(content),
-                ..
-            } => {
-                if let Some(text) = bounded_tool_result_text(content) {
-                    parts.push(text);
-                }
             }
             _ => {}
         }
@@ -222,8 +214,15 @@ pub fn extract_text_from_user(message: &UserMessage) -> String {
     }
 }
 
+/// Expanded skill prompts are collapsed to a one-line summary in the viewer, so
+/// their body must not be searchable.
+fn is_skill_body(text: &str) -> bool {
+    text.trim_start().starts_with("Base directory for this skill:")
+}
+
 pub fn extract_search_text_from_user(message: &UserMessage) -> String {
     match &message.content {
+        UserContent::String(text) if is_skill_body(text) => String::new(),
         UserContent::String(text) => text.clone(),
         UserContent::Blocks(blocks) => extract_search_text_from_blocks(blocks),
     }
@@ -294,6 +293,7 @@ pub fn parse_agent_progress(data: &serde_json::Value) -> Option<AgentProgressDat
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::agent::transcript::bounded_tool_result_text;
     use serde_json::json;
 
     #[test]
@@ -311,7 +311,7 @@ mod tests {
     }
 
     #[test]
-    fn extract_search_text_includes_tool_result_string() {
+    fn extract_search_text_excludes_tool_results() {
         let blocks = vec![
             ContentBlock::Text {
                 text: "hello".into(),
@@ -321,37 +321,15 @@ mod tests {
                 content: Some(json!("tool output here")),
             },
         ];
-        let result = extract_search_text_from_blocks(&blocks);
-        assert!(result.contains("hello"));
-        assert!(result.contains("tool output here"));
+        assert_eq!(extract_search_text_from_blocks(&blocks), "hello");
     }
 
     #[test]
-    fn extract_search_text_includes_tool_result_array() {
-        let blocks = vec![ContentBlock::ToolResult {
-            tool_use_id: "id".into(),
-            content: Some(json!([
-                {"type": "text", "text": "line one"},
-                {"type": "text", "text": "line two"}
-            ])),
+    fn extract_search_text_excludes_skill_body() {
+        let blocks = vec![ContentBlock::Text {
+            text: "Base directory for this skill: /x\n\nhidden listing".into(),
         }];
-        let result = extract_search_text_from_blocks(&blocks);
-        assert!(result.contains("line one"));
-        assert!(result.contains("line two"));
-    }
-
-    #[test]
-    fn extract_search_text_ignores_non_text_blocks_in_array() {
-        let blocks = vec![ContentBlock::ToolResult {
-            tool_use_id: "id".into(),
-            content: Some(json!([
-                {"type": "text", "text": "visible"},
-                {"type": "image", "source": {"data": "base64..."}}
-            ])),
-        }];
-        let result = extract_search_text_from_blocks(&blocks);
-        assert!(result.contains("visible"));
-        assert!(!result.contains("base64"));
+        assert_eq!(extract_search_text_from_blocks(&blocks), "");
     }
 
     #[test]

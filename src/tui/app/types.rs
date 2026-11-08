@@ -149,6 +149,22 @@ impl ViewState {
     }
 }
 
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum SortMode {
+    #[default]
+    Recent,
+    Relevance,
+}
+
+impl SortMode {
+    pub fn label(self) -> &'static str {
+        match self {
+            SortMode::Recent => "recent",
+            SortMode::Relevance => "relevance",
+        }
+    }
+}
+
 impl ListSearchMode {
     pub fn label(self) -> &'static str {
         match self {
@@ -195,7 +211,7 @@ pub struct SemanticResultMetadata {
 #[derive(Clone, Debug)]
 pub enum LoadingState {
     /// Still loading conversations
-    Loading { loaded: usize },
+    Loading,
     /// All conversations loaded and ready
     Ready,
 }

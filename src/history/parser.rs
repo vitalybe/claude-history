@@ -1390,7 +1390,7 @@ mod tests {
     }
 
     #[test]
-    fn tool_result_string_included_in_full_text() {
+    fn tool_result_string_excluded_from_full_text() {
         let content = [
             user_msg_with_tool_result("run this", "command output here"),
             assistant_msg("Done"),
@@ -1399,14 +1399,14 @@ mod tests {
 
         let conv = parse_jsonl(&content).unwrap().unwrap();
         assert!(
-            conv.full_text.contains("command output here"),
-            "Tool result string should be in full_text for search: {}",
+            !conv.full_text.contains("command output here"),
+            "Tool result string should not be in full_text: {}",
             conv.full_text
         );
     }
 
     #[test]
-    fn tool_result_array_included_in_full_text() {
+    fn tool_result_array_excluded_from_full_text() {
         let content = [
             user_msg_with_tool_result_blocks("check file", "file contents xyz"),
             assistant_msg("Got it"),
@@ -1415,8 +1415,8 @@ mod tests {
 
         let conv = parse_jsonl(&content).unwrap().unwrap();
         assert!(
-            conv.full_text.contains("file contents xyz"),
-            "Tool result array blocks should be in full_text: {}",
+            !conv.full_text.contains("file contents xyz"),
+            "Tool result array blocks should not be in full_text: {}",
             conv.full_text
         );
     }
@@ -1458,13 +1458,13 @@ mod tests {
 
         let conv = parse_jsonl(&content).unwrap().unwrap();
         assert!(
-            conv.full_text.contains("verbose tool output"),
-            "Tool result should remain in lexical full_text: {}",
+            !conv.full_text.contains("verbose tool output"),
+            "Tool result should not be in lexical full_text: {}",
             conv.full_text
         );
         assert!(
-            conv.search_text_lower.contains("verbose tool output"),
-            "Tool result should remain in lexical search_text_lower: {}",
+            !conv.search_text_lower.contains("verbose tool output"),
+            "Tool result should not be in lexical search_text_lower: {}",
             conv.search_text_lower
         );
         assert!(
@@ -1575,7 +1575,6 @@ mod tests {
         for included in [
             "summary lexical sentinel",
             "title lexical sentinel",
-            "tool result lexical sentinel",
             "local stdout lexical sentinel",
         ] {
             assert!(

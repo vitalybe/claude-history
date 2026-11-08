@@ -483,6 +483,10 @@ impl App {
                 }
             }
             KeyCode::Char('c') if modifiers.contains(KeyModifiers::CONTROL) => Some(Action::Quit),
+            KeyCode::Char('g') if modifiers.contains(KeyModifiers::CONTROL) => {
+                self.toggle_sort_mode();
+                None
+            }
             KeyCode::Char('t') if modifiers.contains(KeyModifiers::CONTROL) => {
                 if self.semantic_toggle_available() {
                     self.toggle_list_search_mode();

@@ -205,6 +205,7 @@ pub fn run_with_loader(
     ));
     let mut refresh_buffer: Option<Vec<Conversation>> = None;
     let mut refresh_failed = false;
+    let mut initial_buffer: Vec<Conversation> = Vec::new();
     let mut app = App::new_loading_with_options(
         tool_display,
         show_thinking,
@@ -239,7 +240,7 @@ pub fn run_with_loader(
                         if let Some(buffer) = &mut refresh_buffer {
                             buffer.extend(convs);
                         } else {
-                            app.append_conversations(convs);
+                            initial_buffer.extend(convs);
                         }
                     }
                     Ok(LoaderMessage::Done) => {
@@ -259,6 +260,7 @@ pub fn run_with_loader(
                             }
                             refresh_failed = false;
                         } else {
+                            app.append_conversations(std::mem::take(&mut initial_buffer));
                             app.finish_loading();
                             if app.conversations().is_empty() {
                                 drop(guard);
@@ -275,6 +277,7 @@ pub fn run_with_loader(
                             );
                             refresh_failed = false;
                         } else if app.is_loading() {
+                            app.append_conversations(std::mem::take(&mut initial_buffer));
                             app.finish_loading();
                             if app.conversations().is_empty() {
                                 drop(guard);
@@ -294,8 +297,12 @@ pub fn run_with_loader(
         }
 
         let frame_state = prepare_frame(&mut app, &mut guard.terminal);
-        draw_frame(&app, &mut guard.terminal)?;
-        if app.receive_search_results() {
+        // Skip drawing while more keystrokes are queued so typing never lags behind.
+        let input_pending = event::poll(Duration::ZERO).unwrap_or(false);
+        if !input_pending {
+            draw_frame(&app, &mut guard.terminal)?;
+        }
+        if app.receive_search_results() && !input_pending {
             draw_frame(&app, &mut guard.terminal)?;
         }
 

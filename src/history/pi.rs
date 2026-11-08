@@ -857,11 +857,7 @@ mod tests {
         assert_eq!(conversation.total_tokens, 190);
         assert_eq!(conversation.duration_minutes, Some(1));
         assert_eq!(conversation.timestamp.timestamp(), 1_709_251_320);
-        for searchable in [
-            "tool output searchable",
-            "bash output searchable",
-            "visible custom searchable",
-        ] {
+        for searchable in ["visible custom searchable"] {
             assert!(
                 conversation.full_text.contains(searchable),
                 "missing {searchable:?} from {:?}",
@@ -869,6 +865,8 @@ mod tests {
             );
         }
         for hidden_metadata in [
+            "tool output searchable",
+            "bash output searchable",
             "compaction summary searchable",
             "branch summary searchable",
             "custom state searchable",

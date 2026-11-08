@@ -17,7 +17,11 @@ impl App {
         )
     }
 
-    pub(super) fn apply_filtered(&mut self, filtered: Vec<usize>) {
+    pub(super) fn apply_filtered(&mut self, mut filtered: Vec<usize>) {
+        if self.sort_mode == super::SortMode::Recent {
+            // Stable, so relevance order breaks timestamp ties.
+            filtered.sort_by_key(|&i| std::cmp::Reverse(self.conversations[i].timestamp));
+        }
         self.filtered = filtered;
         self.selected = self.selection_anchor.take().and_then(|path| {
             self.filtered
